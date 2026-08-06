@@ -11,7 +11,7 @@
 // Defaults below are the old canvas-test values, i.e. NOT yet calibrated -
 // once good values are found in game they should be pasted back here.
 let MIN_DIST = 5;    // full volume within this radius
-let MAX_DIST = 300;  // silence beyond this radius
+let MAX_DIST = 150;  // silence beyond this radius
 let PAN_RANGE = 10;  // horizontal offset for fully-panned left/right
 
 const SEND_INTERVAL_MS = 200;
