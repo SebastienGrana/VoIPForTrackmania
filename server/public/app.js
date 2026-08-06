@@ -201,16 +201,41 @@ function tickGains() {
     }
   }
   renderPeerTable();
+  renderPlayerList();
   requestAnimationFrame(tickGains);
 }
 requestAnimationFrame(tickGains);
 
+function gainLabel(g) {
+  if (g > 0.8) return 'Very close';
+  if (g > 0.5) return 'Close';
+  if (g > 0.15) return 'Nearby';
+  if (g > 0.01) return 'Far away';
+  return 'Out of range';
+}
+
+function renderPlayerList() {
+  const list = document.getElementById('playerList');
+  if (peers.size === 0) {
+    list.innerHTML = '<li class="pl-empty">No other players in the room yet</li>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const [pseudo] of peers) {
+    const g = gains.get(pseudo)?.current ?? 0;
+    const hasAudio = audioNodes.has(pseudo);
+    const pct = Math.round(g * 100);
+    const icon = !hasAudio ? '👤' : g > 0.5 ? '🔊' : g > 0.05 ? '🔉' : '🔈';
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="pl-icon">${icon}</span>`
+      + `<span class="pl-name">${pseudo}</span>`
+      + `<span class="pl-label">${gainLabel(g)}</span>`
+      + `<div class="pl-bar"><div class="pl-fill" style="width:${pct}%"></div></div>`;
+    list.appendChild(li);
+  }
+}
+
 function renderPeerTable() {
-  // Direct visibility into what "distance" is actually computed against - the
-  // #1 way this silently breaks is "me" still sitting near the canvas-drag
-  // default (~240,240,0) instead of real game coordinates, because "position
-  // depuis le jeu" wasn't checked or the identity didn't match the plugin's
-  // login, which makes every distance huge and every gain 0 with no error.
   const mode = followGameCheckbox.checked
     ? 'from game'
     : relativeModeCheckbox.checked
@@ -364,10 +389,11 @@ async function join() {
     }, SEND_INTERVAL_MS);
   });
 
-  statusEl.textContent = `connected to room "${roomName}"`;
+  statusEl.textContent = `✅ Connected — you'll hear nearby players automatically`;
+  statusEl.className = 'ok';
   micBtn.disabled = false;
-  micBtn.textContent = 'Enable mic';
-  micBtn.classList.add('mute');
+  micBtn.textContent = '🎤 Enable microphone';
+  micBtn.className = 'muted';
 }
 
 joinBtn.addEventListener('click', join);
@@ -385,6 +411,6 @@ micBtn.addEventListener('click', async () => {
     noiseSuppression: false,
     echoCancellation: false,
   });
-  micBtn.textContent = micEnabled ? 'Mute mic' : 'Enable mic';
-  micBtn.classList.toggle('mute', !micEnabled);
+  micBtn.textContent = micEnabled ? '🔴 Mute microphone' : '🎤 Enable microphone';
+  micBtn.className = micEnabled ? 'live' : 'muted';
 });

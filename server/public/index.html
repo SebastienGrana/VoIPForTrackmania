@@ -2,101 +2,245 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OnZVoIP</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
-  h1 { font-size: 16px; font-weight: 600; color: #9ad; }
-  #controls { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-  input { background: #222; border: 1px solid #444; color: #eee; padding: 4px 8px; border-radius: 4px; }
-  button { background: #2a4; border: none; color: #fff; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
-  button:disabled { background: #444; cursor: not-allowed; }
-  button.mute { background: #a42; }
-  #stage { display: flex; gap: 16px; }
-  canvas { background: #1a1a1a; border: 1px solid #333; border-radius: 6px; cursor: grab; }
-  #status { font-size: 12px; color: #888; margin-bottom: 8px; }
-  table { border-collapse: collapse; font-size: 13px; }
-  td, th { padding: 4px 10px; border-bottom: 1px solid #333; text-align: left; }
-  .hint { font-size: 12px; color: #777; max-width: 340px; }
-  #calib { margin: 12px 0; padding: 10px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; max-width: 340px; }
-  #calib h2 { font-size: 13px; margin: 0 0 8px; color: #9ad; font-weight: 600; }
-  #calib label { display: block; font-size: 12px; margin-bottom: 10px; color: #bbb; }
-  #calib input[type=range] { width: 100%; margin-top: 4px; }
-  #calib .val { color: #4aa8ff; font-variant-numeric: tabular-nums; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: #111;
+    color: #eee;
+    margin: 0;
+    padding: 24px 16px;
+    max-width: 400px;
+  }
+
+  /* Header */
+  .logo { font-size: 22px; font-weight: 700; color: #4aa8ff; margin: 0 0 2px; }
+  .sub  { font-size: 13px; color: #555; margin: 0 0 28px; }
+
+  /* Join row */
+  .join-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .join-row input {
+    flex: 1;
+    background: #1e1e1e;
+    border: 1px solid #3a3a3a;
+    color: #eee;
+    padding: 11px 14px;
+    border-radius: 10px;
+    font-size: 15px;
+  }
+  .join-row input:focus { outline: none; border-color: #4aa8ff; }
+
+  #joinBtn {
+    background: #1d6fbc;
+    border: none;
+    color: #fff;
+    padding: 11px 22px;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  #joinBtn:hover:not(:disabled) { background: #2585d4; }
+  #joinBtn:disabled { background: #2a2a2a; color: #555; cursor: not-allowed; }
+
+  #status { font-size: 13px; color: #666; margin-bottom: 24px; min-height: 18px; }
+  #status.ok { color: #4a9; }
+
+  /* Mic button */
+  #micBtn {
+    display: block;
+    width: 100%;
+    padding: 16px;
+    border-radius: 12px;
+    border: none;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 32px;
+    transition: background .2s, color .2s;
+  }
+  #micBtn.idle    { background: #1e1e1e; color: #555; border: 2px dashed #333; cursor: not-allowed; }
+  #micBtn.muted   { background: #1e1e1e; color: #eee; border: 2px solid #3a3a3a; }
+  #micBtn.muted:hover { border-color: #4a9; }
+  #micBtn.live    { background: #1a4a1a; color: #4c8; border: 2px solid #3a8a3a; }
+  #micBtn.live:hover  { background: #1f5a1f; }
+
+  /* Players list */
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    margin-bottom: 10px;
+  }
+  #playerList { list-style: none; margin: 0 0 32px; padding: 0; }
+  #playerList li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid #1e1e1e;
+  }
+  #playerList li:last-child { border-bottom: none; }
+  .pl-icon  { font-size: 16px; flex-shrink: 0; width: 22px; text-align: center; }
+  .pl-name  { flex: 1; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-label { font-size: 12px; color: #777; flex-shrink: 0; }
+  .pl-bar   { width: 80px; height: 5px; background: #2a2a2a; border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .pl-fill  { height: 100%; background: #4aa8ff; border-radius: 3px; transition: width .15s; }
+  .pl-empty { font-size: 13px; color: #444; font-style: italic; padding: 10px 0; }
+
+  /* Advanced toggle */
+  #advToggle {
+    width: 100%;
+    background: none;
+    border: 1px solid #2a2a2a;
+    color: #666;
+    padding: 9px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: border-color .15s, color .15s;
+  }
+  #advToggle:hover { border-color: #444; color: #999; }
+
+  /* Advanced body */
+  #advBody { margin-top: 12px; padding: 14px; background: #161616; border: 1px solid #242424; border-radius: 10px; }
+
+  canvas { display: block; width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 16px; }
+
+  .adv-section { background: #1e1e1e; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .adv-section:last-child { margin-bottom: 0; }
+  .adv-title { font-size: 11px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+
+  .adv-check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #bbb; cursor: pointer; margin-bottom: 8px; }
+  .adv-check:last-child { margin-bottom: 0; }
+  .adv-check input[type=checkbox] { accent-color: #4aa8ff; width: 15px; height: 15px; flex-shrink: 0; }
+
+  .adv-label { display: block; font-size: 12px; color: #999; margin-bottom: 12px; }
+  .adv-label:last-child { margin-bottom: 0; }
+  .adv-label input[type=range] { display: block; width: 100%; margin-top: 5px; accent-color: #4aa8ff; }
+  .adv-label input[type=text]  {
+    display: block; width: 100%; margin-top: 5px;
+    background: #111; border: 1px solid #333; color: #eee;
+    padding: 6px 10px; border-radius: 6px; font-size: 13px;
+  }
+  .adv-label input[type=text]:focus { outline: none; border-color: #4aa8ff; }
+  .val { color: #4aa8ff; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
+  td, th { padding: 3px 6px; border-bottom: 1px solid #222; text-align: left; color: #888; }
+  td:first-child { color: #ccc; }
+  #meReadout { font-size: 11px; color: #444; margin-bottom: 4px; }
+  #eventLog  { font-size: 11px; color: #444; max-height: 72px; overflow-y: auto; margin-top: 8px; }
 </style>
 </head>
 <body>
-  <h1>OnZVoIP — proximity voice chat</h1>
-  <div id="controls">
-    <input id="identity" placeholder="username" value="Player1" />
+
+  <p class="logo">🎤 OnZVoIP</p>
+  <p class="sub">Proximity voice chat for Trackmania</p>
+
+  <!-- Step 1: join -->
+  <div class="join-row">
+    <input id="identity" placeholder="Your TM login" value="Player1" />
     <button id="joinBtn">Join</button>
-    <button id="micBtn" disabled>Mic off</button>
-    <span id="status">not connected</span>
   </div>
-  <div id="followControls">
-    <label style="font-size: 12px; color: #bbb;">
-      <input type="checkbox" id="followGame" />
-      Position from game (enter your TM login as username above)
-    </label>
-  </div>
+  <div id="status">Not connected</div>
 
-  <div id="relative" style="margin: 12px 0; padding: 10px; background: #1a1a1a; border: 1px solid #333; border-radius: 6px; max-width: 340px;">
-    <label style="font-size: 12px; color: #bbb; display: block; margin-bottom: 8px;">
-      <input type="checkbox" id="relativeMode" />
-      Follow another player at a fixed offset (no second TM account needed)
-    </label>
-    <label style="font-size: 12px; color: #bbb; display: block; margin-bottom: 8px;">
-      Player to follow
-      <input id="relativeTarget" placeholder="other tab's login" style="width: 100%; box-sizing: border-box; margin-top: 2px;" />
-    </label>
-    <label style="font-size: 12px; color: #bbb; display: block; margin-bottom: 8px;">
-      Slider range: ± <span class="val" id="relativeRangeVal" style="color:#4aa8ff"></span> m
-      <input type="range" id="relativeRange" min="10" max="1000" step="10" value="200" style="width: 100%;" />
-    </label>
-    <label style="font-size: 12px; color: #bbb; display: block; margin-bottom: 8px;">
-      X offset (side, panning): <span class="val" id="relativeOffsetXVal" style="color:#4aa8ff"></span> m
-      <input type="range" id="relativeOffsetX" min="-200" max="200" step="5" value="100" style="width: 100%;" />
-    </label>
-    <label style="font-size: 12px; color: #bbb; display: block;">
-      Y offset (front/back, distance): <span class="val" id="relativeOffsetYVal" style="color:#4aa8ff"></span> m
-      <input type="range" id="relativeOffsetY" min="-200" max="200" step="5" value="0" style="width: 100%;" />
-    </label>
-    <p class="hint" style="margin: 8px 0 0 0">To test with two tabs without a second TM account: on this second tab,
-    check this box and enter the login of tab 1 (the one in "position from game" mode).
-    Your position is then computed automatically and adjustable in real time.</p>
-  </div>
-  <div id="stage">
-    <canvas id="canvas" width="480" height="480"></canvas>
-    <div>
-      <p class="hint">You are always at the center. Other players appear in red (opacity = computed volume),
-      and the view auto-scales to the max range ring. Without "position from game" mode, drag the blue dot
-      to move yourself. The mic starts muted to avoid feedback when testing two tabs on the same machine.</p>
+  <!-- Step 2: mic -->
+  <button id="micBtn" class="idle" disabled>🎤 Enable microphone</button>
 
-      <div id="calib">
-        <h2>Distance calibration (game units)</h2>
-        <label>
-          Full volume within <span class="val" id="minDistVal"></span> m
-          <input type="range" id="minDist" min="0" max="500" step="5" />
-        </label>
-        <label>
-          Silence beyond <span class="val" id="maxDistVal"></span> m
-          <input type="range" id="maxDist" min="20" max="2000" step="10" />
-        </label>
-        <label>
-          Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
-          <input type="range" id="panRange" min="10" max="1000" step="10" />
-        </label>
-        <p class="hint" style="margin: 0">Adjustable live while driving — values persist across reloads.
-        Once good values are found, paste them into app.js. To calibrate solo, open
-        <a href="bot.html" target="_blank" style="color: #4aa8ff;">the calibration bot</a> in another tab:
-        it positions itself at a known distance and emits a test sound.</p>
-      </div>
+  <!-- Players nearby -->
+  <div class="section-label">Players nearby</div>
+  <ul id="playerList">
+    <li class="pl-empty">Join a room to see other players</li>
+  </ul>
 
-      <div id="meReadout" style="font-size: 12px; color: #888; margin-bottom: 6px;"></div>
-      <table id="peers"><thead><tr><th>player</th><th>distance</th><th>gain</th><th>pan (-1=L, 1=R)</th><th>audio</th></tr></thead><tbody></tbody></table>
-      <div id="eventLog" style="font-size: 11px; color: #666; margin-top: 8px; max-height: 100px; overflow-y: auto;"></div>
+  <!-- Advanced settings (collapsed) -->
+  <button id="advToggle">
+    <span>⚙ Advanced settings</span>
+    <span id="advArrow">▸</span>
+  </button>
+  <div id="advBody" style="display:none">
+
+    <canvas id="canvas" width="300" height="300"></canvas>
+
+    <div class="adv-section">
+      <div class="adv-title">Position source</div>
+      <label class="adv-check">
+        <input type="checkbox" id="followGame" checked />
+        Use in-game position (requires your TM login as username above)
+      </label>
     </div>
+
+    <div class="adv-section">
+      <div class="adv-title">Follow another player — for testing without a 2nd account</div>
+      <label class="adv-check">
+        <input type="checkbox" id="relativeMode" />
+        Enable follow mode
+      </label>
+      <label class="adv-label">
+        Player to follow
+        <input type="text" id="relativeTarget" placeholder="their TM login" />
+      </label>
+      <label class="adv-label">
+        Offset range ± <span class="val" id="relativeRangeVal"></span> m
+        <input type="range" id="relativeRange" min="10" max="1000" step="10" value="200" />
+      </label>
+      <label class="adv-label">
+        X offset (side / stereo pan): <span class="val" id="relativeOffsetXVal"></span> m
+        <input type="range" id="relativeOffsetX" min="-200" max="200" step="5" value="100" />
+      </label>
+      <label class="adv-label">
+        Y offset (front / back): <span class="val" id="relativeOffsetYVal"></span> m
+        <input type="range" id="relativeOffsetY" min="-200" max="200" step="5" value="0" />
+      </label>
+    </div>
+
+    <div class="adv-section">
+      <div class="adv-title">Distance calibration</div>
+      <label class="adv-label">
+        Full volume within <span class="val" id="minDistVal"></span> m
+        <input type="range" id="minDist" min="0" max="500" step="5" />
+      </label>
+      <label class="adv-label">
+        Silence beyond <span class="val" id="maxDistVal"></span> m
+        <input type="range" id="maxDist" min="20" max="2000" step="10" />
+      </label>
+      <label class="adv-label">
+        Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
+        <input type="range" id="panRange" min="10" max="1000" step="10" />
+      </label>
+    </div>
+
+    <div class="adv-section">
+      <div class="adv-title">Debug</div>
+      <div id="meReadout"></div>
+      <table id="peers">
+        <thead><tr><th>player</th><th>dist</th><th>gain</th><th>pan</th><th>audio</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="eventLog"></div>
+    </div>
+
   </div>
 
+  <script>
+    const advToggle = document.getElementById('advToggle');
+    const advBody   = document.getElementById('advBody');
+    const advArrow  = document.getElementById('advArrow');
+    advToggle.addEventListener('click', () => {
+      const open = advBody.style.display === 'none';
+      advBody.style.display = open ? '' : 'none';
+      advArrow.textContent  = open ? '▾' : '▸';
+    });
+  </script>
   <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.js"></script>
   <script src="app.js"></script>
 </body>
