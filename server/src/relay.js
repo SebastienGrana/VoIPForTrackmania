@@ -37,16 +37,12 @@ export function createRelay({
 
   async function broadcastPosition(msg) {
     if (msg.type !== 'position') return;
-    const { pseudo, x, y, z } = msg;
+    const { pseudo } = msg;
     if (typeof pseudo !== 'string' || pseudo.length === 0) return;
+    const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z);
+    if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return;
 
-    const payload = JSON.stringify({
-      pseudo,
-      x: Number(x) || 0,
-      y: Number(y) || 0,
-      z: Number(z) || 0,
-      ts: Date.now(),
-    });
+    const payload = JSON.stringify({ pseudo, x, y, z, ts: Date.now() });
 
     try {
       await roomService.sendData(roomName, encoder.encode(payload), DataPacket_Kind.LOSSY, {
@@ -69,6 +65,7 @@ export function createRelay({
     socket.setEncoding('utf8');
     socket.on('data', (chunk) => {
       buffer += chunk;
+      if (buffer.length > 4096) { socket.destroy(); return; }
       let nl;
       while ((nl = buffer.indexOf('\n')) !== -1) {
         const line = buffer.slice(0, nl).trim();

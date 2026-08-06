@@ -10,7 +10,7 @@
 // plugin, and the right values can only be found by ear while driving.
 // Defaults below are the old canvas-test values, i.e. NOT yet calibrated -
 // once good values are found in game they should be pasted back here.
-let MIN_DIST = 5;    // full volume within this radius
+let MIN_DIST = 1;    // full volume within this radius
 let MAX_DIST = 150;  // silence beyond this radius
 let PAN_RANGE = 10;  // horizontal offset for fully-panned left/right
 
@@ -187,7 +187,8 @@ requestAnimationFrame(draw);
 function tickGains() {
   applyRelativeMode();
   for (const [pseudo, pos] of peers) {
-    const target = gainForDistance(distance(me, pos));
+    const stale = Date.now() - pos.lastSeen > 3000;
+    const target = stale ? 0 : gainForDistance(distance(me, pos));
     const g = gains.get(pseudo) ?? { current: target, target };
     g.target = target;
     g.current += (g.target - g.current) * LERP_FACTOR; // drives the canvas dot opacity / debug table only
@@ -227,10 +228,13 @@ function renderPlayerList() {
     const pct = Math.round(g * 100);
     const icon = !hasAudio ? '👤' : g > 0.5 ? '🔊' : g > 0.05 ? '🔉' : '🔈';
     const li = document.createElement('li');
-    li.innerHTML = `<span class="pl-icon">${icon}</span>`
-      + `<span class="pl-name">${pseudo}</span>`
-      + `<span class="pl-label">${gainLabel(g)}</span>`
-      + `<div class="pl-bar"><div class="pl-fill" style="width:${pct}%"></div></div>`;
+    const iconEl = document.createElement('span'); iconEl.className = 'pl-icon'; iconEl.textContent = icon;
+    const nameEl = document.createElement('span'); nameEl.className = 'pl-name'; nameEl.textContent = pseudo;
+    const labelEl = document.createElement('span'); labelEl.className = 'pl-label'; labelEl.textContent = gainLabel(g);
+    const barEl = document.createElement('div'); barEl.className = 'pl-bar';
+    const fillEl = document.createElement('div'); fillEl.className = 'pl-fill'; fillEl.style.width = `${pct}%`;
+    barEl.appendChild(fillEl);
+    li.append(iconEl, nameEl, labelEl, barEl);
     list.appendChild(li);
   }
 }
@@ -250,8 +254,12 @@ function renderPeerTable() {
     const pan = panForOffset(pos.x - me.x);
     const hasAudio = audioNodes.has(pseudo);
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${pseudo}</td><td>${d.toFixed(0)}</td><td>${g.toFixed(2)}</td><td>${pan.toFixed(2)}</td>`
-      + `<td style="color:${hasAudio ? '#4c8' : '#a44'}">${hasAudio ? 'OK' : 'no track'}</td>`;
+    for (const [i, val] of [pseudo, d.toFixed(0), g.toFixed(2), pan.toFixed(2), hasAudio ? 'OK' : 'no track'].entries()) {
+      const td = document.createElement('td');
+      td.textContent = val;
+      if (i === 4) td.style.color = hasAudio ? '#4c8' : '#a44';
+      tr.appendChild(td);
+    }
     peersBody.appendChild(tr);
   }
 }
@@ -352,6 +360,7 @@ async function join() {
     // which is the only path that's actually audible.
     const el = track.attach();
     el.muted = true;
+    el.volume = 0;
     el.style.display = 'none';
     document.body.appendChild(el);
 
