@@ -1,0 +1,10 @@
+{
+  "name": "onzvoip-simulator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "simulate-positions.js",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

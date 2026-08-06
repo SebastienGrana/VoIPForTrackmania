@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OnZVoIP — calibration bot</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; margin: 0; padding: 16px; }
+  h1 { font-size: 16px; font-weight: 600; color: #9ad; }
+  input, select { background: #222; border: 1px solid #444; color: #eee; padding: 4px 8px; border-radius: 4px; }
+  button { background: #2a4; border: none; color: #fff; padding: 5px 12px; border-radius: 4px; cursor: pointer; }
+  button:disabled { background: #444; cursor: not-allowed; }
+  label { display: block; font-size: 13px; margin-bottom: 12px; color: #bbb; max-width: 420px; }
+  input[type=range] { width: 100%; margin-top: 4px; }
+  .val { color: #4aa8ff; font-variant-numeric: tabular-nums; }
+  .hint { font-size: 12px; color: #777; max-width: 420px; }
+  #status { font-size: 13px; color: #888; margin-top: 12px; }
+  #readout { font-size: 13px; color: #ccc; margin-top: 8px; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <h1>OnZVoIP — calibration bot</h1>
+  <p class="hint">This bot shadows your car at a chosen offset and emits a test sound, so you can
+  tune distance thresholds by ear without a second player. The sound is not a pure tone (which would
+  stay audible far beyond where speech becomes unintelligible) but band-limited noise pulsed at a
+  syllable-like rate. Open this in a separate tab from the main page.</p>
+
+  <label>
+    TM login of the player to follow
+    <input id="target" placeholder="your in-game login" />
+  </label>
+
+  <label>
+    Slider range: ± <span class="val" id="rangeVal"></span> m
+    <input type="range" id="range" min="10" max="1000" step="10" value="200" />
+  </label>
+
+  <label>
+    X offset (side, panning): <span class="val" id="offsetXVal"></span> m
+    <input type="range" id="offsetX" min="-200" max="200" step="5" value="100" />
+  </label>
+
+  <label>
+    Y offset (front/back, distance): <span class="val" id="offsetYVal"></span> m
+    <input type="range" id="offsetY" min="-200" max="200" step="5" value="0" />
+  </label>
+
+  <label>
+    <input type="checkbox" id="monitor" />
+    Monitor locally (verifies the bot is generating sound, bypasses the network)
+  </label>
+
+  <button id="startBtn">Start bot</button>
+  <div id="status">stopped</div>
+  <div id="readout"></div>
+  <div id="diag"></div>
+
+  <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.js"></script>
+  <script src="bot.js"></script>
+</body>
+</html>
