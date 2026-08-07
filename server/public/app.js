@@ -59,19 +59,20 @@ relativeOffsetYSlider.addEventListener('input', () => { relativeOffsetYVal.textC
 updateRelativeRange();
 
 // Applied once per frame from tickGains(), before distance/gain are computed
-// against "me" - so it must run first. X/Y map directly onto the fields the
-// canvas plots (worldToScreen uses pos.x/pos.y) and the ones distance()/panning
-// use, so dragging these sliders moves the dot exactly where you'd expect on
-// screen - lets a second tab shadow another tracked player at a known offset
-// instead of a mouse-dragged position in an unrelated coordinate space, so
-// testing with 2 tabs doesn't need a 2nd TM account.
+// against "me" - so it must run first. X/Z map directly onto the fields the
+// canvas plots (worldToScreen uses pos.x/pos.z - ManiaPlanet's horizontal
+// plane, Y being altitude, audit #4) and the ones distance()/panning use, so
+// dragging these sliders moves the dot exactly where you'd expect on screen -
+// lets a second tab shadow another tracked player at a known offset instead
+// of a mouse-dragged position in an unrelated coordinate space, so testing
+// with 2 tabs doesn't need a 2nd TM account.
 function applyRelativeMode() {
   if (!relativeModeCheckbox.checked) return;
   const target = peers.get(relativeTargetInput.value.trim());
   if (!target) return; // no position received yet for that login
   me.x = target.x + Number(relativeOffsetXSlider.value);
-  me.y = target.y + Number(relativeOffsetYSlider.value);
-  me.z = target.z;
+  me.z = target.z + Number(relativeOffsetYSlider.value); // "front/back" is depth (Z), not altitude
+  me.y = target.y;
 }
 
 function logEvent(msg) {
@@ -92,8 +93,17 @@ let wsPositionInterval = null;
 // so our own position broadcasts land in the same room instead of the default
 // one. Remove along with the rest of the debug scaffolding before publication.
 let debugJoinedRoom = null;
+// Audit #6: in follow-game mode, "me" starts at the canvas-centre default
+// (below) interpreted as real game coordinates until the first DataReceived
+// for our own identity lands - without this flag that window would compute
+// fantasy distances to real peers and could make someone briefly audible who
+// shouldn't be.
+let meKnown = false;
+followGameCheckbox.addEventListener('change', () => {
+  if (followGameCheckbox.checked) meKnown = false;
+});
 
-const me = { x: canvas.width / 2, y: canvas.height / 2, z: 0 };
+const me = { x: canvas.width / 2, y: 0, z: canvas.height / 2 };
 // pseudo -> { x, y, lastSeen }
 const peers = new Map();
 // pseudo -> { current, target } (gain, mirrored into the debug table)
@@ -114,7 +124,10 @@ function setupCalibration() {
   for (const { id, get, set } of controls) {
     const slider = document.getElementById(id);
     const label = document.getElementById(`${id}Val`);
-    const saved = Number(localStorage.getItem(`onzvoip.${id}`));
+    // v2: bumped from the unversioned `onzvoip.${id}` key so a browser that
+    // calibrated against old defaults doesn't silently keep overriding new
+    // ones after a code change (audit #5) — old keys are simply orphaned.
+    const saved = Number(localStorage.getItem(`onzvoip.v2.${id}`));
     if (saved > 0) set(saved);
 
     const sync = () => { label.textContent = get(); };
@@ -123,7 +136,7 @@ function setupCalibration() {
 
     slider.addEventListener('input', () => {
       set(Number(slider.value));
-      localStorage.setItem(`onzvoip.${id}`, slider.value);
+      localStorage.setItem(`onzvoip.v2.${id}`, slider.value);
       sync();
     });
   }
@@ -137,10 +150,13 @@ setupCalibration();
 // The view is always centred on "me" and scaled so the MAX_DIST ring just
 // fits, so it stays readable whether positions are canvas-sized (drag mode)
 // or real game coordinates in the hundreds (follow mode).
+// Audit #4: this is a top-down radar, so screen-Y must come from game-Z
+// (ManiaPlanet's horizontal plane is X/Z; Y is altitude) — plotting pos.y
+// here made the dot drift with elevation instead of staying put on flat turns.
 function worldToScreen(pos, scale) {
   return {
     x: canvas.width / 2 + (pos.x - me.x) * scale,
-    y: canvas.height / 2 + (pos.y - me.y) * scale,
+    y: canvas.height / 2 + (pos.z - me.z) * scale,
   };
 }
 
@@ -177,9 +193,12 @@ requestAnimationFrame(draw);
 
 function tickGains() {
   applyRelativeMode();
+  // Audit #6: while waiting for our first real in-game position, force
+  // silence instead of computing distance from the placeholder "me".
+  const meReady = !followGameCheckbox.checked || meKnown;
   for (const [pseudo, pos] of peers) {
     const stale = Date.now() - pos.lastSeen > 3000;
-    const target = stale ? 0 : gainForDistance(distance(me, pos), MIN_DIST, MAX_DIST);
+    const target = (!meReady || stale) ? 0 : gainForDistance(distance(me, pos), MIN_DIST, MAX_DIST);
     const g = gains.get(pseudo) ?? { current: target, target };
     g.target = target;
     g.current += (g.target - g.current) * LERP_FACTOR; // drives the canvas dot opacity / debug table only
@@ -208,20 +227,25 @@ function gainLabel(g) {
 
 function renderPlayerList() {
   const list = document.getElementById('playerList');
-  if (peers.size === 0) {
+  // Audit #9: union of peers (have a position) and audioNodes (have a
+  // subscribed track) — a player who's connected with mic open but still in
+  // the menus has audio and no position yet, and must still show up.
+  const identities = new Set([...peers.keys(), ...audioNodes.keys()]);
+  if (identities.size === 0) {
     list.innerHTML = '<li class="pl-empty">No other players in the room yet</li>';
     return;
   }
   list.innerHTML = '';
-  for (const [pseudo] of peers) {
-    const g = gains.get(pseudo)?.current ?? 0;
+  for (const pseudo of identities) {
+    const hasPosition = peers.has(pseudo);
+    const g = hasPosition ? (gains.get(pseudo)?.current ?? 0) : 0;
     const hasAudio = audioNodes.has(pseudo);
     const pct = Math.round(g * 100);
     const icon = !hasAudio ? '👤' : g > 0.5 ? '🔊' : g > 0.05 ? '🔉' : '🔈';
     const li = document.createElement('li');
     const iconEl = document.createElement('span'); iconEl.className = 'pl-icon'; iconEl.textContent = icon;
     const nameEl = document.createElement('span'); nameEl.className = 'pl-name'; nameEl.textContent = pseudo;
-    const labelEl = document.createElement('span'); labelEl.className = 'pl-label'; labelEl.textContent = gainLabel(g);
+    const labelEl = document.createElement('span'); labelEl.className = 'pl-label'; labelEl.textContent = hasPosition ? gainLabel(g) : 'no position yet';
     const barEl = document.createElement('div'); barEl.className = 'pl-bar';
     const fillEl = document.createElement('div'); fillEl.className = 'pl-fill'; fillEl.style.width = `${pct}%`;
     barEl.appendChild(fillEl);
@@ -276,7 +300,7 @@ canvas.addEventListener('mousemove', (e) => {
   const x = e.clientX - r.left, y = e.clientY - r.top;
   const scale = (Math.min(canvas.width, canvas.height) / 2 - 20) / Math.max(MAX_DIST, 1);
   me.x += (x - lastMouse.x) / scale;
-  me.y += (y - lastMouse.y) / scale;
+  me.z += (y - lastMouse.y) / scale; // screen-Y drives depth (Z), matching worldToScreen
   lastMouse = { x, y };
 });
 
@@ -333,6 +357,7 @@ function attachRoomEvents(newRoom) {
         if (isFinite(x) && isFinite(y) && isFinite(z)
             && Math.abs(x) < 1e6 && Math.abs(y) < 1e6 && Math.abs(z) < 1e6) {
           me.x = x; me.y = y; me.z = z;
+          meKnown = true;
         }
       }
       return;
@@ -355,6 +380,20 @@ function attachRoomEvents(newRoom) {
   newRoom.on(LivekitClient.RoomEvent.TrackSubscribed, (track, _pub, participant) => {
     logEvent(`TrackSubscribed: ${participant.identity} (kind=${track.kind})`);
     if (track.kind !== LivekitClient.Track.Kind.Audio) return;
+
+    // Audit #10: a re-subscription (mic republish after a network hiccup or
+    // device change) must not leave the previous WebAudio graph dangling -
+    // audioNodes.set() below would otherwise just overwrite the map entry,
+    // leaking the old nodes and doubling the audio at whatever gain they were
+    // last set to.
+    const existing = audioNodes.get(participant.identity);
+    if (existing) {
+      try { existing.source.disconnect(); } catch {}
+      try { existing.panner.disconnect(); } catch {}
+      try { existing.gainNode.disconnect(); } catch {}
+      if (existing.el) existing.el.remove();
+      audioNodes.delete(participant.identity);
+    }
 
     // Chrome quirk: a remote WebRTC audio track that's only ever fed into Web
     // Audio (createMediaStreamSource) and never actually "played" through a
@@ -403,7 +442,14 @@ async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
 
   const newRoom = new LivekitClient.Room();
   attachRoomEvents(newRoom);
-  await newRoom.connect(wsUrl, token);
+  try {
+    await newRoom.connect(wsUrl, token);
+  } catch (err) {
+    // Audit #7: let callers reset their own UI (join button, identity field,
+    // status text) instead of leaving them stuck on "Connexion...".
+    logEvent(`LiveKit connect failed: ${err.message}`);
+    throw err;
+  }
   await newRoom.localParticipant.setMicrophoneEnabled(false);
 
   room = newRoom;
@@ -478,7 +524,13 @@ async function handleRoomPush(msg) {
   const { token, wsUrl, room: roomName, login, serverName } = await res.json();
   const wasMicEnabled = micEnabled;
   await disconnectLiveKit();
-  await connectLiveKit({ token, wsUrl, roomName, login, serverName });
+  try {
+    await connectLiveKit({ token, wsUrl, roomName, login, serverName });
+  } catch (err) {
+    statusEl.textContent = `Erreur de connexion: ${err.message}`;
+    statusEl.className = '';
+    return;
+  }
   // Restore mic state in the new room.
   if (wasMicEnabled && room) {
     await room.localParticipant.setMicrophoneEnabled(true, {
@@ -507,7 +559,13 @@ async function connectViaNonce(nonce) {
   }
   const { token, wsUrl, room: roomName, login, serverName } = await res.json();
   myIdentity = login;
-  await connectLiveKit({ token, wsUrl, roomName, login, serverName });
+  try {
+    await connectLiveKit({ token, wsUrl, roomName, login, serverName });
+  } catch (err) {
+    statusEl.textContent = `Erreur de connexion: ${err.message}`;
+    statusEl.className = '';
+    return;
+  }
   startIngestWs(login);
 }
 
@@ -546,7 +604,15 @@ async function join() {
     audioCtx.resume().then(() => logEvent(`AudioContext.resume() -> ${audioCtx.state}`));
   }
 
-  await connectLiveKit({ token, wsUrl, roomName, login: identity, serverName: null });
+  try {
+    await connectLiveKit({ token, wsUrl, roomName, login: identity, serverName: null });
+  } catch (err) {
+    statusEl.textContent = `Erreur de connexion: ${err.message}`;
+    statusEl.className = '';
+    joinBtn.disabled = false;
+    identityInput.disabled = false;
+    return;
+  }
   startIngestWs(identity);
 }
 

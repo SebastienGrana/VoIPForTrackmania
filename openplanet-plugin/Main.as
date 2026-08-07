@@ -49,7 +49,10 @@ void Main() {
         yield();
         int64 now = Time::Now;
 
-        if (g_socket is null || !g_socket.IsReady()) {
+        // Audit #12: IsReady() alone misses a relay restart — the socket can
+        // report ready while the peer has actually hung up. IsHungUp() catches
+        // that so the plugin reconnects instead of silently sending nothing.
+        if (g_socket is null || !g_socket.IsReady() || g_socket.IsHungUp()) {
             g_loggedConnected = false;
             g_nonce = "";          // stale nonce after disconnect
             if (now - g_lastConnectAttemptAt < RECONNECT_INTERVAL_MS) continue;
