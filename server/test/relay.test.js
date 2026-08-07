@@ -165,7 +165,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'velp', server: 'droppie_lolmaps', serverName: '$OLOLMAPS', x: 10, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       const call = mockService.calls[before];
       assert.ok(call, 'sendData must have been called');
       // First argument to sendData is the room name
@@ -178,7 +179,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'velp', x: 10, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       const call = mockService.calls[before];
       assert.ok(call, 'sendData must have been called');
       assert.strictEqual(call[0], ROOM, 'no server → must fall back to default room');
@@ -190,7 +192,8 @@ describe('OnZVoIP relay', () => {
         JSON.stringify({ type: 'position', pseudo: 'a', server: 'srv-one', serverName: 'One', x: 1, y: 0, z: 0 }),
         JSON.stringify({ type: 'position', pseudo: 'b', server: 'srv-two', serverName: 'Two', x: 1, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.ok(mockService.calls.length >= before + 2);
       const room1 = mockService.calls[before][0];
       const room2 = mockService.calls[before + 1][0];
@@ -203,11 +206,14 @@ describe('OnZVoIP relay', () => {
         JSON.stringify({ type: 'position', pseudo: 'a', server: 'same-srv', serverName: 'Same', x: 1, y: 0, z: 0 }),
         JSON.stringify({ type: 'position', pseudo: 'b', server: 'same-srv', serverName: 'Same', x: 2, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
-      assert.ok(mockService.calls.length >= before + 2);
-      const room1 = mockService.calls[before][0];
-      const room2 = mockService.calls[before + 1][0];
-      assert.strictEqual(room1, room2, 'same server login must always map to the same room');
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
+      // Both positions land in the same room, so the #27 aggregation collapses
+      // them into ONE sendData call carrying both entries, not two calls.
+      assert.strictEqual(mockService.calls.length, before + 1, 'same-room positions must be aggregated into a single call');
+      const positions = JSON.parse(new TextDecoder().decode(mockService.calls[before][1]));
+      const pseudos = positions.map(p => p.pseudo).sort();
+      assert.deepStrictEqual(pseudos, ['a', 'b'], 'both players must appear in the aggregated broadcast');
     });
   });
 
@@ -217,7 +223,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'velp', x: 10, y: 20, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.ok(mockService.calls.length > before, 'sendData should have been called');
     });
 
@@ -226,11 +233,15 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'testplayer', x: 42, y: 7, z: 3 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       const call = mockService.calls[before];
       assert.ok(call, 'sendData should have been called');
-      const payload = JSON.parse(new TextDecoder().decode(call[1]));
-      assert.strictEqual(payload.pseudo, 'testplayer');
+      // #27: the payload is now an array of positions, not a single object.
+      const positions = JSON.parse(new TextDecoder().decode(call[1]));
+      assert.ok(Array.isArray(positions), 'payload must be an array');
+      const payload = positions.find(p => p.pseudo === 'testplayer');
+      assert.ok(payload, 'testplayer must be in the broadcast');
       assert.strictEqual(payload.x, 42);
       assert.strictEqual(payload.y, 7);
       assert.strictEqual(payload.z, 3);
@@ -242,7 +253,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'ping', pseudo: 'velp', x: 0, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.strictEqual(mockService.calls.length, before);
     });
 
@@ -251,7 +263,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: '', x: 0, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.strictEqual(mockService.calls.length, before);
     });
 
@@ -269,10 +282,18 @@ describe('OnZVoIP relay', () => {
         JSON.stringify({ type: 'position', pseudo: 'b', x: 3, y: 4, z: 0 }),
         JSON.stringify({ type: 'position', pseudo: 'c', x: 5, y: 6, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 150));
-      assert.ok(
-        mockService.calls.length >= before + 3,
-        `expected ≥3 new calls, got ${mockService.calls.length - before}`,
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
+      // All three share the default room, so #27 aggregation puts them in one
+      // sendData call carrying all three entries, not three separate calls.
+      const call = mockService.calls[before];
+      assert.ok(call, 'sendData should have been called');
+      const positions = JSON.parse(new TextDecoder().decode(call[1]));
+      const pseudos = positions.map(p => p.pseudo).sort();
+      assert.deepStrictEqual(
+        ['a', 'b', 'c'].filter(p => pseudos.includes(p)),
+        ['a', 'b', 'c'],
+        `expected a, b, c in the aggregated broadcast, got ${JSON.stringify(pseudos)}`,
       );
     });
   });
@@ -285,14 +306,16 @@ describe('OnZVoIP relay', () => {
       const before = mockService.calls.length;
       // Cannot JSON.stringify NaN (becomes null), so send the raw JSON literal.
       await tcpSend(TCP_PORT, ['{"type":"position","pseudo":"velp","x":NaN,"y":0,"z":0}']);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.strictEqual(mockService.calls.length, before);
     });
 
     test('x = Infinity → rejected, no broadcast', async () => {
       const before = mockService.calls.length;
       await tcpSend(TCP_PORT, ['{"type":"position","pseudo":"velp","x":Infinity,"y":0,"z":0}']);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.strictEqual(mockService.calls.length, before);
     });
 
@@ -304,7 +327,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'velp', x: null, y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       // Current behaviour: passes through as (0,0,0). Documented, not asserted
       // strict either way — this test exists to make the next change conscious.
       const delta = mockService.calls.length - before;
@@ -316,7 +340,8 @@ describe('OnZVoIP relay', () => {
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'velp', x: 'abc', y: 0, z: 0 }),
       ]);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
       assert.strictEqual(mockService.calls.length, before);
     });
 

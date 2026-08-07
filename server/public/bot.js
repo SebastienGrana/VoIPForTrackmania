@@ -136,13 +136,17 @@ async function start() {
 
   room.on(LivekitClient.RoomEvent.DataReceived, (payload, _participant, _kind, topic) => {
     if (topic !== 'position') return;
-    let msg;
+    let positions;
     try {
-      msg = JSON.parse(new TextDecoder().decode(payload));
+      positions = JSON.parse(new TextDecoder().decode(payload));
     } catch {
       return;
     }
-    if (msg.pseudo === target) targetPos = { x: msg.x, y: msg.y, z: msg.z || 0 };
+    // Audit #27: the relay now broadcasts an array of positions per tick.
+    if (!Array.isArray(positions)) return;
+    for (const msg of positions) {
+      if (msg.pseudo === target) targetPos = { x: msg.x, y: msg.y, z: msg.z || 0 };
+    }
   });
 
   await room.connect(wsUrl, token);

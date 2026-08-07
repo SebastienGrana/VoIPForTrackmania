@@ -42,6 +42,12 @@ Volume and panning are computed **client-side** — LiveKit (an SFU) distributes
 
 ---
 
+## Privacy
+
+The voice room is **global and unauthenticated**: anyone who opens the room URL — including people who are not connected to the game server — can see every player's Trackmania login and exact in-game position, broadcast in real time, and can join the voice chat itself. There is no per-server access control today. Don't share the URL outside your community, and be aware that your login and position are visible to anyone who has it.
+
+---
+
 ## Local development
 
 ```bash

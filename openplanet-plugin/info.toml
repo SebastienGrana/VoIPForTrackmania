@@ -1,5 +1,6 @@
 [meta]
-name     = "OnZVoIP"
-author   = "VELP"
-category = "Multiplayer"
-version  = "0.1.0"
+name        = "OnZVoIP"
+author      = "VELP"
+category    = "Multiplayer"
+version     = "0.1.0"
+description = "Proximity voice chat for Trackmania. Note: the voice room is global and unauthenticated — anyone with the room URL, including players not on your game server, can see your login and exact position and can join the voice chat."

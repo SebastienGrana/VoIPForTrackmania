@@ -76,8 +76,36 @@ export function createRelay({
   tcpMaxConnections = 1000,
   tcpIdleTimeoutMs = 30_000,
   enableCalibrationBot = false,
+  positionBroadcastIntervalMs = 100,
 }) {
   const encoder = new TextEncoder();
+  // Audit #27: broadcastPosition() used to call roomService.sendData() once
+  // per incoming position (one HTTP call to the LiveKit API per player per
+  // tick — at 5Hz/10 players that's 50 req/s and grows linearly with room
+  // size). Instead, incoming positions just update the latest-known map below;
+  // a single timer per relay flushes each room's pending positions as ONE
+  // aggregated sendData() call at positionBroadcastIntervalMs (5-10Hz is
+  // plenty for audio panning). The map is cleared after each flush so a
+  // player who stops sending (disconnect) simply stops appearing in future
+  // broadcasts, instead of their last position being resent forever.
+  const pendingPositions = new Map(); // room → Map(pseudo → {x, y, z, ts})
+
+  async function flushPositions() {
+    for (const [room, posMap] of pendingPositions) {
+      if (posMap.size === 0) continue;
+      const positions = Array.from(posMap, ([pseudo, p]) => ({ pseudo, ...p }));
+      posMap.clear();
+      const payload = JSON.stringify(positions);
+      try {
+        await roomService.sendData(room, encoder.encode(payload), DataPacket_Kind.LOSSY, {
+          topic: 'position',
+        });
+      } catch (err) {
+        console.error('sendData failed:', err.message);
+      }
+    }
+  }
+  const positionFlushTimer = setInterval(flushPositions, positionBroadcastIntervalMs).unref();
   // Étape 4/5: track which WebSocket belongs to which browser login so the
   // relay can push room-change notifications when the plugin sends a new nonce.
   const browserSockets = new Map(); // login → WebSocket
@@ -162,7 +190,7 @@ export function createRelay({
 
   const server = http.createServer(app);
 
-  async function broadcastPosition(msg) {
+  function broadcastPosition(msg) {
     if (msg.type !== 'position') return;
     const { pseudo } = msg;
     if (typeof pseudo !== 'string' || pseudo.length === 0 || pseudo.length > 64) return;
@@ -185,14 +213,12 @@ export function createRelay({
         ? (roomNameFor(serverLogin, msg.serverName) ?? roomName)
         : roomName;
 
-    const payload = JSON.stringify({ pseudo, x, y, z, ts: Date.now() });
-    try {
-      await roomService.sendData(targetRoom, encoder.encode(payload), DataPacket_Kind.LOSSY, {
-        topic: 'position',
-      });
-    } catch (err) {
-      console.error('sendData failed:', err.message);
+    let posMap = pendingPositions.get(targetRoom);
+    if (!posMap) {
+      posMap = new Map();
+      pendingPositions.set(targetRoom, posMap);
     }
+    posMap.set(pseudo, { x, y, z, ts: Date.now() });
   }
 
   function handleMessage(msg) {
@@ -282,5 +308,5 @@ export function createRelay({
     socket.on('error', (err) => console.error('TCP ingest: socket error:', err.message));
   });
 
-  return { app, server, tcpServer, nonces };
+  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer };
 }

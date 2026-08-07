@@ -110,6 +110,18 @@ const peers = new Map();
 const gains = new Map();
 // pseudo -> { source, panner, gainNode, el } - the actual WebAudio graph per remote player
 const audioNodes = new Map();
+// Audit #31: with autoSubscribe:false, LiveKit no longer subscribes us to every
+// participant's mic automatically - we do it ourselves based on distance, so a
+// room with many far-away players doesn't cost bandwidth/CPU for audio nobody
+// will hear. pseudo -> RemoteTrackPublication (audio only).
+const audioPublications = new Map();
+// pseudos we're currently subscribed to, so tickGains only calls
+// setSubscribed() on an actual state change instead of every frame.
+const subscribedPeers = new Set();
+// Unsubscribe only once meaningfully past MAX_DIST (20% margin) so a player
+// hovering right at the edge doesn't cause rapid subscribe/unsubscribe
+// thrashing (each toggle re-negotiates the WebRTC track).
+const UNSUBSCRIBE_MARGIN = 1.2;
 
 // Calibration sliders: each one writes its live value straight into the
 // matching constant above, and remembers it in localStorage so a page reload
@@ -160,6 +172,16 @@ function worldToScreen(pos, scale) {
   };
 }
 
+// Audit #21: the canvas radar and the peer/player tables all live in either
+// the always-visible player list or the collapsed-by-default Advanced panel.
+// Redrawing them at the 60Hz of requestAnimationFrame burned CPU on DOM work
+// nobody could see. draw()/renderPeerTable() only run from the throttled
+// RENDER_INTERVAL_MS timer below, and are skipped outright while #optBody is
+// collapsed; renderPlayerList() still runs there too since it's the one
+// thing players actually look at, just no longer 60 times a second.
+const RENDER_INTERVAL_MS = 100; // ~10Hz, plenty for a status readout
+const optBody = document.getElementById('optBody');
+
 function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -186,10 +208,7 @@ function draw() {
   ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#9cf';
   ctx.fillText(myIdentity ? `${myIdentity} (you)` : 'you', cx + 12, cy + 4);
-
-  requestAnimationFrame(draw);
 }
-requestAnimationFrame(draw);
 
 function tickGains() {
   applyRelativeMode();
@@ -198,7 +217,8 @@ function tickGains() {
   const meReady = !followGameCheckbox.checked || meKnown;
   for (const [pseudo, pos] of peers) {
     const stale = Date.now() - pos.lastSeen > 3000;
-    const target = (!meReady || stale) ? 0 : gainForDistance(distance(me, pos), MIN_DIST, MAX_DIST);
+    const dist = distance(me, pos);
+    const target = (!meReady || stale) ? 0 : gainForDistance(dist, MIN_DIST, MAX_DIST);
     const g = gains.get(pseudo) ?? { current: target, target };
     g.target = target;
     g.current += (g.target - g.current) * LERP_FACTOR; // drives the canvas dot opacity / debug table only
@@ -210,12 +230,32 @@ function tickGains() {
       nodes.gainNode.gain.setTargetAtTime(target, now, AUDIO_SMOOTHING_SEC);
       nodes.panner.pan.setTargetAtTime(panForOffset(pos.x - me.x, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
     }
+
+    // Audit #31: subscribe/unsubscribe from this peer's audio based on distance.
+    const pub = audioPublications.get(pseudo);
+    if (pub) {
+      const inRange = meReady && !stale && dist <= MAX_DIST;
+      const wellOutOfRange = stale || !meReady || dist > MAX_DIST * UNSUBSCRIBE_MARGIN;
+      if (inRange && !subscribedPeers.has(pseudo)) {
+        pub.setSubscribed(true);
+        subscribedPeers.add(pseudo);
+      } else if (wellOutOfRange && subscribedPeers.has(pseudo)) {
+        pub.setSubscribed(false);
+        subscribedPeers.delete(pseudo);
+      }
+    }
   }
-  renderPeerTable();
-  renderPlayerList();
   requestAnimationFrame(tickGains);
 }
 requestAnimationFrame(tickGains);
+
+setInterval(() => {
+  renderPlayerList();
+  if (optBody.style.display !== 'none') {
+    renderPeerTable();
+    draw();
+  }
+}, RENDER_INTERVAL_MS);
 
 function gainLabel(g) {
   if (g > 0.8) return 'Very close';
@@ -334,6 +374,8 @@ function purgeAll() {
     if (nodes.el) nodes.el.remove();
   }
   audioNodes.clear();
+  audioPublications.clear();
+  subscribedPeers.clear();
 }
 
 async function disconnectLiveKit() {
@@ -347,31 +389,62 @@ async function disconnectLiveKit() {
 function attachRoomEvents(newRoom) {
   newRoom.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     if (topic !== 'position') return;
-    const msg = decodePosition(payload);
-    if (!msg) return;
-    if (msg.pseudo === myIdentity) {
-      // Our own position coming back from the game: in follow mode this is
-      // where "me" comes from (the car), instead of the dragged canvas dot.
-      if (followGameCheckbox.checked) {
-        const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z ?? 0);
-        if (isFinite(x) && isFinite(y) && isFinite(z)
-            && Math.abs(x) < 1e6 && Math.abs(y) < 1e6 && Math.abs(z) < 1e6) {
-          me.x = x; me.y = y; me.z = z;
-          meKnown = true;
+    // Audit #27: the relay now aggregates every player's latest position into
+    // one array per broadcast instead of one message per player, so this
+    // handler runs the same per-position logic in a loop instead of once.
+    const positions = decodePosition(payload);
+    if (!Array.isArray(positions)) return;
+    for (const msg of positions) {
+      if (!msg) continue;
+      if (msg.pseudo === myIdentity) {
+        // Our own position coming back from the game: in follow mode this is
+        // where "me" comes from (the car), instead of the dragged canvas dot.
+        if (followGameCheckbox.checked) {
+          const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z ?? 0);
+          if (isFinite(x) && isFinite(y) && isFinite(z)
+              && Math.abs(x) < 1e6 && Math.abs(y) < 1e6 && Math.abs(z) < 1e6) {
+            me.x = x; me.y = y; me.z = z;
+            meKnown = true;
+          }
         }
+        continue;
       }
-      return;
+      const px = Number(msg.x), py = Number(msg.y), pz = Number(msg.z ?? 0);
+      if (!isFinite(px) || !isFinite(py) || !isFinite(pz)
+          || Math.abs(px) >= 1e6 || Math.abs(py) >= 1e6 || Math.abs(pz) >= 1e6) continue;
+      const pseudo = typeof msg.pseudo === 'string' && msg.pseudo.length <= 64 ? msg.pseudo : null;
+      if (!pseudo) continue;
+      peers.set(pseudo, { x: px, y: py, z: pz, lastSeen: Date.now() });
     }
-    const px = Number(msg.x), py = Number(msg.y), pz = Number(msg.z ?? 0);
-    if (!isFinite(px) || !isFinite(py) || !isFinite(pz)
-        || Math.abs(px) >= 1e6 || Math.abs(py) >= 1e6 || Math.abs(pz) >= 1e6) return;
-    const pseudo = typeof msg.pseudo === 'string' && msg.pseudo.length <= 64 ? msg.pseudo : null;
-    if (!pseudo) return;
-    peers.set(pseudo, { x: px, y: py, z: pz, lastSeen: Date.now() });
   });
 
-  newRoom.on(LivekitClient.RoomEvent.ParticipantConnected, (p) => logEvent(`participant joined: ${p.identity}`));
-  newRoom.on(LivekitClient.RoomEvent.ParticipantDisconnected, (p) => logEvent(`participant left: ${p.identity}`));
+  // Audit #31: with autoSubscribe:false, tickGains() decides when to subscribe
+  // to a participant's mic, but it needs the RemoteTrackPublication to call
+  // setSubscribed() on - TrackPublished is how we learn it exists. registerPublications()
+  // also covers participants who published before we joined (their publications
+  // are already present on the RemoteParticipant, no separate event fires for those).
+  function registerPublications(participant) {
+    for (const pub of participant.trackPublications.values()) {
+      if (pub.kind === LivekitClient.Track.Kind.Audio) audioPublications.set(participant.identity, pub);
+    }
+  }
+
+  newRoom.on(LivekitClient.RoomEvent.ParticipantConnected, (p) => {
+    logEvent(`participant joined: ${p.identity}`);
+    registerPublications(p);
+  });
+  newRoom.on(LivekitClient.RoomEvent.ParticipantDisconnected, (p) => {
+    logEvent(`participant left: ${p.identity}`);
+    audioPublications.delete(p.identity);
+    subscribedPeers.delete(p.identity);
+  });
+  newRoom.on(LivekitClient.RoomEvent.TrackPublished, (pub, participant) => {
+    if (pub.kind === LivekitClient.Track.Kind.Audio) audioPublications.set(participant.identity, pub);
+  });
+  newRoom.on(LivekitClient.RoomEvent.TrackUnpublished, (pub, participant) => {
+    audioPublications.delete(participant.identity);
+    subscribedPeers.delete(participant.identity);
+  });
 
   // Routes each remote player's mic through its own WebAudio graph instead of
   // a plain <audio> element, so gain AND stereo pan can be driven per-peer
@@ -443,12 +516,21 @@ async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
   const newRoom = new LivekitClient.Room();
   attachRoomEvents(newRoom);
   try {
-    await newRoom.connect(wsUrl, token);
+    // Audit #31: don't auto-subscribe to every participant's audio - tickGains()
+    // subscribes/unsubscribes per peer based on distance instead.
+    await newRoom.connect(wsUrl, token, { autoSubscribe: false });
   } catch (err) {
     // Audit #7: let callers reset their own UI (join button, identity field,
     // status text) instead of leaving them stuck on "Connexion...".
     logEvent(`LiveKit connect failed: ${err.message}`);
     throw err;
+  }
+  // Participants already in the room published their tracks before we connected,
+  // so no TrackPublished event fires for them - register directly.
+  for (const participant of newRoom.remoteParticipants.values()) {
+    for (const pub of participant.trackPublications.values()) {
+      if (pub.kind === LivekitClient.Track.Kind.Audio) audioPublications.set(participant.identity, pub);
+    }
   }
   await newRoom.localParticipant.setMicrophoneEnabled(false);
 
