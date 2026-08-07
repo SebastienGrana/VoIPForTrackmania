@@ -122,6 +122,11 @@ const subscribedPeers = new Set();
 // hovering right at the edge doesn't cause rapid subscribe/unsubscribe
 // thrashing (each toggle re-negotiates the WebRTC track).
 const UNSUBSCRIBE_MARGIN = 1.2;
+// Sécurité restante: a peer whose position hasn't been re-broadcast in this
+// long is treated as gone for good (server crash, alt-tab, network cut) -
+// past the ordinary 3s "stale" mute, its entry is dropped from peers/gains
+// instead of sitting in the Map for the rest of the session.
+const PEER_GC_MS = 60_000;
 
 // Calibration sliders: each one writes its live value straight into the
 // matching constant above, and remembers it in localStorage so a page reload
@@ -254,6 +259,18 @@ setInterval(() => {
   if (optBody.style.display !== 'none') {
     renderPeerTable();
     draw();
+  }
+
+  // Sécurité restante: drop peers that stopped broadcasting a long time ago -
+  // tickGains() only mutes/unsubscribes stale peers, it never removes them,
+  // so without this the Maps grow for the rest of the session as players
+  // come and go on a busy server.
+  const now = Date.now();
+  for (const [pseudo, pos] of peers) {
+    if (now - pos.lastSeen > PEER_GC_MS) {
+      peers.delete(pseudo);
+      gains.delete(pseudo);
+    }
   }
 }, RENDER_INTERVAL_MS);
 
@@ -437,6 +454,19 @@ function attachRoomEvents(newRoom) {
     logEvent(`participant left: ${p.identity}`);
     audioPublications.delete(p.identity);
     subscribedPeers.delete(p.identity);
+
+    // Sécurité restante: don't rely on TrackUnsubscribed to also fire here -
+    // on an abrupt network loss it sometimes doesn't, which would otherwise
+    // leak this participant's WebAudio graph and hidden <audio> element for
+    // the rest of the session.
+    const nodes = audioNodes.get(p.identity);
+    if (nodes) {
+      try { nodes.source.disconnect(); } catch {}
+      try { nodes.panner.disconnect(); } catch {}
+      try { nodes.gainNode.disconnect(); } catch {}
+      if (nodes.el) nodes.el.remove();
+      audioNodes.delete(p.identity);
+    }
   });
   newRoom.on(LivekitClient.RoomEvent.TrackPublished, (pub, participant) => {
     if (pub.kind === LivekitClient.Track.Kind.Audio) audioPublications.set(participant.identity, pub);
