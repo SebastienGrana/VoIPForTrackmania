@@ -12,7 +12,7 @@ Proximity voice chat for **Trackmania² Stadium (ManiaPlanet)**. Players who are
 
 1. Open your ManiaPlanet `Openplanet4` folder (usually `C:\Users\<you>\Openplanet4\Plugins`)
 2. Create a subfolder named `OnZVoIP`
-3. Copy [`openplanet-plugin/Main.as`](openplanet-plugin/Main.as) and [`openplanet-plugin/info.toml`](openplanet-plugin/info.toml) into it
+3. Copy [`openplanet-plugin/Main.as`](openplanet-plugin/Main.as), [`openplanet-plugin/Settings.as`](openplanet-plugin/Settings.as), and [`openplanet-plugin/info.toml`](openplanet-plugin/info.toml) into it
 4. In-game: open the OpenPlanet overlay → Plugin Manager → **Reload plugins**
 
 The plugin window **OnZVoIP** will appear. It shows your relay connection status and your Trackmania login.
@@ -79,14 +79,12 @@ npm start
 
 Config templates for running LiveKit and the relay as systemd services behind a Caddy HTTPS reverse proxy live in [`deploy/`](deploy/) — see [`deploy/README.md`](deploy/README.md) for install steps.
 
-### Update the plugin to point to your server
+### Point the plugin at your server
 
-Edit the constants at the top of `openplanet-plugin/Main.as`:
+No rebuild needed — in-game, open the OpenPlanet overlay → Settings → Plugins → **OnZVoIP** and set:
 
-```angelscript
-const string RELAY_HOST = "your.vps.ip";   // TCP ingest
-const string VOIP_URL   = "https://your.domain.example";
-```
+- **Relay host** / **Relay port** — TCP ingest address of your relay
+- **Voice chat URL** — your web client's URL (must point at the same relay)
 
 ---
 

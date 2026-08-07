@@ -12,13 +12,10 @@
 // prints its status to the OpenPlanet log, including exactly which step of
 // TryGetLocalPlayerPosition() is failing when it can't read a position.
 
-// Edit RELAY_HOST for your setup: 127.0.0.1 for the local docker-compose
-// stack on the same machine as the game, your LAN IP if the relay runs on
-// another machine on your network, or the VPS's public IP once deployed
-// (ETAPE 1/2 in todo.txt).
-const string RELAY_HOST = "62.238.61.115";
-const uint16 RELAY_PORT = 8081;
-const string VOIP_URL = "https://62.238.61.115.sslip.io";
+// #32: relay host/port and voice-chat URL now live in Settings.as, editable
+// from the OpenPlanet overlay (Settings → Plugins → OnZVoIP) instead of
+// hardcoded here — lets another community self-host without rebuilding the
+// plugin. Defaults point at the ONZSM community server.
 const int SEND_INTERVAL_MS = 200;
 const int RECONNECT_INTERVAL_MS = 2000;
 const int DIAG_INTERVAL_MS = 3000;
@@ -62,7 +59,7 @@ void Main() {
         }
 
         if (!g_loggedConnected) {
-            print("OnZVoIP: connected to relay at " + RELAY_HOST + ":" + RELAY_PORT);
+            print("OnZVoIP: connected to relay at " + S_RelayHost + ":" + S_RelayPort);
             g_loggedConnected = true;
         }
 
@@ -180,7 +177,7 @@ void RenderInterface() {
 
     // A-bis: URL now carries a nonce instead of the raw login — the relay
     // derives identity and room from the nonce so the user has nothing to check.
-    string url = g_nonce != "" ? VOIP_URL + "?t=" + g_nonce : VOIP_URL;
+    string url = g_nonce != "" ? S_VoipUrl + "?t=" + g_nonce : S_VoipUrl;
 
     UI::SetNextWindowSize(240, 0, UI::Cond::FirstUseEver);
     UI::Begin("OnZVoIP");
@@ -252,9 +249,9 @@ bool TryGetServerInfo(string &out login, string &out name, string &out failReaso
 }
 
 void TryConnect() {
-    print("OnZVoIP: connecting to " + RELAY_HOST + ":" + RELAY_PORT + "...");
+    print("OnZVoIP: connecting to " + S_RelayHost + ":" + S_RelayPort + "...");
     @g_socket = Net::Socket();
-    if (!g_socket.Connect(RELAY_HOST, RELAY_PORT)) {
+    if (!g_socket.Connect(S_RelayHost, uint16(S_RelayPort))) {
         print("OnZVoIP: Connect() returned false immediately (relay unreachable at that host:port?)");
         @g_socket = null;
     }
