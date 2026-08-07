@@ -26,6 +26,31 @@ setInterval(() => {
   }
 }, 30_000).unref();
 
+// Simple fixed-window rate limiter, keyed by caller (IP for HTTP, socket for
+// TCP/WS). Kept dependency-free since express-rate-limit isn't installed.
+function createRateLimiter({ windowMs, max }) {
+  const hits = new Map(); // key → { count, resetAt }
+  const interval = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) {
+      if (v.resetAt < now) hits.delete(k);
+    }
+  }, windowMs).unref();
+  return {
+    allow(key) {
+      const now = Date.now();
+      let entry = hits.get(key);
+      if (!entry || entry.resetAt < now) {
+        entry = { count: 0, resetAt: now + windowMs };
+        hits.set(key, entry);
+      }
+      entry.count++;
+      return entry.count <= max;
+    },
+    stop() { clearInterval(interval); },
+  };
+}
+
 function validateLogin(raw) {
   if (typeof raw !== 'string') return null;
   const s = raw.trim();
@@ -54,10 +79,22 @@ export function createRelay({
   // relay can push room-change notifications when the plugin sends a new nonce.
   const browserSockets = new Map(); // login → WebSocket
 
+  // Rate-limiting (ORDRE D'IMPLÉMENTATION point 4): a handful of token
+  // requests per join is normal, dozens per second is a scripted attack.
+  // Ingestion is per-connection since positions are unauthenticated (per
+  // socket, not per login, since the login itself isn't verified yet).
+  const tokenLimiter = createRateLimiter({ windowMs: 60_000, max: 30 }); // per IP
+  const TCP_MAX_MSG_PER_SEC = 30;
+  const WS_MAX_MSG_PER_SEC = 30;
+
   const app = express();
   app.use(express.static(staticDir));
 
   app.get('/token', async (req, res) => {
+    if (!tokenLimiter.allow(req.ip)) {
+      res.status(429).json({ error: 'too many requests' });
+      return;
+    }
     // --- A-bis path: token derived from one-time nonce ---
     const t = String(req.query.t || '').trim();
     if (t) {
@@ -165,7 +202,12 @@ export function createRelay({
   const wss = new WebSocketServer({ server, path: '/ingest' });
   wss.on('connection', (ws) => {
     let wsLogin = null;
+    let wsMsgCount = 0;
+    let wsWindowStart = Date.now();
     ws.on('message', (raw) => {
+      const now = Date.now();
+      if (now - wsWindowStart >= 1000) { wsWindowStart = now; wsMsgCount = 0; }
+      if (++wsMsgCount > WS_MAX_MSG_PER_SEC) { ws.close(); return; }
       try {
         const msg = JSON.parse(raw.toString());
         // Browser identifies itself so the relay knows which WebSocket to push
@@ -190,6 +232,8 @@ export function createRelay({
 
   const tcpServer = net.createServer((socket) => {
     let buffer = '';
+    let tcpMsgCount = 0;
+    let tcpWindowStart = Date.now();
     socket.setEncoding('utf8');
     socket.on('data', (chunk) => {
       buffer += chunk;
@@ -199,6 +243,9 @@ export function createRelay({
         const line = buffer.slice(0, nl).trim();
         buffer = buffer.slice(nl + 1);
         if (!line) continue;
+        const now = Date.now();
+        if (now - tcpWindowStart >= 1000) { tcpWindowStart = now; tcpMsgCount = 0; }
+        if (++tcpMsgCount > TCP_MAX_MSG_PER_SEC) { socket.destroy(); return; }
         try { handleMessage(JSON.parse(line)); }
         catch (err) { console.error('TCP ingest: parse error:', err.message); }
       }

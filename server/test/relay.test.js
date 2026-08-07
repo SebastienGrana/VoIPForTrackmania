@@ -328,6 +328,23 @@ describe('OnZVoIP relay', () => {
       assert.strictEqual(res.status, 200);
     });
 
+    test('rate limit: >30 messages/sec on one TCP socket → socket destroyed', async () => {
+      const lines = [];
+      for (let i = 0; i < 40; i++) {
+        lines.push(JSON.stringify({ type: 'position', pseudo: 'flooder', x: i, y: 0, z: 0 }));
+      }
+      await new Promise((resolve, reject) => {
+        const socket = net.createConnection(TCP_PORT, '127.0.0.1', () => {
+          socket.write(lines.join('\n') + '\n');
+        });
+        socket.on('close', resolve);
+        socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
+      });
+      // Server must still handle new connections after destroying the flooder.
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterflood2`);
+      assert.strictEqual(res.status, 200);
+    });
+
     test('bursts of huge input across many connections → server does not crash', async () => {
       // Same shape as above but repeated — a naive fix that grows the buffer
       // without dropping the connection would exhaust memory here.
@@ -342,5 +359,39 @@ describe('OnZVoIP relay', () => {
       const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterbursts`);
       assert.strictEqual(res.status, 200);
     });
+  });
+});
+
+// Isolated in its own relay/server instance: the /token limiter is a 60s
+// fixed window keyed by IP, so sharing the main describe's relay would make
+// this test's 35 requests bleed into every other /token test's count (all
+// tests hit 127.0.0.1) and start failing them with 429 instead of 200.
+describe('rate limiting — /token (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  test('>30 requests/min from one IP → 429', async () => {
+    let lastStatus;
+    for (let i = 0; i < 35; i++) {
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=ratelimited`);
+      lastStatus = res.status;
+    }
+    assert.strictEqual(lastStatus, 429);
   });
 });
