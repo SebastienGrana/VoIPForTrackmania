@@ -12,7 +12,7 @@ Proximity voice chat for **Trackmania² Stadium (ManiaPlanet)**. Players who are
 
 1. Open your ManiaPlanet `Openplanet4` folder (usually `C:\Users\<you>\Openplanet4\Plugins`)
 2. Create a subfolder named `OnZVoIP`
-3. Copy [`openplanet-plugin/Main.as`](openplanet-plugin/Main.as) into it
+3. Copy [`openplanet-plugin/Main.as`](openplanet-plugin/Main.as) and [`openplanet-plugin/info.toml`](openplanet-plugin/info.toml) into it
 4. In-game: open the OpenPlanet overlay → Plugin Manager → **Reload plugins**
 
 The plugin window **OnZVoIP** will appear. It shows your relay connection status and your Trackmania login.
@@ -36,7 +36,7 @@ OpenPlanet plugin  ──TCP──▶  Node.js relay  ──data channel──�
 
 - **OpenPlanet plugin** (`openplanet-plugin/`) — reads the local player's position every 200 ms and sends it to the relay over a raw TCP socket (no extra plugin dependency).
 - **Node.js relay** (`server/`) — fans out positions to all room participants via LiveKit data channels; also issues LiveKit join tokens.
-- **Web client** (`server/public/`) — receives positions, computes distance and stereo pan for each remote player in WebAudio, and plays their audio stream accordingly. Includes a calibration bot (`bot.html`) for solo testing.
+- **Web client** (`server/public/`) — receives positions, computes distance and stereo pan for each remote player in WebAudio, and plays their audio stream accordingly. Includes a calibration bot (`bot.html`) for solo testing, served only when `ENABLE_CALIBRATION_BOT=true` (off by default — see `server/.env.example`).
 
 Volume and panning are computed **client-side** — LiveKit (an SFU) distributes the same encoded audio stream to all subscribers; per-pair attenuation must happen at the listener's end.
 
@@ -98,8 +98,8 @@ const string VOIP_URL   = "https://your.domain.example";
 
 | Parameter | Value | Meaning |
 |-----------|-------|---------|
-| `MIN_DIST` | 5 m | Full volume within this range |
-| `MAX_DIST` | 300 m | Silent beyond this range |
+| `MIN_DIST` | 1 m | Full volume within this range |
+| `MAX_DIST` | 150 m | Silent beyond this range |
 | `PAN_RANGE` | 10 m | Full stereo pan at this side offset |
 
 Adjust in the web client's calibration section.

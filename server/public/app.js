@@ -185,7 +185,7 @@ function draw() {
   ctx.fillStyle = '#4aa8ff';
   ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#9cf';
-  ctx.fillText(myIdentity ? `${myIdentity} (toi)` : 'toi', cx + 12, cy + 4);
+  ctx.fillText(myIdentity ? `${myIdentity} (you)` : 'you', cx + 12, cy + 4);
 
   requestAnimationFrame(draw);
 }
@@ -437,7 +437,7 @@ async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
     // Created here for auto-join (no click handler). May start suspended — the
     // mic button click will resume it (audioCtx.resume() in the mic handler).
     audioCtx = new AudioContext();
-    logEvent(`AudioContext créé, state=${audioCtx.state}`);
+    logEvent(`AudioContext created, state=${audioCtx.state}`);
   }
 
   const newRoom = new LivekitClient.Room();
@@ -456,10 +456,10 @@ async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
   updateServerDisplay(serverName ?? null);
   const debugRoomVal = document.getElementById('debugRoomVal');
   if (debugRoomVal) debugRoomVal.textContent = roomName;
-  statusEl.textContent = `✅ Connecté — tu entends les joueurs proches automatiquement`;
+  statusEl.textContent = `✅ Connected — you'll hear nearby players automatically`;
   statusEl.className = 'ok';
   micBtn.disabled = false;
-  micBtn.textContent = '🎤 Activer le microphone';
+  micBtn.textContent = '🎤 Enable microphone';
   micBtn.className = 'muted';
   if (expiredMsgEl) expiredMsgEl.style.display = 'none';
 }
@@ -527,7 +527,7 @@ async function handleRoomPush(msg) {
   try {
     await connectLiveKit({ token, wsUrl, roomName, login, serverName });
   } catch (err) {
-    statusEl.textContent = `Erreur de connexion: ${err.message}`;
+    statusEl.textContent = `Connection error: ${err.message}`;
     statusEl.className = '';
     return;
   }
@@ -539,14 +539,14 @@ async function handleRoomPush(msg) {
       echoCancellation: false,
     });
     micEnabled = true;
-    micBtn.textContent = '🔴 Couper le microphone';
+    micBtn.textContent = '🔴 Mute microphone';
     micBtn.className = 'live';
   }
 }
 
 // Auto-join from a ?t=<nonce> URL (placed there by the in-game plugin).
 async function connectViaNonce(nonce) {
-  statusEl.textContent = 'Connexion...';
+  statusEl.textContent = 'Connecting...';
   if (expiredMsgEl) expiredMsgEl.style.display = 'none';
 
   const res = await fetch(`/token?t=${encodeURIComponent(nonce)}`);
@@ -554,7 +554,7 @@ async function connectViaNonce(nonce) {
     statusEl.textContent = '';
     // Show a friendly message if the nonce expired (e.g. user opened an old link).
     if (res.status === 401 && expiredMsgEl) expiredMsgEl.style.display = '';
-    else statusEl.textContent = `Erreur token: ${res.status}`;
+    else statusEl.textContent = `Token error: ${res.status}`;
     return;
   }
   const { token, wsUrl, room: roomName, login, serverName } = await res.json();
@@ -562,7 +562,7 @@ async function connectViaNonce(nonce) {
   try {
     await connectLiveKit({ token, wsUrl, roomName, login, serverName });
   } catch (err) {
-    statusEl.textContent = `Erreur de connexion: ${err.message}`;
+    statusEl.textContent = `Connection error: ${err.message}`;
     statusEl.className = '';
     return;
   }
@@ -576,7 +576,7 @@ async function join() {
   myIdentity = identity;
   joinBtn.disabled = true;
   identityInput.disabled = true;
-  statusEl.textContent = 'Connexion...';
+  statusEl.textContent = 'Connecting...';
 
   // Debug-only: joins the exact same room as a real player (copied from
   // their own Debug readout), so a second tab can test follow-mode against
@@ -599,7 +599,7 @@ async function join() {
   // Created inside this click handler so the browser's autoplay policy
   // treats it as user-initiated and doesn't leave it suspended.
   audioCtx = new AudioContext();
-  logEvent(`AudioContext créé, state=${audioCtx.state}`);
+  logEvent(`AudioContext created, state=${audioCtx.state}`);
   if (audioCtx.state === 'suspended') {
     audioCtx.resume().then(() => logEvent(`AudioContext.resume() -> ${audioCtx.state}`));
   }
@@ -607,7 +607,7 @@ async function join() {
   try {
     await connectLiveKit({ token, wsUrl, roomName, login: identity, serverName: null });
   } catch (err) {
-    statusEl.textContent = `Erreur de connexion: ${err.message}`;
+    statusEl.textContent = `Connection error: ${err.message}`;
     statusEl.className = '';
     joinBtn.disabled = false;
     identityInput.disabled = false;
@@ -635,7 +635,7 @@ micBtn.addEventListener('click', async () => {
     noiseSuppression: false,
     echoCancellation: false,
   });
-  micBtn.textContent = micEnabled ? '🔴 Couper le microphone' : '🎤 Activer le microphone';
+  micBtn.textContent = micEnabled ? '🔴 Mute microphone' : '🎤 Enable microphone';
   micBtn.className = micEnabled ? 'live' : 'muted';
 });
 

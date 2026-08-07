@@ -9,6 +9,7 @@ const {
   ROOM_NAME = 'onzsm',
   PORT = 8080,
   INGEST_TCP_PORT = 8081,
+  ENABLE_CALIBRATION_BOT,
 } = process.env;
 
 if (!LIVEKIT_INTERNAL_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_PUBLIC_WS_URL) {
@@ -23,6 +24,7 @@ const { server, tcpServer } = createRelay({
   apiSecret: LIVEKIT_API_SECRET,
   liveKitPublicWsUrl: LIVEKIT_PUBLIC_WS_URL,
   roomName: ROOM_NAME,
+  enableCalibrationBot: ENABLE_CALIBRATION_BOT === 'true',
 });
 
 tcpServer.listen(INGEST_TCP_PORT, () => {

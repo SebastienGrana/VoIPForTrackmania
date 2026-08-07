@@ -172,7 +172,7 @@
   </div>
   <div id="status">Not connected</div>
   <div id="expiredMsg" class="expired-msg" style="display:none">
-    Ce lien a expiré — reclique sur <strong>Copy URL</strong> dans le jeu
+    This link has expired — click <strong>Copy URL</strong> again in the game
   </div>
 
   <!-- Step 2: mic -->
@@ -263,7 +263,7 @@
   <script>
     if (new URLSearchParams(location.search).get('t')) {
       document.getElementById('joinSection').style.display = 'none';
-      document.getElementById('status').textContent = 'Connexion…';
+      document.getElementById('status').textContent = 'Connecting…';
     }
   </script>
 

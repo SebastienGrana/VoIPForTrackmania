@@ -75,6 +75,7 @@ export function createRelay({
   staticDir = 'public',
   tcpMaxConnections = 1000,
   tcpIdleTimeoutMs = 30_000,
+  enableCalibrationBot = false,
 }) {
   const encoder = new TextEncoder();
   // Étape 4/5: track which WebSocket belongs to which browser login so the
@@ -93,6 +94,19 @@ export function createRelay({
   let tcpConnectionCount = 0;
 
   const app = express();
+  if (!enableCalibrationBot) {
+    // bot.html lets anyone publish a fake "CalibBot" audio track into the
+    // shared room; it's a solo-testing tool, not something to expose
+    // publicly. Gated behind ENABLE_CALIBRATION_BOT instead of deleted so
+    // it's still available for calibration on a dev/staging deploy.
+    app.use((req, res, next) => {
+      if (req.path === '/bot.html' || req.path === '/bot.js') {
+        res.status(404).end();
+        return;
+      }
+      next();
+    });
+  }
   app.use(express.static(staticDir));
 
   app.get('/health', (req, res) => {

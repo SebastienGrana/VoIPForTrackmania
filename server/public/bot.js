@@ -79,7 +79,7 @@ function createVoiceLikeSource(audioCtx) {
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 256;
 
-  // Only connected to speakers when the "m'écouter" checkbox is on - this
+  // Only connected to speakers when the "Monitor locally" checkbox is on - this
   // path never touches Livekit, so hearing it here isolates the WebAudio
   // graph from anything network/publish related.
   monitorGain = audioCtx.createGain();
@@ -175,7 +175,7 @@ async function start() {
       };
       ingestWs.send(JSON.stringify({ type: 'position', pseudo: BOT_IDENTITY, ...pos }));
       readoutEl.textContent =
-        `toi: ${targetPos.x.toFixed(0)}, ${targetPos.y.toFixed(0)}, ${targetPos.z.toFixed(0)}`
+        `target: ${targetPos.x.toFixed(0)}, ${targetPos.y.toFixed(0)}, ${targetPos.z.toFixed(0)}`
         + ` | bot: ${pos.x.toFixed(0)}, ${pos.y.toFixed(0)}, ${pos.z.toFixed(0)}`
         + ` | offset: X ${offset.x} / Y ${offset.y} m`;
     }, SEND_INTERVAL_MS);
