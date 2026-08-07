@@ -85,6 +85,7 @@ No rebuild needed — in-game, open the OpenPlanet overlay → Settings → Plug
 
 - **Relay host** / **Relay port** — TCP ingest address of your relay
 - **Voice chat URL** — your web client's URL (must point at the same relay)
+- **Relay secret** — only needed if your relay sets `TCP_SHARED_SECRET` (see `server/.env.example`); leave blank otherwise
 
 ---
 

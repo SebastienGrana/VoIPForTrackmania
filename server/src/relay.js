@@ -77,6 +77,16 @@ export function createRelay({
   tcpIdleTimeoutMs = 30_000,
   enableCalibrationBot = false,
   positionBroadcastIntervalMs = 100,
+  // Sécurité restante (ORDRE D'IMPLÉMENTATION point 6): port 8081 accepts any
+  // raw TCP connection with zero authentication — anyone on the internet can
+  // inject positions/nonces for any pseudo. There's no verifiable Trackmania
+  // identity to bind to (ManiaPlanet exposes no signed identity API to
+  // plugins), so this can't become real per-player auth — but a fixed
+  // community secret still raises the bar from "anyone on the internet" to
+  // "someone who has the community's token", which stops opportunistic
+  // scanners/bots cold. Empty string (default) disables the check entirely,
+  // which keeps local dev and the test suite working without configuring one.
+  tcpSharedSecret = '',
 }) {
   const encoder = new TextEncoder();
   // Audit #27: broadcastPosition() used to call roomService.sendData() once
@@ -286,6 +296,9 @@ export function createRelay({
     let buffer = '';
     let tcpMsgCount = 0;
     let tcpWindowStart = Date.now();
+    // No secret configured → nothing to check, same behavior as before this
+    // feature existed (local dev / tests keep working unchanged).
+    let authenticated = !tcpSharedSecret;
     socket.setEncoding('utf8');
     socket.setTimeout(TCP_IDLE_TIMEOUT_MS);
     socket.on('timeout', () => socket.destroy());
@@ -301,8 +314,21 @@ export function createRelay({
         const now = Date.now();
         if (now - tcpWindowStart >= 1000) { tcpWindowStart = now; tcpMsgCount = 0; }
         if (++tcpMsgCount > TCP_MAX_MSG_PER_SEC) { socket.destroy(); return; }
-        try { handleMessage(JSON.parse(line)); }
-        catch (err) { console.error('TCP ingest: parse error:', err.message); }
+        let msg;
+        try { msg = JSON.parse(line); }
+        catch (err) { console.error('TCP ingest: parse error:', err.message); continue; }
+        // Sécurité restante: the first message on a gated connection must be a
+        // matching auth — anything else (including a well-formed nonce/position
+        // sent without one) closes the socket immediately.
+        if (!authenticated) {
+          if (msg.type === 'auth' && msg.secret === tcpSharedSecret) {
+            authenticated = true;
+          } else {
+            socket.destroy();
+          }
+          return;
+        }
+        handleMessage(msg);
       }
     });
     socket.on('error', (err) => console.error('TCP ingest: socket error:', err.message));

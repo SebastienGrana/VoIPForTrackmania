@@ -458,6 +458,81 @@ describe('TCP ingest — connection limits (AUDIT #25, own relay instance)', () 
   });
 });
 
+// Sécurité restante (ORDRE D'IMPLÉMENTATION point 6): own relay instance so
+// the shared-secret gate doesn't affect the main describe's unauthenticated
+// TCP tests above.
+describe('TCP ingest — shared secret (Sécurité restante, own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+  let TCP_PORT;
+  const SECRET = 'community-token-42';
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      tcpSharedSecret: SECRET,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+    await new Promise(resolve => relay.tcpServer.listen(0, resolve));
+    TCP_PORT = relay.tcpServer.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+    await new Promise(resolve => relay.tcpServer.close(resolve));
+  });
+
+  test('position sent before any auth message → socket closed, nothing broadcast', async () => {
+    const before = relay.nonces.size;
+    await tcpSend(TCP_PORT, [
+      JSON.stringify({ type: 'position', pseudo: 'velp', x: 1, y: 0, z: 0 }),
+    ]);
+    // Nonce map is unaffected by position, but this also proves handleMessage
+    // never ran: flush and confirm no crash / no lingering pending position.
+    await relay.flushPositions();
+    assert.strictEqual(relay.nonces.size, before);
+  });
+
+  test('wrong secret → socket closed', async () => {
+    await tcpSend(TCP_PORT, [
+      JSON.stringify({ type: 'auth', secret: 'not-the-secret' }),
+      JSON.stringify({ type: 'nonce', nonce: 'should-not-register', login: 'velp', server: '', serverName: '' }),
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=should-not-register`);
+    assert.strictEqual(res.status, 401, 'nonce sent after a rejected auth must never register');
+  });
+
+  test('correct secret first → subsequent nonce/position accepted', async () => {
+    const nonce = 'authed-nonce';
+    await tcpSend(TCP_PORT, [
+      JSON.stringify({ type: 'auth', secret: SECRET }),
+      JSON.stringify({ type: 'nonce', nonce, login: 'velp', server: '', serverName: '' }),
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+    assert.strictEqual(res.status, 200, 'nonce sent after a correct auth must register normally');
+  });
+
+  test('each new TCP connection must re-authenticate', async () => {
+    // First connection authenticates and disconnects (tcpSend closes after sending).
+    await tcpSend(TCP_PORT, [JSON.stringify({ type: 'auth', secret: SECRET })]);
+    // A fresh connection with no auth must still be rejected.
+    const nonce = 'second-connection-nonce';
+    await tcpSend(TCP_PORT, [
+      JSON.stringify({ type: 'nonce', nonce, login: 'velp', server: '', serverName: '' }),
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+    assert.strictEqual(res.status, 401, 'auth does not carry over to a new TCP connection');
+  });
+});
+
 describe('rate limiting — /token (own relay instance)', () => {
   let relay;
   let HTTP_PORT;
