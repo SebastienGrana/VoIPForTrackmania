@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { distance, clamp, gainForDistance, panForOffset } from '../src/audio-math.js';
+import { distance, clamp, gainForDistance, panForOffset } from '../public/audio-math.js';
 
 describe('distance()', () => {
   test('same point → 0', () => {

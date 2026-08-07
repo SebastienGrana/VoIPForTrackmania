@@ -6,7 +6,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test test/audio-math.test.js test/relay.test.js"
+    "test": "node --test test/audio-math.test.js test/relay.test.js test/room-name.test.js"
   },
   "dependencies": {
     "@livekit/protocol": "^1.32.0",

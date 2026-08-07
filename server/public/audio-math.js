@@ -1,5 +1,7 @@
 // Pure spatial-audio math — no DOM, no WebAudio, no globals.
-// Used by the browser client (inlined in public/app.js) and tested here.
+// Lives under public/ (not src/) because the browser imports it directly
+// via <script type="module"> — the previous copy inlined in app.js drifted
+// out of sync with the tests, which was AUDIT #13.
 
 export function distance(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));

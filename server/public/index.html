@@ -46,8 +46,27 @@
   #joinBtn:hover:not(:disabled) { background: #2585d4; }
   #joinBtn:disabled { background: #2a2a2a; color: #555; cursor: not-allowed; }
 
-  #status { font-size: 13px; color: #666; margin-bottom: 24px; min-height: 18px; }
+  #status { font-size: 13px; color: #666; margin-bottom: 8px; min-height: 18px; }
   #status.ok { color: #4a9; }
+
+  .expired-msg {
+    font-size: 13px;
+    color: #c84;
+    margin-bottom: 16px;
+    padding: 8px 12px;
+    background: #2a1e00;
+    border: 1px solid #5a3e00;
+    border-radius: 8px;
+  }
+  .server-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #4aa8ff;
+    margin-bottom: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   /* Mic button */
   #micBtn {
@@ -94,7 +113,7 @@
   .pl-empty { font-size: 13px; color: #444; font-style: italic; padding: 10px 0; }
 
   /* Advanced toggle */
-  #advToggle {
+  #optToggle {
     width: 100%;
     background: none;
     border: 1px solid #2a2a2a;
@@ -108,30 +127,30 @@
     align-items: center;
     transition: border-color .15s, color .15s;
   }
-  #advToggle:hover { border-color: #444; color: #999; }
+  #optToggle:hover { border-color: #444; color: #999; }
 
   /* Advanced body */
-  #advBody { margin-top: 12px; padding: 14px; background: #161616; border: 1px solid #242424; border-radius: 10px; }
+  #optBody { margin-top: 12px; padding: 14px; background: #161616; border: 1px solid #242424; border-radius: 10px; }
 
   canvas { display: block; width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 16px; }
 
-  .adv-section { background: #1e1e1e; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
-  .adv-section:last-child { margin-bottom: 0; }
-  .adv-title { font-size: 11px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+  .opt-section { background: #1e1e1e; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .opt-section:last-child { margin-bottom: 0; }
+  .opt-title { font-size: 11px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
 
-  .adv-check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #bbb; cursor: pointer; margin-bottom: 8px; }
-  .adv-check:last-child { margin-bottom: 0; }
-  .adv-check input[type=checkbox] { accent-color: #4aa8ff; width: 15px; height: 15px; flex-shrink: 0; }
+  .opt-check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #bbb; cursor: pointer; margin-bottom: 8px; }
+  .opt-check:last-child { margin-bottom: 0; }
+  .opt-check input[type=checkbox] { accent-color: #4aa8ff; width: 15px; height: 15px; flex-shrink: 0; }
 
-  .adv-label { display: block; font-size: 12px; color: #999; margin-bottom: 12px; }
-  .adv-label:last-child { margin-bottom: 0; }
-  .adv-label input[type=range] { display: block; width: 100%; margin-top: 5px; accent-color: #4aa8ff; }
-  .adv-label input[type=text]  {
+  .opt-label { display: block; font-size: 12px; color: #999; margin-bottom: 12px; }
+  .opt-label:last-child { margin-bottom: 0; }
+  .opt-label input[type=range] { display: block; width: 100%; margin-top: 5px; accent-color: #4aa8ff; }
+  .opt-label input[type=text]  {
     display: block; width: 100%; margin-top: 5px;
     background: #111; border: 1px solid #333; color: #eee;
     padding: 6px 10px; border-radius: 6px; font-size: 13px;
   }
-  .adv-label input[type=text]:focus { outline: none; border-color: #4aa8ff; }
+  .opt-label input[type=text]:focus { outline: none; border-color: #4aa8ff; }
   .val { color: #4aa8ff; }
 
   table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
@@ -146,81 +165,90 @@
   <p class="logo">🎤 OnZVoIP</p>
   <p class="sub">Proximity voice chat for Trackmania</p>
 
-  <!-- Step 1: join -->
-  <div class="join-row">
+  <!-- Step 1: join (hidden when ?t= nonce is present) -->
+  <div id="joinSection" class="join-row">
     <input id="identity" placeholder="Your TM login" value="Player1" />
     <button id="joinBtn">Join</button>
   </div>
   <div id="status">Not connected</div>
+  <div id="expiredMsg" class="expired-msg" style="display:none">
+    Ce lien a expiré — reclique sur <strong>Copy URL</strong> dans le jeu
+  </div>
 
   <!-- Step 2: mic -->
   <button id="micBtn" class="idle" disabled>🎤 Enable microphone</button>
 
   <!-- Players nearby -->
+  <div id="serverName" class="server-name" style="display:none"></div>
   <div class="section-label">Players nearby</div>
   <ul id="playerList">
     <li class="pl-empty">Join a room to see other players</li>
   </ul>
 
   <!-- Advanced settings (collapsed) -->
-  <button id="advToggle">
+  <button id="optToggle">
     <span>⚙ Advanced settings</span>
-    <span id="advArrow">▸</span>
+    <span id="optArrow">▸</span>
   </button>
-  <div id="advBody" style="display:none">
+  <div id="optBody" style="display:none">
 
     <canvas id="canvas" width="300" height="300"></canvas>
 
-    <div class="adv-section">
-      <div class="adv-title">Position source</div>
-      <label class="adv-check">
+    <div class="opt-section">
+      <div class="opt-title">Position source</div>
+      <label class="opt-check">
         <input type="checkbox" id="followGame" checked />
         Use in-game position (requires your TM login as username above)
       </label>
     </div>
 
-    <div class="adv-section">
-      <div class="adv-title">Follow another player — for testing without a 2nd account</div>
-      <label class="adv-check">
+    <div class="opt-section">
+      <div class="opt-title">Follow another player — for testing without a 2nd account</div>
+      <label class="opt-check">
         <input type="checkbox" id="relativeMode" />
         Enable follow mode
       </label>
-      <label class="adv-label">
+      <label class="opt-label">
         Player to follow
         <input type="text" id="relativeTarget" placeholder="their TM login" />
       </label>
-      <label class="adv-label">
+      <label class="opt-label">
         Offset range ± <span class="val" id="relativeRangeVal"></span> m
         <input type="range" id="relativeRange" min="10" max="1000" step="10" value="200" />
       </label>
-      <label class="adv-label">
+      <label class="opt-label">
         X offset (side / stereo pan): <span class="val" id="relativeOffsetXVal"></span> m
         <input type="range" id="relativeOffsetX" min="-200" max="200" step="5" value="100" />
       </label>
-      <label class="adv-label">
+      <label class="opt-label">
         Y offset (front / back): <span class="val" id="relativeOffsetYVal"></span> m
         <input type="range" id="relativeOffsetY" min="-200" max="200" step="5" value="0" />
       </label>
     </div>
 
-    <div class="adv-section">
-      <div class="adv-title">Distance calibration</div>
-      <label class="adv-label">
+    <div class="opt-section">
+      <div class="opt-title">Distance calibration</div>
+      <label class="opt-label">
         Full volume within <span class="val" id="minDistVal"></span> m
         <input type="range" id="minDist" min="0" max="500" step="5" />
       </label>
-      <label class="adv-label">
+      <label class="opt-label">
         Silence beyond <span class="val" id="maxDistVal"></span> m
         <input type="range" id="maxDist" min="20" max="2000" step="10" />
       </label>
-      <label class="adv-label">
+      <label class="opt-label">
         Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
         <input type="range" id="panRange" min="10" max="1000" step="10" />
       </label>
     </div>
 
-    <div class="adv-section">
-      <div class="adv-title">Debug</div>
+    <div class="opt-section">
+      <div class="opt-title">Debug — retirer avant publication</div>
+      <div id="debugRoomInfo" class="opt-label">Room actuelle : <span class="val" id="debugRoomVal">—</span></div>
+      <label class="opt-label">
+        Room à rejoindre (copier depuis le champ ci-dessus sur le vrai joueur)
+        <input type="text" id="debugRoom" placeholder="ex: droppie-lolmaps-3pnt" />
+      </label>
       <div id="meReadout"></div>
       <table id="peers">
         <thead><tr><th>player</th><th>dist</th><th>gain</th><th>pan</th><th>audio</th></tr></thead>
@@ -231,17 +259,27 @@
 
   </div>
 
+  <!-- Hide join form immediately if ?t= nonce is present, before app.js loads -->
   <script>
-    const advToggle = document.getElementById('advToggle');
-    const advBody   = document.getElementById('advBody');
-    const advArrow  = document.getElementById('advArrow');
-    advToggle.addEventListener('click', () => {
-      const open = advBody.style.display === 'none';
-      advBody.style.display = open ? '' : 'none';
-      advArrow.textContent  = open ? '▾' : '▸';
+    if (new URLSearchParams(location.search).get('t')) {
+      document.getElementById('joinSection').style.display = 'none';
+      document.getElementById('status').textContent = 'Connexion…';
+    }
+  </script>
+
+  <script>
+    const optToggle = document.getElementById('optToggle');
+    const optBody   = document.getElementById('optBody');
+    const optArrow  = document.getElementById('optArrow');
+    optToggle.addEventListener('click', () => {
+      const open = optBody.style.display === 'none';
+      optBody.style.display = open ? '' : 'none';
+      optArrow.textContent  = open ? '▾' : '▸';
     });
   </script>
-  <script src="https://unpkg.com/livekit-client/dist/livekit-client.umd.js"></script>
-  <script src="app.js"></script>
+  <script src="https://unpkg.com/livekit-client@2.21.0/dist/livekit-client.umd.js"
+          integrity="sha384-gDU80RlmAnHKgj4uOWIhnTIb6vAUef/+NqGPuIEfbEQYGfqzyeJDwC2XElesqctC"
+          crossorigin="anonymous"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

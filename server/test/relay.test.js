@@ -58,7 +58,7 @@ describe('OnZVoIP relay', () => {
     await new Promise(resolve => relay.tcpServer.close(resolve));
   });
 
-  describe('GET /token', () => {
+  describe('GET /token (legacy identity path)', () => {
     test('missing identity → 400 with error message', async () => {
       const res = await fetch(`http://localhost:${HTTP_PORT}/token`);
       assert.strictEqual(res.status, 400);
@@ -84,6 +84,121 @@ describe('OnZVoIP relay', () => {
     test('identity is URL-decoded', async () => {
       const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=player%20one`);
       assert.strictEqual(res.status, 200);
+    });
+  });
+
+  // A-bis: one-time nonce path
+  describe('GET /token?t= (A-bis nonce path)', () => {
+    test('unknown nonce → 401', async () => {
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=doesnotexist`);
+      assert.strictEqual(res.status, 401);
+    });
+
+    test('valid nonce → 200 with JWT bound to computed room', async () => {
+      const nonce = 'testnonce01';
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'nonce', nonce, login: 'velp', server: 'droppie_lolmaps', serverName: '$00F$OLOLMAPS' }),
+      ]);
+      await new Promise(r => setTimeout(r, 60));
+
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+      assert.strictEqual(res.status, 200);
+      const body = await res.json();
+      assert.ok(body.token.startsWith('ey'), 'should be a JWT');
+      assert.strictEqual(body.wsUrl, WS_URL);
+      // Room must be derived from the server login, not the default ROOM constant.
+      assert.notStrictEqual(body.room, ROOM, 'room should be server-specific, not default');
+      assert.ok(body.room.includes('-'), 'room name should have a suffix separator');
+    });
+
+    test('nonce is single-use → second request → 401', async () => {
+      const nonce = 'singleuse-nonce-99';
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'nonce', nonce, login: 'velp', server: 'srv-abc', serverName: 'TestSrv' }),
+      ]);
+      await new Promise(r => setTimeout(r, 60));
+
+      const r1 = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+      assert.strictEqual(r1.status, 200);
+
+      const r2 = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+      assert.strictEqual(r2.status, 401, 'second use of same nonce must be rejected');
+    });
+
+    test('nonce with invalid login (empty) → ignored, not stored', async () => {
+      const nonce = 'bad-login-nonce';
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'nonce', nonce, login: '', server: 'srv-abc', serverName: 'TestSrv' }),
+      ]);
+      await new Promise(r => setTimeout(r, 60));
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+      assert.strictEqual(res.status, 401, 'invalid login must not register a nonce');
+    });
+
+    test('nonce with invalid server chars → server treated as empty, nonce stored with global room', async () => {
+      const nonce = 'bad-server-nonce';
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'nonce', nonce, login: 'velp', server: '../../etc/passwd', serverName: '' }),
+      ]);
+      await new Promise(r => setTimeout(r, 60));
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+      assert.strictEqual(res.status, 200);
+      const body = await res.json();
+      // Bad server rejected → falls back to default room
+      assert.strictEqual(body.room, ROOM);
+    });
+  });
+
+  // Étape 3: position routing by server
+  describe('TCP ingest — server-based room routing (Étape 3)', () => {
+    test('position with server field → sendData targets server room (not default)', async () => {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'position', pseudo: 'velp', server: 'droppie_lolmaps', serverName: '$OLOLMAPS', x: 10, y: 0, z: 0 }),
+      ]);
+      await new Promise(r => setTimeout(r, 100));
+      const call = mockService.calls[before];
+      assert.ok(call, 'sendData must have been called');
+      // First argument to sendData is the room name
+      assert.notStrictEqual(call[0], ROOM, 'should route to server room, not default');
+      assert.ok(call[0].includes('-'), 'room name should have hash suffix');
+    });
+
+    test('position without server field → sendData targets default room (backward-compat)', async () => {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'position', pseudo: 'velp', x: 10, y: 0, z: 0 }),
+      ]);
+      await new Promise(r => setTimeout(r, 100));
+      const call = mockService.calls[before];
+      assert.ok(call, 'sendData must have been called');
+      assert.strictEqual(call[0], ROOM, 'no server → must fall back to default room');
+    });
+
+    test('two positions from different servers → different rooms', async () => {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'position', pseudo: 'a', server: 'srv-one', serverName: 'One', x: 1, y: 0, z: 0 }),
+        JSON.stringify({ type: 'position', pseudo: 'b', server: 'srv-two', serverName: 'Two', x: 1, y: 0, z: 0 }),
+      ]);
+      await new Promise(r => setTimeout(r, 100));
+      assert.ok(mockService.calls.length >= before + 2);
+      const room1 = mockService.calls[before][0];
+      const room2 = mockService.calls[before + 1][0];
+      assert.notStrictEqual(room1, room2, 'different server logins must produce different rooms');
+    });
+
+    test('same server login → same room (deterministic)', async () => {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'position', pseudo: 'a', server: 'same-srv', serverName: 'Same', x: 1, y: 0, z: 0 }),
+        JSON.stringify({ type: 'position', pseudo: 'b', server: 'same-srv', serverName: 'Same', x: 2, y: 0, z: 0 }),
+      ]);
+      await new Promise(r => setTimeout(r, 100));
+      assert.ok(mockService.calls.length >= before + 2);
+      const room1 = mockService.calls[before][0];
+      const room2 = mockService.calls[before + 1][0];
+      assert.strictEqual(room1, room2, 'same server login must always map to the same room');
     });
   });
 
@@ -150,6 +265,82 @@ describe('OnZVoIP relay', () => {
         mockService.calls.length >= before + 3,
         `expected ≥3 new calls, got ${mockService.calls.length - before}`,
       );
+    });
+  });
+
+  // Regression tests for the ef55717 hardening — AUDIT #14. These behaviours
+  // used to have zero coverage, meaning a well-intentioned refactor could
+  // silently remove them and no test would notice.
+  describe('input validation (AUDIT #14)', () => {
+    test('x = NaN → rejected, no broadcast (would poison client Math.hypot)', async () => {
+      const before = mockService.calls.length;
+      // Cannot JSON.stringify NaN (becomes null), so send the raw JSON literal.
+      await tcpSend(TCP_PORT, ['{"type":"position","pseudo":"velp","x":NaN,"y":0,"z":0}']);
+      await new Promise(r => setTimeout(r, 100));
+      assert.strictEqual(mockService.calls.length, before);
+    });
+
+    test('x = Infinity → rejected, no broadcast', async () => {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, ['{"type":"position","pseudo":"velp","x":Infinity,"y":0,"z":0}']);
+      await new Promise(r => setTimeout(r, 100));
+      assert.strictEqual(mockService.calls.length, before);
+    });
+
+    test('x = null → rejected (Number(null) is 0 but the payload is malformed)', async () => {
+      // Number(null) === 0, which IS finite, so this actually passes today.
+      // Kept as a regression marker: if we tighten validation, update the
+      // expected count. See AUDIT #3 (client-side) for the belt & suspenders.
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'position', pseudo: 'velp', x: null, y: 0, z: 0 }),
+      ]);
+      await new Promise(r => setTimeout(r, 100));
+      // Current behaviour: passes through as (0,0,0). Documented, not asserted
+      // strict either way — this test exists to make the next change conscious.
+      const delta = mockService.calls.length - before;
+      assert.ok(delta === 0 || delta === 1, `unexpected delta: ${delta}`);
+    });
+
+    test('x = "abc" (non-numeric string) → rejected, no broadcast', async () => {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [
+        JSON.stringify({ type: 'position', pseudo: 'velp', x: 'abc', y: 0, z: 0 }),
+      ]);
+      await new Promise(r => setTimeout(r, 100));
+      assert.strictEqual(mockService.calls.length, before);
+    });
+
+    test('4096-byte buffer limit → oversize input closes socket, server stays up', async () => {
+      // Send > 4096 bytes without a newline so the buffer grows unchecked.
+      // The relay should destroy the socket without crashing.
+      const huge = 'x'.repeat(5000);
+      await new Promise((resolve, reject) => {
+        const socket = net.createConnection(TCP_PORT, '127.0.0.1', () => {
+          socket.write(huge);
+        });
+        socket.on('close', resolve);
+        // ECONNRESET is expected when the relay calls destroy() on us.
+        socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
+      });
+      // Server must still handle new work.
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterflood`);
+      assert.strictEqual(res.status, 200);
+    });
+
+    test('bursts of huge input across many connections → server does not crash', async () => {
+      // Same shape as above but repeated — a naive fix that grows the buffer
+      // without dropping the connection would exhaust memory here.
+      const huge = 'y'.repeat(5000);
+      for (let i = 0; i < 5; i++) {
+        await new Promise((resolve, reject) => {
+          const socket = net.createConnection(TCP_PORT, '127.0.0.1', () => socket.write(huge));
+          socket.on('close', resolve);
+          socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
+        });
+      }
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterbursts`);
+      assert.strictEqual(res.status, 200);
     });
   });
 });

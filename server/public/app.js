@@ -5,6 +5,8 @@
 // proximity-audio math: distance -> gain, applied locally per remote track.
 // See ../../context.txt "ARCHITECTURE AUDIO" for why this lives client-side.
 
+import { distance, clamp, gainForDistance, panForOffset } from './audio-math.js';
+
 // Live-tunable from the calibration sliders (see index.html #calib) because
 // these are in *game* units now that real positions come from the OpenPlanet
 // plugin, and the right values can only be found by ear while driving.
@@ -33,6 +35,8 @@ const relativeOffsetYVal = document.getElementById('relativeOffsetYVal');
 const joinBtn = document.getElementById('joinBtn');
 const micBtn = document.getElementById('micBtn');
 const statusEl = document.getElementById('status');
+const expiredMsgEl = document.getElementById('expiredMsg');
+const serverNameEl = document.getElementById('serverName');
 const peersBody = document.querySelector('#peers tbody');
 const meReadoutEl = document.getElementById('meReadout');
 const eventLogEl = document.getElementById('eventLog');
@@ -77,23 +81,24 @@ function logEvent(msg) {
   while (eventLogEl.childElementCount > 20) eventLogEl.lastChild.remove();
 }
 
-// Pre-fill the identity from ?identity= so the in-game button (which opens
-// the URL with the TM login already appended) saves the player a manual step.
-const urlIdentity = new URLSearchParams(location.search).get('identity');
-if (urlIdentity) identityInput.value = urlIdentity;
-
 let room = null;
 let ingestWs = null;
 let myIdentity = null;
 let dragging = false;
 let audioCtx = null;
+let micEnabled = false;
+let wsPositionInterval = null;
+// Debug-only: room this tab joined via the manual "Room à rejoindre" override,
+// so our own position broadcasts land in the same room instead of the default
+// one. Remove along with the rest of the debug scaffolding before publication.
+let debugJoinedRoom = null;
 
 const me = { x: canvas.width / 2, y: canvas.height / 2, z: 0 };
 // pseudo -> { x, y, lastSeen }
 const peers = new Map();
 // pseudo -> { current, target } (gain, mirrored into the debug table)
 const gains = new Map();
-// pseudo -> { source, panner, gainNode } - the actual WebAudio graph per remote player
+// pseudo -> { source, panner, gainNode, el } - the actual WebAudio graph per remote player
 const audioNodes = new Map();
 
 // Calibration sliders: each one writes its live value straight into the
@@ -125,23 +130,9 @@ function setupCalibration() {
 }
 setupCalibration();
 
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
-}
-
-function clamp(v, lo, hi) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-function gainForDistance(d) {
-  if (d <= MIN_DIST) return 1;
-  if (d >= MAX_DIST) return 0;
-  return 1 - (d - MIN_DIST) / (MAX_DIST - MIN_DIST);
-}
-
-function panForOffset(dx) {
-  return clamp(dx / PAN_RANGE, -1, 1);
-}
+// distance / clamp / gainForDistance / panForOffset used to be inlined here;
+// they now live in ./audio-math.js (imported at the top) so the tests in
+// server/test/audio-math.test.js actually protect the code the browser runs.
 
 // The view is always centred on "me" and scaled so the MAX_DIST ring just
 // fits, so it stays readable whether positions are canvas-sized (drag mode)
@@ -188,7 +179,7 @@ function tickGains() {
   applyRelativeMode();
   for (const [pseudo, pos] of peers) {
     const stale = Date.now() - pos.lastSeen > 3000;
-    const target = stale ? 0 : gainForDistance(distance(me, pos));
+    const target = stale ? 0 : gainForDistance(distance(me, pos), MIN_DIST, MAX_DIST);
     const g = gains.get(pseudo) ?? { current: target, target };
     g.target = target;
     g.current += (g.target - g.current) * LERP_FACTOR; // drives the canvas dot opacity / debug table only
@@ -198,7 +189,7 @@ function tickGains() {
     if (nodes && audioCtx) {
       const now = audioCtx.currentTime;
       nodes.gainNode.gain.setTargetAtTime(target, now, AUDIO_SMOOTHING_SEC);
-      nodes.panner.pan.setTargetAtTime(panForOffset(pos.x - me.x), now, AUDIO_SMOOTHING_SEC);
+      nodes.panner.pan.setTargetAtTime(panForOffset(pos.x - me.x, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
     }
   }
   renderPeerTable();
@@ -251,7 +242,7 @@ function renderPeerTable() {
   for (const [pseudo, pos] of peers) {
     const d = distance(me, pos);
     const g = gains.get(pseudo)?.current ?? 0;
-    const pan = panForOffset(pos.x - me.x);
+    const pan = panForOffset(pos.x - me.x, PAN_RANGE);
     const hasAudio = audioNodes.has(pseudo);
     const tr = document.createElement('tr');
     for (const [i, val] of [pseudo, d.toFixed(0), g.toFixed(2), pan.toFixed(2), hasAudio ? 'OK' : 'no track'].entries()) {
@@ -297,57 +288,71 @@ function decodePosition(payload) {
   }
 }
 
-async function join() {
-  const identity = identityInput.value.trim();
-  if (!identity) return;
-  myIdentity = identity;
-  joinBtn.disabled = true;
-  identityInput.disabled = true;
-  statusEl.textContent = 'connexion...';
-
-  const res = await fetch(`/token?identity=${encodeURIComponent(identity)}`);
-  if (!res.ok) {
-    statusEl.textContent = `token error: ${res.status}`;
-    joinBtn.disabled = false;
-    return;
+// Étape 6: update the server name banner above the player list.
+function updateServerDisplay(name) {
+  if (!serverNameEl) return;
+  if (name) {
+    serverNameEl.textContent = name;
+    serverNameEl.style.display = '';
+  } else {
+    serverNameEl.style.display = 'none';
   }
-  const { token, wsUrl, room: roomName } = await res.json();
+}
 
-  // Created inside this click handler so the browser's autoplay policy
-  // treats it as user-initiated and doesn't leave it suspended.
-  audioCtx = new AudioContext();
-  logEvent(`AudioContext créé, state=${audioCtx.state}`);
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume().then(() => logEvent(`AudioContext.resume() -> ${audioCtx.state}`));
+// Clean up all per-peer audio state before reconnecting to a new room.
+function purgeAll() {
+  peers.clear();
+  gains.clear();
+  for (const nodes of audioNodes.values()) {
+    try { nodes.source.disconnect(); } catch {}
+    try { nodes.panner.disconnect(); } catch {}
+    try { nodes.gainNode.disconnect(); } catch {}
+    if (nodes.el) nodes.el.remove();
   }
+  audioNodes.clear();
+}
 
-  room = new LivekitClient.Room();
-  room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+async function disconnectLiveKit() {
+  if (!room) return;
+  try { await room.disconnect(); } catch {}
+  room = null;
+  purgeAll();
+}
+
+// Wire up all LiveKit room events. Called once per LiveKit room instance.
+function attachRoomEvents(newRoom) {
+  newRoom.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
     if (topic !== 'position') return;
     const msg = decodePosition(payload);
     if (!msg) return;
     if (msg.pseudo === myIdentity) {
       // Our own position coming back from the game: in follow mode this is
       // where "me" comes from (the car), instead of the dragged canvas dot.
-      // Requires joining with the in-game login as identity so the position
-      // stream and the Livekit participant line up.
       if (followGameCheckbox.checked) {
-        me.x = msg.x;
-        me.y = msg.y;
-        me.z = msg.z || 0;
+        const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z ?? 0);
+        if (isFinite(x) && isFinite(y) && isFinite(z)
+            && Math.abs(x) < 1e6 && Math.abs(y) < 1e6 && Math.abs(z) < 1e6) {
+          me.x = x; me.y = y; me.z = z;
+        }
       }
       return;
     }
-    peers.set(msg.pseudo, { x: msg.x, y: msg.y, z: msg.z || 0, lastSeen: Date.now() });
+    const px = Number(msg.x), py = Number(msg.y), pz = Number(msg.z ?? 0);
+    if (!isFinite(px) || !isFinite(py) || !isFinite(pz)
+        || Math.abs(px) >= 1e6 || Math.abs(py) >= 1e6 || Math.abs(pz) >= 1e6) return;
+    const pseudo = typeof msg.pseudo === 'string' && msg.pseudo.length <= 64 ? msg.pseudo : null;
+    if (!pseudo) return;
+    peers.set(pseudo, { x: px, y: py, z: pz, lastSeen: Date.now() });
   });
+
+  newRoom.on(LivekitClient.RoomEvent.ParticipantConnected, (p) => logEvent(`participant joined: ${p.identity}`));
+  newRoom.on(LivekitClient.RoomEvent.ParticipantDisconnected, (p) => logEvent(`participant left: ${p.identity}`));
 
   // Routes each remote player's mic through its own WebAudio graph instead of
   // a plain <audio> element, so gain AND stereo pan can be driven per-peer
   // from tickGains() (a plain <audio> only gives a single overall volume via
   // setVolume() - no left/right). See context.txt ARCHITECTURE AUDIO.
-  room.on(LivekitClient.RoomEvent.ParticipantConnected, (p) => logEvent(`participant joined: ${p.identity}`));
-  room.on(LivekitClient.RoomEvent.ParticipantDisconnected, (p) => logEvent(`participant left: ${p.identity}`));
-  room.on(LivekitClient.RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+  newRoom.on(LivekitClient.RoomEvent.TrackSubscribed, (track, _pub, participant) => {
     logEvent(`TrackSubscribed: ${participant.identity} (kind=${track.kind})`);
     if (track.kind !== LivekitClient.Track.Kind.Audio) return;
 
@@ -364,6 +369,7 @@ async function join() {
     el.style.display = 'none';
     document.body.appendChild(el);
 
+    if (!audioCtx) return; // audioCtx is created at join time, should always exist here
     const stream = new MediaStream([track.mediaStreamTrack]);
     const source = audioCtx.createMediaStreamSource(stream);
     const panner = audioCtx.createStereoPanner();
@@ -372,7 +378,8 @@ async function join() {
     source.connect(panner).connect(gainNode).connect(audioCtx.destination);
     audioNodes.set(participant.identity, { source, panner, gainNode, el });
   });
-  room.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
+
+  newRoom.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     logEvent(`TrackUnsubscribed: ${participant.identity}`);
     track.detach().forEach((el) => el.remove());
     const nodes = audioNodes.get(participant.identity);
@@ -382,35 +389,177 @@ async function join() {
     nodes.gainNode.disconnect();
     audioNodes.delete(participant.identity);
   });
+}
 
-  await room.connect(wsUrl, token);
-  await room.localParticipant.setMicrophoneEnabled(false);
+// Connect (or reconnect) to a LiveKit room using an already-fetched token.
+// serverName is the human-readable display name for Étape 6, or null for legacy joins.
+async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
+  if (!audioCtx) {
+    // Created here for auto-join (no click handler). May start suspended — the
+    // mic button click will resume it (audioCtx.resume() in the mic handler).
+    audioCtx = new AudioContext();
+    logEvent(`AudioContext créé, state=${audioCtx.state}`);
+  }
 
-  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ingestWs = new WebSocket(`${wsProto}//${location.host}/ingest`);
-  ingestWs.addEventListener('open', () => {
-    setInterval(() => {
-      if (ingestWs.readyState !== WebSocket.OPEN) return;
-      // In follow mode the OpenPlanet plugin is already publishing this
-      // identity's position - sending ours too would fight with it.
-      if (followGameCheckbox.checked) return;
-      ingestWs.send(JSON.stringify({ type: 'position', pseudo: identity, x: me.x, y: me.y, z: me.z }));
-    }, SEND_INTERVAL_MS);
-  });
+  const newRoom = new LivekitClient.Room();
+  attachRoomEvents(newRoom);
+  await newRoom.connect(wsUrl, token);
+  await newRoom.localParticipant.setMicrophoneEnabled(false);
 
-  statusEl.textContent = `✅ Connected — you'll hear nearby players automatically`;
+  room = newRoom;
+  updateServerDisplay(serverName ?? null);
+  const debugRoomVal = document.getElementById('debugRoomVal');
+  if (debugRoomVal) debugRoomVal.textContent = roomName;
+  statusEl.textContent = `✅ Connecté — tu entends les joueurs proches automatiquement`;
   statusEl.className = 'ok';
   micBtn.disabled = false;
-  micBtn.textContent = '🎤 Enable microphone';
+  micBtn.textContent = '🎤 Activer le microphone';
   micBtn.className = 'muted';
+  if (expiredMsgEl) expiredMsgEl.style.display = 'none';
+}
+
+// Start the persistent /ingest WebSocket. Stays alive across room changes.
+// Re-registers login on reconnect so the relay keeps its browserSockets entry.
+function startIngestWs(identity) {
+  if (ingestWs && ingestWs.readyState !== WebSocket.CLOSED) return;
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ingestWs = new WebSocket(`${wsProto}//${location.host}/ingest`);
+
+  ingestWs.addEventListener('open', () => {
+    // Register this browser with the relay so it can push room-change notifications.
+    ingestWs.send(JSON.stringify({ type: 'hello', login: identity }));
+    startPositionSend();
+  });
+
+  ingestWs.addEventListener('message', (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'room') handleRoomPush(msg);
+    } catch {}
+  });
+
+  ingestWs.addEventListener('close', () => {
+    ingestWs = null;
+    // Reconnect after a short delay; re-sends hello on open.
+    setTimeout(() => { if (myIdentity) startIngestWs(myIdentity); }, 3000);
+  });
+}
+
+function startPositionSend() {
+  if (wsPositionInterval) return;
+  wsPositionInterval = setInterval(() => {
+    if (!ingestWs || ingestWs.readyState !== WebSocket.OPEN) return;
+    // In follow mode the OpenPlanet plugin is already publishing this
+    // identity's position - sending ours too would fight with it.
+    if (followGameCheckbox.checked) return;
+    const msg = { type: 'position', pseudo: myIdentity, x: me.x, y: me.y, z: me.z };
+    if (debugJoinedRoom) msg.room = debugJoinedRoom;
+    ingestWs.send(JSON.stringify(msg));
+  }, SEND_INTERVAL_MS);
+}
+
+// Étape 4/5: the relay pushes this when the plugin sends a new nonce.
+async function handleRoomPush(msg) {
+  if (!msg.name) {
+    // Étape 5: player left the server — disconnect and show waiting state.
+    await disconnectLiveKit();
+    updateServerDisplay(null);
+    statusEl.textContent = 'Plus sur un serveur — vocal en attente';
+    statusEl.className = '';
+    micBtn.disabled = true;
+    micBtn.className = 'idle';
+    micEnabled = false;
+    return;
+  }
+  // Étape 4: server changed — swap to the new room using the provided nonce.
+  if (!msg.nonce) return;
+  const res = await fetch(`/token?t=${encodeURIComponent(msg.nonce)}`);
+  if (!res.ok) return; // nonce expired or already consumed — ignore
+  const { token, wsUrl, room: roomName, login, serverName } = await res.json();
+  const wasMicEnabled = micEnabled;
+  await disconnectLiveKit();
+  await connectLiveKit({ token, wsUrl, roomName, login, serverName });
+  // Restore mic state in the new room.
+  if (wasMicEnabled && room) {
+    await room.localParticipant.setMicrophoneEnabled(true, {
+      autoGainControl: true,
+      noiseSuppression: false,
+      echoCancellation: false,
+    });
+    micEnabled = true;
+    micBtn.textContent = '🔴 Couper le microphone';
+    micBtn.className = 'live';
+  }
+}
+
+// Auto-join from a ?t=<nonce> URL (placed there by the in-game plugin).
+async function connectViaNonce(nonce) {
+  statusEl.textContent = 'Connexion...';
+  if (expiredMsgEl) expiredMsgEl.style.display = 'none';
+
+  const res = await fetch(`/token?t=${encodeURIComponent(nonce)}`);
+  if (!res.ok) {
+    statusEl.textContent = '';
+    // Show a friendly message if the nonce expired (e.g. user opened an old link).
+    if (res.status === 401 && expiredMsgEl) expiredMsgEl.style.display = '';
+    else statusEl.textContent = `Erreur token: ${res.status}`;
+    return;
+  }
+  const { token, wsUrl, room: roomName, login, serverName } = await res.json();
+  myIdentity = login;
+  await connectLiveKit({ token, wsUrl, roomName, login, serverName });
+  startIngestWs(login);
+}
+
+// Legacy manual join (identity input + Join button).
+async function join() {
+  const identity = identityInput.value.trim();
+  if (!identity) return;
+  myIdentity = identity;
+  joinBtn.disabled = true;
+  identityInput.disabled = true;
+  statusEl.textContent = 'Connexion...';
+
+  // Debug-only: joins the exact same room as a real player (copied from
+  // their own Debug readout), so a second tab can test follow-mode against
+  // them. Remove with the debug section before publication.
+  const debugRoomEl = document.getElementById('debugRoom');
+  const debugRoom = debugRoomEl ? debugRoomEl.value.trim() : '';
+  debugJoinedRoom = debugRoom || null;
+  const params = new URLSearchParams({ identity });
+  if (debugRoom) params.set('room', debugRoom);
+
+  const res = await fetch(`/token?${params.toString()}`);
+  if (!res.ok) {
+    statusEl.textContent = `token error: ${res.status}`;
+    joinBtn.disabled = false;
+    identityInput.disabled = false;
+    return;
+  }
+  const { token, wsUrl, room: roomName } = await res.json();
+
+  // Created inside this click handler so the browser's autoplay policy
+  // treats it as user-initiated and doesn't leave it suspended.
+  audioCtx = new AudioContext();
+  logEvent(`AudioContext créé, state=${audioCtx.state}`);
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume().then(() => logEvent(`AudioContext.resume() -> ${audioCtx.state}`));
+  }
+
+  await connectLiveKit({ token, wsUrl, roomName, login: identity, serverName: null });
+  startIngestWs(identity);
 }
 
 joinBtn.addEventListener('click', join);
 
-let micEnabled = false;
 micBtn.addEventListener('click', async () => {
   if (!room) return;
   micEnabled = !micEnabled;
+  // Resume AudioContext if it was created outside a user gesture (auto-join).
+  if (audioCtx && audioCtx.state === 'suspended') {
+    await audioCtx.resume();
+    logEvent(`AudioContext resumed: ${audioCtx.state}`);
+  }
   // noiseSuppression/echoCancellation off: confirmed culprit for a slow
   // (~1-2s) volume "breathing" baked into the captured signal itself (the
   // debug table's gain column stayed stable while it happened, ruling out
@@ -420,6 +569,19 @@ micBtn.addEventListener('click', async () => {
     noiseSuppression: false,
     echoCancellation: false,
   });
-  micBtn.textContent = micEnabled ? '🔴 Mute microphone' : '🎤 Enable microphone';
+  micBtn.textContent = micEnabled ? '🔴 Couper le microphone' : '🎤 Activer le microphone';
   micBtn.className = micEnabled ? 'live' : 'muted';
 });
+
+// Auto-join: if URL contains ?t=<nonce>, skip the form and join immediately.
+// The join form is hidden by inline script in index.html (before this module
+// loads) to avoid flash of the form.
+const urlNonce = new URLSearchParams(location.search).get('t');
+if (urlNonce) {
+  connectViaNonce(urlNonce);
+} else {
+  // Pre-fill the identity from ?identity= so the in-game button (which opens
+  // the URL with the TM login already appended) saves the player a manual step.
+  const urlIdentity = new URLSearchParams(location.search).get('identity');
+  if (urlIdentity) identityInput.value = urlIdentity;
+}
