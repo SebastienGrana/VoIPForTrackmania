@@ -42,6 +42,15 @@ Volume and panning are computed **client-side** — LiveKit (an SFU) distributes
 
 ---
 
+## Local development
+
+```bash
+cp .env.example .env   # set LIVEKIT_NODE_IP to your LAN IP if testing from another device
+docker compose up
+```
+
+Runs a dev LiveKit server + the relay locally. `LIVEKIT_NODE_IP` (default `127.0.0.1`) is the address LiveKit advertises to WebRTC clients for media — only needed if you're joining from a device other than the one running docker compose.
+
 ## Self-hosting
 
 ### Requirements
@@ -60,18 +69,9 @@ cp .env.example .env   # fill in your LiveKit credentials
 npm start
 ```
 
-### Caddyfile example
+### LiveKit + Caddy + systemd
 
-```
-your.domain.example {
-    handle_path /livekit* {
-        reverse_proxy localhost:7880
-    }
-    handle {
-        reverse_proxy localhost:8080
-    }
-}
-```
+Config templates for running LiveKit and the relay as systemd services behind a Caddy HTTPS reverse proxy live in [`deploy/`](deploy/) — see [`deploy/README.md`](deploy/README.md) for install steps.
 
 ### Update the plugin to point to your server
 

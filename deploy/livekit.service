@@ -1,0 +1,14 @@
+[Unit]
+Description=LiveKit SFU server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/livekit-server --config /etc/livekit/livekit.yaml --node-ip YOUR_VPS_PUBLIC_IP
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=livekit
+
+[Install]
+WantedBy=multi-user.target

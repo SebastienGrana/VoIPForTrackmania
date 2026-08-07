@@ -1,0 +1,13 @@
+port: 7880
+bind_addresses:
+  - 0.0.0.0
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: true
+keys:
+  # Generate your own with: livekit-server generate-keys
+  # These map to LIVEKIT_API_KEY / LIVEKIT_API_SECRET in server/.env.
+  YOUR_API_KEY: YOUR_API_SECRET
+logging:
+  level: info

@@ -1,0 +1,16 @@
+[Unit]
+Description=OnZVoIP relay server
+After=network.target livekit.service
+
+[Service]
+WorkingDirectory=/opt/onzvoip-repo/server
+EnvironmentFile=/opt/onzvoip-repo/server/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=onzvoip-relay
+
+[Install]
+WantedBy=multi-user.target
