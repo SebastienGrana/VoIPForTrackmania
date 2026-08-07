@@ -9,8 +9,9 @@ const RELAY_WS_URL = process.env.RELAY_WS_URL || 'ws://localhost:8080/ingest';
 const SEND_INTERVAL_MS = 200;
 const PERIOD_MS = 10_000; // one full sweep every 10s
 
-// Matches the web client's 480x480 canvas so distances/gains are meaningful
-// to watch side by side with a real browser tab.
+// World-unit coordinates (meters), independent of the web client's canvas
+// pixel size — chosen to land within the default MIN_DIST/MAX_DIST range so
+// distances/gains are meaningful to watch side by side with a real browser tab.
 const CENTER_X = 240;
 const RANGE_X = 200; // oscillates between 40 and 440
 const Y = 240;

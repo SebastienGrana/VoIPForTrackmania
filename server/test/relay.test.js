@@ -58,6 +58,15 @@ describe('OnZVoIP relay', () => {
     await new Promise(resolve => relay.tcpServer.close(resolve));
   });
 
+  describe('GET /health (AUDIT #28)', () => {
+    test('returns 200 ok', async () => {
+      const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
+      assert.strictEqual(res.status, 200);
+      const body = await res.json();
+      assert.strictEqual(body.status, 'ok');
+    });
+  });
+
   describe('GET /token (legacy identity path)', () => {
     test('missing identity → 400 with error message', async () => {
       const res = await fetch(`http://localhost:${HTTP_PORT}/token`);
@@ -366,6 +375,64 @@ describe('OnZVoIP relay', () => {
 // fixed window keyed by IP, so sharing the main describe's relay would make
 // this test's 35 requests bleed into every other /token test's count (all
 // tests hit 127.0.0.1) and start failing them with 429 instead of 200.
+// Isolated relay with tiny limits so the AUDIT #25 behaviours (connection cap,
+// idle timeout) can be exercised without opening/waiting on 1000+ real sockets.
+describe('TCP ingest — connection limits (AUDIT #25, own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+  let TCP_PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      tcpMaxConnections: 2,
+      tcpIdleTimeoutMs: 100,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+    await new Promise(resolve => relay.tcpServer.listen(0, resolve));
+    TCP_PORT = relay.tcpServer.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+    await new Promise(resolve => relay.tcpServer.close(resolve));
+  });
+
+  test('idle socket beyond timeout is destroyed', async () => {
+    await new Promise((resolve, reject) => {
+      const socket = net.createConnection(TCP_PORT, '127.0.0.1', () => {});
+      socket.on('close', resolve);
+      socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
+      // Send nothing — the 100ms idle timeout above should close this.
+    });
+  });
+
+  test('connections beyond the cap are refused, server stays up', async () => {
+    const sockets = [];
+    const closed = [];
+    for (let i = 0; i < 3; i++) {
+      closed.push(new Promise((resolve) => {
+        const socket = net.createConnection(TCP_PORT, '127.0.0.1');
+        socket.on('close', resolve);
+        socket.on('error', () => resolve());
+        sockets.push(socket);
+      }));
+    }
+    // The 3rd connection exceeds tcpMaxConnections: 2 and must be dropped.
+    await Promise.race([closed[2], new Promise(r => setTimeout(r, 500))]);
+    for (const s of sockets) s.destroy();
+    await Promise.all(closed);
+
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterlimit`);
+    assert.strictEqual(res.status, 200);
+  });
+});
+
 describe('rate limiting — /token (own relay instance)', () => {
   let relay;
   let HTTP_PORT;

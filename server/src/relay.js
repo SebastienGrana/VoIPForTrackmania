@@ -73,6 +73,8 @@ export function createRelay({
   liveKitPublicWsUrl,
   roomName,
   staticDir = 'public',
+  tcpMaxConnections = 1000,
+  tcpIdleTimeoutMs = 30_000,
 }) {
   const encoder = new TextEncoder();
   // Étape 4/5: track which WebSocket belongs to which browser login so the
@@ -86,9 +88,16 @@ export function createRelay({
   const tokenLimiter = createRateLimiter({ windowMs: 60_000, max: 30 }); // per IP
   const TCP_MAX_MSG_PER_SEC = 30;
   const WS_MAX_MSG_PER_SEC = 30;
+  const TCP_IDLE_TIMEOUT_MS = tcpIdleTimeoutMs;
+  const TCP_MAX_CONNECTIONS = tcpMaxConnections;
+  let tcpConnectionCount = 0;
 
   const app = express();
   app.use(express.static(staticDir));
+
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+  });
 
   app.get('/token', async (req, res) => {
     if (!tokenLimiter.allow(req.ip)) {
@@ -231,10 +240,16 @@ export function createRelay({
   });
 
   const tcpServer = net.createServer((socket) => {
+    if (tcpConnectionCount >= TCP_MAX_CONNECTIONS) { socket.destroy(); return; }
+    tcpConnectionCount++;
+
     let buffer = '';
     let tcpMsgCount = 0;
     let tcpWindowStart = Date.now();
     socket.setEncoding('utf8');
+    socket.setTimeout(TCP_IDLE_TIMEOUT_MS);
+    socket.on('timeout', () => socket.destroy());
+    socket.on('close', () => { tcpConnectionCount--; });
     socket.on('data', (chunk) => {
       buffer += chunk;
       if (buffer.length > 4096) { socket.destroy(); return; }
