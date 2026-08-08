@@ -2,6 +2,7 @@
 // createRelay() accepts an injected roomService so tests can pass a mock
 // without touching a real LiveKit server.
 
+import crypto from 'crypto';
 import express from 'express';
 import http from 'http';
 import net from 'net';
@@ -125,6 +126,20 @@ export function createRelay({
   // Ingestion is per-connection since positions are unauthenticated (per
   // socket, not per login, since the login itself isn't verified yet).
   const tokenLimiter = createRateLimiter({ windowMs: 60_000, max: 30 }); // per IP
+  // Sécurité restante v2: lets the plugin exchange the permanent community
+  // secret for a short-lived, single-use token over HTTPS (same host as
+  // S_VoipUrl, already behind a real TLS cert via Caddy in production)
+  // instead of writing the permanent secret in cleartext onto the raw TCP
+  // port (8081, no TLS support — see todo.txt). The token is what actually
+  // travels over that plaintext socket; sniffing it only yields a value
+  // that's useless after one connection and expires in seconds either way.
+  const tcpAuthTokens = new Map(); // token → expiry
+  const TCP_AUTH_TOKEN_TTL_MS = 30_000;
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of tcpAuthTokens) if (v < now) tcpAuthTokens.delete(k);
+  }, 30_000).unref();
+  const tcpAuthLimiter = createRateLimiter({ windowMs: 60_000, max: 20 }); // per IP
   const TCP_MAX_MSG_PER_SEC = 30;
   const WS_MAX_MSG_PER_SEC = 30;
   const TCP_IDLE_TIMEOUT_MS = tcpIdleTimeoutMs;
@@ -196,6 +211,29 @@ export function createRelay({
     at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false });
     const token = await at.toJwt();
     res.json({ token, wsUrl: liveKitPublicWsUrl, room });
+  });
+
+  // Sécurité restante v2: POST { secret } over HTTPS, get back a one-time
+  // token good for a single TCP connection. 404s when no secret is
+  // configured at all, so it doesn't leak whether this relay has the
+  // feature enabled to an unauthenticated prober.
+  app.post('/tcp-auth', express.json(), (req, res) => {
+    if (!tcpSharedSecret) {
+      res.status(404).json({ error: 'not configured' });
+      return;
+    }
+    if (!tcpAuthLimiter.allow(req.ip)) {
+      res.status(429).json({ error: 'too many requests' });
+      return;
+    }
+    const secret = typeof req.body?.secret === 'string' ? req.body.secret : '';
+    if (secret !== tcpSharedSecret) {
+      res.status(401).json({ error: 'invalid secret' });
+      return;
+    }
+    const token = crypto.randomBytes(16).toString('hex');
+    tcpAuthTokens.set(token, Date.now() + TCP_AUTH_TOKEN_TTL_MS);
+    res.json({ token });
   });
 
   const server = http.createServer(app);
@@ -319,11 +357,22 @@ export function createRelay({
         catch (err) { console.error('TCP ingest: parse error:', err.message); continue; }
         // Sécurité restante: the first message on a gated connection must be a
         // matching auth — anything else (including a well-formed nonce/position
-        // sent without one) closes the socket immediately.
+        // sent without one) closes the socket immediately. Accepts either a
+        // one-time token from POST /tcp-auth (preferred — see Sécurité
+        // restante v2 above) or the raw secret directly (legacy path, kept for
+        // simulate-positions.js and older plugin builds that never fetch a
+        // token).
         if (!authenticated) {
-          if (msg.type === 'auth' && msg.secret === tcpSharedSecret) {
+          if (msg.type === 'auth' && typeof msg.token === 'string'
+              && tcpAuthTokens.has(msg.token) && tcpAuthTokens.get(msg.token) >= Date.now()) {
+            tcpAuthTokens.delete(msg.token); // single-use
+            authenticated = true;
+          } else if (msg.type === 'auth' && msg.secret === tcpSharedSecret) {
             authenticated = true;
           } else {
+            // Lets the plugin widget tell "wrong/missing secret" apart from a
+            // generic network hiccup, instead of retrying blind forever.
+            try { socket.write('{"type":"authError"}\n'); } catch {}
             socket.destroy();
           }
           return;

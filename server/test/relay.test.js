@@ -533,6 +533,88 @@ describe('TCP ingest — shared secret (Sécurité restante, own relay instance)
   });
 });
 
+describe('POST /tcp-auth — token exchange (Sécurité restante v2, own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+  let TCP_PORT;
+  const SECRET = 'community-token-42';
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      tcpSharedSecret: SECRET,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+    await new Promise(resolve => relay.tcpServer.listen(0, resolve));
+    TCP_PORT = relay.tcpServer.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+    await new Promise(resolve => relay.tcpServer.close(resolve));
+  });
+
+  test('wrong secret over HTTPS → 401, no token issued', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/tcp-auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: 'nope' }),
+    });
+    assert.strictEqual(res.status, 401);
+    const body = await res.json();
+    assert.strictEqual(body.token, undefined);
+  });
+
+  test('correct secret over HTTPS → token, then usable exactly once over TCP', async () => {
+    const authRes = await fetch(`http://localhost:${HTTP_PORT}/tcp-auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: SECRET }),
+    });
+    assert.strictEqual(authRes.status, 200);
+    const { token } = await authRes.json();
+    assert.ok(typeof token === 'string' && token.length > 0);
+
+    // First use: works.
+    const nonce = 'token-auth-nonce';
+    await tcpSend(TCP_PORT, [
+      JSON.stringify({ type: 'auth', token }),
+      JSON.stringify({ type: 'nonce', nonce, login: 'velp', server: '', serverName: '' }),
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+    const res1 = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+    assert.strictEqual(res1.status, 200, 'nonce sent after a valid token must register normally');
+
+    // Second use of the SAME token on a new connection: rejected (single-use).
+    const nonce2 = 'token-auth-nonce-2';
+    await tcpSend(TCP_PORT, [
+      JSON.stringify({ type: 'auth', token }),
+      JSON.stringify({ type: 'nonce', nonce: nonce2, login: 'velp', server: '', serverName: '' }),
+    ]);
+    await new Promise(r => setTimeout(r, 20));
+    const res2 = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce2}`);
+    assert.strictEqual(res2.status, 401, 'a token must not be usable twice');
+  });
+
+  test('relay sends an explicit authError before closing on a rejected auth', async () => {
+    const received = await new Promise((resolve, reject) => {
+      const socket = net.createConnection(TCP_PORT, '127.0.0.1', () => {
+        socket.write(JSON.stringify({ type: 'auth', secret: 'wrong' }) + '\n');
+      });
+      let data = '';
+      socket.on('data', (chunk) => { data += chunk; });
+      socket.on('close', () => resolve(data));
+      socket.on('error', reject);
+    });
+    assert.match(received, /authError/);
+  });
+});
+
 describe('rate limiting — /token (own relay instance)', () => {
   let relay;
   let HTTP_PORT;
