@@ -55,8 +55,14 @@ string FetchAuthToken() {
     Net::HttpRequest@ req = Net::HttpPost(S_VoipUrl + "/tcp-auth", body, "application/json");
     while (!req.Finished()) yield();
 
+    if (req.ResponseCode() == 404) {
+        // Relay has no TCP_SHARED_SECRET configured — it doesn't expose /tcp-auth
+        // at all. The user's secret setting is irrelevant; connect without auth.
+        print("OnZVoIP: /tcp-auth → 404 (relay has no secret configured) — connecting without auth");
+        return "__no_auth__";
+    }
     if (req.ResponseCode() != 200) {
-        print("OnZVoIP: /tcp-auth failed (HTTP " + req.ResponseCode() + ") — wrong secret, or relay has none configured?");
+        print("OnZVoIP: /tcp-auth failed (HTTP " + req.ResponseCode() + ") — secret rejected");
         return "";
     }
 

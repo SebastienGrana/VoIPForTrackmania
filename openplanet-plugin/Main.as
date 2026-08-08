@@ -112,8 +112,12 @@ void Main() {
                     @g_socket = null; // drop and retry via the normal reconnect path
                     continue;
                 }
-                string authLine = "{\"type\":\"auth\",\"token\":\"" + EscapeJsonStr(token) + "\"}\n";
-                g_socket.WriteRaw(authLine);
+                if (token != "__no_auth__") {
+                    // Relay accepted the secret exchange — send the one-time token.
+                    string authLine = "{\"type\":\"auth\",\"token\":\"" + EscapeJsonStr(token) + "\"}\n";
+                    g_socket.WriteRaw(authLine);
+                }
+                // token == "__no_auth__": relay has no secret, skip auth message.
                 g_authSent = true;
                 g_authFailed = false;
             }

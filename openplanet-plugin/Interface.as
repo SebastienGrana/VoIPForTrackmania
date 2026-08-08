@@ -80,8 +80,8 @@ void RenderInterface() {
     // red flag telling the player to go set it there.
     if (g_authFailed) {
         UI::Separator();
-        UI::Text("\\$f00⚠ This relay requires a secret token");
-        UI::TextWrapped("\\$888Set it in Settings > Plugins > OnZVoIP > Relay secret.");
+        UI::Text("\\$f00⚠ Auth failed");
+        UI::TextWrapped("\\$888Check Relay secret in Settings > Plugins > OnZVoIP. Clear it if this relay needs none.");
         if (UI::Button("Retry")) {
             g_authFailed = false;
         }
