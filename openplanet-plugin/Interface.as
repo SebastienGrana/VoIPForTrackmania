@@ -3,6 +3,7 @@
 // Adds "OnZVoIP" to the game's "Plugins" menu (top bar) as a show/hide
 // toggle, alongside every other installed plugin's entry there.
 void RenderMenu() {
+    UI::SetNextWindowSize(300, 0, UI::Cond::Always);
     if (UI::MenuItem("OnZVoIP", "", g_windowOpen)) {
         g_windowOpen = !g_windowOpen;
     }
@@ -34,11 +35,17 @@ void RenderInterface() {
     // when none is needed, which shrinks the usable width for the
     // SetNextItemWidth(-1) fields below and keeps them from reaching the
     // window's right edge.
-    UI::SetNextWindowSize(300, 0, UI::Cond::Always);
+    UI::SetNextWindowSize(310, 0, UI::Cond::Always);
+    UI::SetNextWindowPos(300, 200, UI::Cond::FirstUseEver);
+    // Dear ImGui note: "##" only hides text from the *display* — the ID hash
+    // still includes the whole string, suffix and all. "###" makes ID hashing
+    // use ONLY the text after it, so the visible part before it (connection
+    // status) can change freely without ImGui treating this as a new window
+    // each time.
     if (connected) {
-        UI::Begin("OnZVoIP \\$0f0● connected", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
+        UI::Begin("OnZVoIP \\$0f0● connected###OnZVoIP", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
     } else {
-        UI::Begin("OnZVoIP \\$f80● Connecting...", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
+        UI::Begin("OnZVoIP \\$f80● Connecting...###OnZVoIP", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
     }
 
     string serverLogin, serverName, serverFail;
@@ -64,27 +71,72 @@ void RenderInterface() {
         UI::Text("(enter a race to get a link)");
     }
 
-    // Surfaced here instead of only in Settings → Plugins so players
-    // actually find it: shown in red with a hint the moment the relay
-    // rejects our connection, not buried until someone thinks to look.
-    UI::Separator();
+    // An inline InputText here never reliably kept keystrokes (tried a
+    // persistent backing buffer, tried stabilizing the window ID with
+    // "###" — neither held up in practice), so the field itself lives in
+    // Settings > Plugins > OnZVoIP (S_RelaySecret) instead. This is just the
+    // red flag telling the player to go set it there.
     if (g_authFailed) {
+        UI::Separator();
         UI::Text("\\$f00⚠ This relay requires a secret token");
-        UI::TextWrapped("\\$888Ask your community admin for it, then paste it below:");
-    } else {
-        UI::Text("Community token:");
-        UI::TextWrapped("\\$888Leave blank unless the admin gave you one.");
-    }
-    string secretBuf = S_RelaySecret;
-    UI::SetNextItemWidth(200);
-    // UI::InputText's return type isn't reliably `bool` across OpenPlanet
-    // builds (compiling against it in an `if` failed with "found 'string'"
-    // on 1.29.5) — detect the edit by diffing the buffer instead.
-    UI::InputText("Relay secret", secretBuf, UI::InputTextFlags::Password);
-    if (secretBuf != S_RelaySecret) {
-        S_RelaySecret = secretBuf;
-        g_authSent = false; // retry immediately with the new value, no reconnect needed
+        UI::TextWrapped("\\$888Set it in Settings > Plugins > OnZVoIP > Relay secret.");
     }
 
     UI::End();
+}
+
+// Compact always-on status pill, e.g. "OnZVoIP ● connected", drawn with
+// NanoVG in the top-left corner. RenderInterface() above only draws while
+// OpenPlanet's own overlay (F3) is open; Render() runs every frame
+// regardless, so this is what keeps a status visible after the player closes
+// the overlay — the "retracted" look, same idea as an ImGui window collapsed
+// down to just its title bar.
+// Distance from the screen's top-left corner, in pixels. Bump HUD_X to push
+// the pill right, HUD_Y to push it down.
+const float HUD_X = 300.0f;
+const float HUD_Y = 50.0f;
+const float HUD_PAD_X = 8.0f;
+const float HUD_PAD_Y = 5.0f;
+const float HUD_GAP = 6.0f;
+const float HUD_DOT_RADIUS = 4.0f;
+const float HUD_FONT_SIZE = 14.0f;
+
+void Render() {
+    if (!g_windowOpen) return;
+
+    bool connected = g_socket !is null && g_socket.IsReady();
+    string statusText = connected ? "connected" : "Connecting...";
+    vec4 dotColor = connected ? vec4(0.2f, 0.85f, 0.3f, 1.0f) : vec4(1.0f, 0.6f, 0.1f, 1.0f);
+
+    nvg::FontSize(HUD_FONT_SIZE);
+    vec2 titleSize = nvg::TextBounds("OnZVoIP");
+    vec2 statusSize = nvg::TextBounds(statusText);
+
+    float contentHeight = Math::Max(titleSize.y, statusSize.y);
+    float boxWidth = HUD_PAD_X * 2.0f + titleSize.x + HUD_GAP + HUD_DOT_RADIUS * 2.0f + HUD_GAP + statusSize.x;
+    float boxHeight = HUD_PAD_Y * 2.0f + contentHeight;
+    float midY = HUD_Y + boxHeight / 2.0f;
+
+    nvg::BeginPath();
+    nvg::RoundedRect(HUD_X, HUD_Y, boxWidth, boxHeight, 6.0f);
+    nvg::FillColor(vec4(0.0f, 0.0f, 0.0f, 0.55f));
+    nvg::Fill();
+    nvg::ClosePath();
+
+    nvg::TextAlign(nvg::Align::Left | nvg::Align::Middle);
+
+    float x = HUD_X + HUD_PAD_X;
+    nvg::FillColor(vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    nvg::Text(x, midY, "OnZVoIP");
+    x += titleSize.x + HUD_GAP;
+
+    nvg::BeginPath();
+    nvg::Circle(vec2(x + HUD_DOT_RADIUS, midY), HUD_DOT_RADIUS);
+    nvg::FillColor(dotColor);
+    nvg::Fill();
+    nvg::ClosePath();
+    x += HUD_DOT_RADIUS * 2.0f + HUD_GAP;
+
+    nvg::FillColor(vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    nvg::Text(x, midY, statusText);
 }
