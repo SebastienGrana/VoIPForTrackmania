@@ -14,8 +14,8 @@
 const int SEND_INTERVAL_MS = 200;
 const int RECONNECT_INTERVAL_MS = 2000;
 const int DIAG_INTERVAL_MS = 3000;
-// Refresh the nonce before the relay's 2-minute TTL expires.
-const int NONCE_REFRESH_MS = 90000;
+// Refresh the nonce before the relay's 12-minute TTL expires.
+const int NONCE_REFRESH_MS = 9 * 60 * 1000;
 // While a secret keeps failing, retry the HTTPS token exchange at most this
 // often instead of every RECONNECT_INTERVAL_MS — the TCP socket still cycles
 // (harmless), but /tcp-auth stops getting hammered while the player figures

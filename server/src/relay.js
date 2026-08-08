@@ -17,7 +17,7 @@ import { roomNameFor, displayNameFor } from './room-name.js';
 // The browser then uses GET /token?t=<nonce> to get a token already bound to
 // the right room — no identity or room param needed from the user.
 const nonces = new Map();
-const NONCE_TTL_MS = 2 * 60 * 1000;
+const NONCE_TTL_MS = 12 * 60 * 1000;
 
 // Prune expired nonces to avoid unbounded growth if a player never opens the URL.
 setInterval(() => {
