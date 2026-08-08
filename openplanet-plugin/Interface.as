@@ -44,6 +44,8 @@ void RenderInterface() {
     // each time.
     if (connected) {
         UI::Begin("OnZVoIP \\$0f0● connected###OnZVoIP", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
+    } else if (g_authFailed) {
+        UI::Begin("OnZVoIP \\$f00● auth failed###OnZVoIP", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
     } else {
         UI::Begin("OnZVoIP \\$f80● Connecting...###OnZVoIP", UI::WindowFlags::AlwaysAutoResize | UI::WindowFlags::NoResize | UI::WindowFlags::NoScrollbar);
     }
@@ -80,6 +82,9 @@ void RenderInterface() {
         UI::Separator();
         UI::Text("\\$f00⚠ This relay requires a secret token");
         UI::TextWrapped("\\$888Set it in Settings > Plugins > OnZVoIP > Relay secret.");
+        if (UI::Button("Retry")) {
+            g_authFailed = false;
+        }
     }
 
     UI::End();
@@ -105,8 +110,8 @@ void Render() {
     if (!g_windowOpen) return;
 
     bool connected = g_socket !is null && g_socket.IsReady();
-    string statusText = connected ? "connected" : "Connecting...";
-    vec4 dotColor = connected ? vec4(0.2f, 0.85f, 0.3f, 1.0f) : vec4(1.0f, 0.6f, 0.1f, 1.0f);
+    string statusText = connected ? "connected" : (g_authFailed ? "auth failed" : "Connecting...");
+    vec4 dotColor = connected ? vec4(0.2f, 0.85f, 0.3f, 1.0f) : (g_authFailed ? vec4(0.9f, 0.15f, 0.15f, 1.0f) : vec4(1.0f, 0.6f, 0.1f, 1.0f));
 
     nvg::FontSize(HUD_FONT_SIZE);
     vec2 titleSize = nvg::TextBounds("OnZVoIP");

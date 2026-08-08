@@ -68,6 +68,7 @@ void Main() {
             g_loggedConnected = false;
             g_authSent = false;    // re-send auth on reconnect (new socket)
             g_nonce = "";          // stale nonce after disconnect
+            if (g_authFailed) continue; // stopped — use the Retry button in the widget
             if (now - g_lastConnectAttemptAt < RECONNECT_INTERVAL_MS) continue;
             g_lastConnectAttemptAt = now;
             TryConnect();
