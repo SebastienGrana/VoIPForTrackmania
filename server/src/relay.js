@@ -106,6 +106,25 @@ export function createRelay({
       if (posMap.size === 0) continue;
       const positions = Array.from(posMap, ([pseudo, p]) => ({ pseudo, ...p }));
       posMap.clear();
+
+      // A room only exists on LiveKit's side once someone has joined it via
+      // the web client — the plugin sends positions the moment a player is on
+      // a server, regardless of whether anyone opened that link. sendData()
+      // to a room nobody has joined times out at LiveKit's psrpc layer (it
+      // must reach the room's live process to broadcast on it), so check
+      // first with listRooms(): unlike sendData/listParticipants, that call
+      // is answered directly from LiveKit's room registry, not routed to a
+      // live process, so it can't stall the same way on a room that doesn't
+      // exist yet.
+      let roomExists;
+      try {
+        const rooms = await roomService.listRooms([room]);
+        roomExists = rooms.length > 0;
+      } catch (err) {
+        roomExists = false;
+      }
+      if (!roomExists) continue;
+
       const payload = JSON.stringify(positions);
       try {
         await roomService.sendData(room, encoder.encode(payload), DataPacket_Kind.LOSSY, {

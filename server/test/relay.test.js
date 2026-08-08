@@ -14,6 +14,9 @@ function makeMockRoomService() {
   const calls = [];
   return {
     calls,
+    // Default: pretend every room exists, so existing sendData assertions
+    // below don't need to know about the room-existence gate.
+    async listRooms(names) { return names.map(name => ({ name })); },
     async sendData(...args) { calls.push(args); },
   };
 }
@@ -273,6 +276,22 @@ describe('OnZVoIP relay', () => {
       // Server should still handle new requests
       const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=postcrash`);
       assert.strictEqual(res.status, 200);
+    });
+
+    test('room does not exist on LiveKit → sendData skipped, no error thrown', async () => {
+      const before = mockService.calls.length;
+      const originalListRooms = mockService.listRooms;
+      mockService.listRooms = async () => [];
+      try {
+        await tcpSend(TCP_PORT, [
+          JSON.stringify({ type: 'position', pseudo: 'velp', x: 1, y: 2, z: 0 }),
+        ]);
+        await new Promise(r => setTimeout(r, 20));
+        await relay.flushPositions();
+      } finally {
+        mockService.listRooms = originalListRooms;
+      }
+      assert.strictEqual(mockService.calls.length, before, 'sendData must not be called for a room nobody has joined');
     });
 
     test('multiple positions in one TCP chunk → all broadcast', async () => {
