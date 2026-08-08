@@ -52,7 +52,7 @@ void RenderInterface() {
 
     string serverLogin, serverName, serverFail;
     if (TryGetServerInfo(serverLogin, serverName, serverFail)) {
-        UI::Text("Server: " + StripTmCodes(serverName));
+        UI::Text(StripTmCodes(serverName));
         UI::SameLine();
         UI::TextDisabled("(" + serverLogin + ")");
     } else {
