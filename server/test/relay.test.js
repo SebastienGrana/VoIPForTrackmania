@@ -18,17 +18,25 @@ function makeMockRoomService() {
     // below don't need to know about the room-existence gate.
     async listRooms(names) { return names.map(name => ({ name })); },
     async sendData(...args) { calls.push(args); },
+    async listParticipants(_room) { return []; },
   };
 }
 
 // Connects a TCP socket to TCP_PORT, sends the given lines (joined by \n),
 // then closes. Resolves when the socket is fully closed.
+// resume(): since Étape 7 the relay may write a state push back on this same
+// connection (e.g. after a nonce). A paused Readable never reaches 'end'
+// until its buffered data is consumed, so without draining it here, any
+// unread reply from the relay would block 'close' from ever firing and hang
+// the test. This helper doesn't care about the reply's content, just that it
+// doesn't get stuck unread.
 function tcpSend(port, lines) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(port, '127.0.0.1', () => {
       socket.write(lines.join('\n') + '\n');
       socket.end();
     });
+    socket.resume();
     socket.on('close', resolve);
     socket.on('error', reject);
   });
@@ -631,6 +639,89 @@ describe('POST /tcp-auth — token exchange (Sécurité restante v2, own relay i
       socket.on('error', reject);
     });
     assert.match(received, /authError/);
+  });
+});
+
+// Étape 7: state push over the TCP socket that sent the nonce.
+// Own relay instance so statePushIntervalMs can be set very high (avoids
+// timer-triggered pushes racing with the test's explicit socket.destroy()).
+describe('TCP state push — Étape 7 (own relay instance)', () => {
+  let relay;
+  let statePushService;
+  let STATE_TCP_PORT;
+
+  before(async () => {
+    statePushService = makeMockRoomService();
+    relay = createRelay({
+      roomService: statePushService,
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      statePushIntervalMs: 3_600_000, // prevent timer-triggered pushes during tests
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    await new Promise(resolve => relay.tcpServer.listen(0, resolve));
+    STATE_TCP_PORT = relay.tcpServer.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+    await new Promise(resolve => relay.tcpServer.close(resolve));
+  });
+
+  // Opens a TCP socket, sends lines, waits durationMs, destroys the socket,
+  // and resolves with everything the relay wrote back.
+  function tcpOpenAndCollect(port, lines, durationMs) {
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection(port, '127.0.0.1', () => {
+        for (const line of lines) socket.write(line + '\n');
+      });
+      socket.setEncoding('utf8');
+      let buf = '';
+      socket.on('data', chunk => { buf += chunk; });
+      socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve(buf) : reject(err)));
+      setTimeout(() => { socket.destroy(); resolve(buf); }, durationMs);
+    });
+  }
+
+  test('nonce over TCP → relay pushes state back on same connection', async () => {
+    const data = await tcpOpenAndCollect(STATE_TCP_PORT, [
+      JSON.stringify({ type: 'nonce', nonce: 'sp-test-1', login: 'velp', server: 'test-srv', serverName: 'TestServer' }),
+    ], 200);
+
+    const stateLine = data.split('\n').find(l => l.includes('"type":"state"'));
+    assert.ok(stateLine, `expected a state push, received: ${JSON.stringify(data)}`);
+    const state = JSON.parse(stateLine);
+    assert.strictEqual(typeof state.players, 'number', 'state.players must be a number');
+    assert.strictEqual(typeof state.web, 'boolean', 'state.web must be a boolean');
+    assert.strictEqual(typeof state.mic, 'boolean', 'state.mic must be a boolean');
+    // Mock returns [], so the player is not in LiveKit yet
+    assert.strictEqual(state.players, 0);
+    assert.strictEqual(state.web, false);
+    assert.strictEqual(state.mic, false);
+  });
+
+  test('web=true and correct player count when player appears in listParticipants', async () => {
+    const original = statePushService.listParticipants;
+    statePushService.listParticipants = async () => [
+      { identity: 'velp', tracks: [{ type: 0 /* AUDIO */, muted: false }] },
+      { identity: 'other', tracks: [{ type: 0, muted: true }] },
+    ];
+    try {
+      const data = await tcpOpenAndCollect(STATE_TCP_PORT, [
+        JSON.stringify({ type: 'nonce', nonce: 'sp-test-2', login: 'velp', server: 'test-srv', serverName: 'TestServer' }),
+      ], 200);
+
+      const stateLine = data.split('\n').find(l => l.includes('"type":"state"'));
+      assert.ok(stateLine, `expected a state push, received: ${JSON.stringify(data)}`);
+      const state = JSON.parse(stateLine);
+      assert.strictEqual(state.players, 2, 'players should count all participants');
+      assert.strictEqual(state.web, true, 'web should be true when player is in LiveKit');
+      assert.strictEqual(state.mic, true, 'mic should reflect the player\'s own track muted state');
+    } finally {
+      statePushService.listParticipants = original;
+    }
   });
 });
 

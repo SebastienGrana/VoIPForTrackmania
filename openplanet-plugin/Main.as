@@ -55,6 +55,12 @@ string g_lastLoggedServerLogin = "";
 // menu entry added by RenderMenu() in Interface.as.
 bool g_windowOpen = true;
 
+// State pushed by the relay (Étape 7). -1 = not yet received.
+int g_statePlayersInRoom = -1;
+bool g_stateWebConnected = false;
+bool g_stateMicMuted = false;
+string g_tcpReadBuf = "";
+
 void Main() {
     print("OnZVoIP: plugin started, Main() running");
     while (true) {
@@ -68,6 +74,10 @@ void Main() {
             g_loggedConnected = false;
             g_authSent = false;    // re-send auth on reconnect (new socket)
             g_nonce = "";          // stale nonce after disconnect
+            g_tcpReadBuf = "";
+            g_statePlayersInRoom = -1;
+            g_stateWebConnected = false;
+            g_stateMicMuted = false;
             if (g_authFailed) continue; // stopped — use the Retry button in the widget
             if (now - g_lastConnectAttemptAt < RECONNECT_INTERVAL_MS) continue;
             g_lastConnectAttemptAt = now;
@@ -123,16 +133,35 @@ void Main() {
             }
         }
 
-        // The relay writes back a one-line JSON error before closing the
-        // socket when it rejects our first message (no secret configured on
-        // our side but one required, or a stale/replayed token). This is a
-        // best-effort substring check for a UI hint, not real protocol
-        // parsing, so a reply split across two reads can be missed — the
-        // normal reconnect loop retries regardless.
+        // Read relay → plugin messages. The relay sends newline-delimited JSON:
+        // {"type":"authError"} on rejected auth, {"type":"state",...} for
+        // periodic state updates (Étape 7). Buffer incomplete lines across
+        // yields; discard and reset if the buffer grows beyond 4 KB (guards
+        // against a misbehaving relay sending garbage without newlines).
         if (g_socket.IsReady()) {
-            string reply = g_socket.ReadRaw(256);
-            if (reply.Contains("authError")) {
-                g_authFailed = true;
+            string chunk = g_socket.ReadRaw(512);
+            if (chunk.Length > 0) {
+                g_tcpReadBuf += chunk;
+                if (g_tcpReadBuf.Length > 4096) {
+                    g_tcpReadBuf = "";
+                } else {
+                    int nl;
+                    while ((nl = g_tcpReadBuf.IndexOf("\n")) >= 0) {
+                        string line = g_tcpReadBuf.SubStr(0, nl);
+                        g_tcpReadBuf = g_tcpReadBuf.SubStr(nl + 1, g_tcpReadBuf.Length - (nl + 1));
+                        line = line.Trim();
+                        if (line.Contains("authError")) {
+                            g_authFailed = true;
+                        } else if (line.Contains("\"state\"")) {
+                            Json::Value@ json = Json::Parse(line);
+                            if (json !is null) {
+                                if (json.HasKey("players")) g_statePlayersInRoom = int(json["players"]);
+                                if (json.HasKey("web"))     g_stateWebConnected  = bool(json["web"]);
+                                if (json.HasKey("mic"))     g_stateMicMuted       = bool(json["mic"]);
+                            }
+                        }
+                    }
+                }
             }
         }
 

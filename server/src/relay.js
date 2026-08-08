@@ -8,7 +8,7 @@ import http from 'http';
 import net from 'net';
 import { WebSocketServer } from 'ws';
 import { AccessToken } from 'livekit-server-sdk';
-import { DataPacket_Kind } from '@livekit/protocol';
+import { DataPacket_Kind, TrackType } from '@livekit/protocol';
 import { roomNameFor, displayNameFor } from './room-name.js';
 
 // A-bis: one-time nonce store.
@@ -88,6 +88,7 @@ export function createRelay({
   // scanners/bots cold. Empty string (default) disables the check entirely,
   // which keeps local dev and the test suite working without configuring one.
   tcpSharedSecret = '',
+  statePushIntervalMs = 5_000,
 }) {
   const encoder = new TextEncoder();
   // Audit #27: broadcastPosition() used to call roomService.sendData() once
@@ -139,6 +140,39 @@ export function createRelay({
   // Étape 4/5: track which WebSocket belongs to which browser login so the
   // relay can push room-change notifications when the plugin sends a new nonce.
   const browserSockets = new Map(); // login → WebSocket
+  // Étape 7: push relay state (player count, web connected, mic muted) back to
+  // the plugin over its existing TCP connection.
+  const tcpSocketsByLogin = new Map(); // login → { socket, room }
+
+  async function pushStateToSocket(login, socket, room) {
+    // readableEnded: the remote peer sent FIN (is closing). Writing back would
+    // leave data in their paused-mode buffer and prevent their 'close' from
+    // firing — see test-hang post-mortem in context.txt.
+    if (socket.destroyed || socket.readableEnded) return;
+    let players = 0, web = false, mic = false;
+    if (room) {
+      try {
+        const rooms = await roomService.listRooms([room]);
+        if (rooms.length > 0) {
+          const participants = await roomService.listParticipants(room);
+          players = participants.length;
+          const me = participants.find(p => p.identity === login);
+          if (me) {
+            web = true;
+            const audioTrack = (me.tracks || []).find(t => t.type === TrackType.AUDIO);
+            mic = audioTrack ? !audioTrack.muted : false;
+          }
+        }
+      } catch { return; }
+    }
+    try { socket.write(JSON.stringify({ type: 'state', players, web, mic }) + '\n'); } catch {}
+  }
+
+  const statePushTimer = setInterval(() => {
+    for (const [login, { socket, room }] of tcpSocketsByLogin) {
+      pushStateToSocket(login, socket, room).catch(() => {});
+    }
+  }, statePushIntervalMs).unref();
 
   // Rate-limiting (ORDRE D'IMPLÉMENTATION point 4): a handful of token
   // requests per join is normal, dozens per second is a scripted attack.
@@ -356,10 +390,17 @@ export function createRelay({
     // No secret configured → nothing to check, same behavior as before this
     // feature existed (local dev / tests keep working unchanged).
     let authenticated = !tcpSharedSecret;
+    let tcpLogin = null; // login associated with this socket (Étape 7)
+    let tcpRoom = null;  // current room for this socket
     socket.setEncoding('utf8');
     socket.setTimeout(TCP_IDLE_TIMEOUT_MS);
     socket.on('timeout', () => socket.destroy());
-    socket.on('close', () => { tcpConnectionCount--; });
+    socket.on('close', () => {
+      tcpConnectionCount--;
+      if (tcpLogin && tcpSocketsByLogin.get(tcpLogin)?.socket === socket) {
+        tcpSocketsByLogin.delete(tcpLogin);
+      }
+    });
     socket.on('data', (chunk) => {
       buffer += chunk;
       if (buffer.length > 4096) { socket.destroy(); return; }
@@ -386,21 +427,44 @@ export function createRelay({
               && tcpAuthTokens.has(msg.token) && tcpAuthTokens.get(msg.token) >= Date.now()) {
             tcpAuthTokens.delete(msg.token); // single-use
             authenticated = true;
+            continue; // a message right after auth in the same chunk (e.g. nonce) must still be processed below
           } else if (msg.type === 'auth' && msg.secret === tcpSharedSecret) {
             authenticated = true;
+            continue;
           } else {
             // Lets the plugin widget tell "wrong/missing secret" apart from a
             // generic network hiccup, instead of retrying blind forever.
             try { socket.write('{"type":"authError"}\n'); } catch {}
             socket.destroy();
+            return;
           }
-          return;
         }
         handleMessage(msg);
+        // Étape 7: associate this socket with the player's login after a valid
+        // nonce so pushStateToSocket can write back over the same connection.
+        if (msg.type === 'nonce') {
+          const login = validateLogin(msg.login);
+          if (login) {
+            if (tcpLogin && tcpSocketsByLogin.get(tcpLogin)?.socket === socket) {
+              tcpSocketsByLogin.delete(tcpLogin);
+            }
+            const srv = validateServer(msg.server) ?? '';
+            const sName = typeof msg.serverName === 'string' ? msg.serverName.slice(0, 256) : '';
+            tcpLogin = login;
+            tcpRoom = srv ? (roomNameFor(srv, sName) ?? roomName) : null;
+            tcpSocketsByLogin.set(login, { socket, room: tcpRoom });
+            // setImmediate: defer to after the current poll phase so 'end'
+            // fires first if the peer is already half-closing (tcpSend tests).
+            // pushStateToSocket then sees readableEnded=true and skips the
+            // write, preventing buffered-data from blocking 'close' on the test
+            // socket. For the real plugin the socket stays open: no difference.
+            setImmediate(() => pushStateToSocket(login, socket, tcpRoom).catch(() => {}));
+          }
+        }
       }
     });
     socket.on('error', (err) => console.error('TCP ingest: socket error:', err.message));
   });
 
-  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer };
+  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer, statePushTimer };
 }

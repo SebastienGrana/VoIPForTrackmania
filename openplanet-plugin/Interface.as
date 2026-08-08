@@ -73,6 +73,22 @@ void RenderInterface() {
         UI::Text("(enter a race to get a link)");
     }
 
+    // Étape 7: relay state — web connection status, mic, player count.
+    if (connected && g_statePlayersInRoom >= 0) {
+        UI::Separator();
+        if (g_stateWebConnected) {
+            string pc = g_statePlayersInRoom == 1 ? "1 player" : (g_statePlayersInRoom + " players");
+            UI::Text("\\$0f0Web: connected (" + pc + ")");
+            if (g_stateMicMuted) {
+                UI::Text("\\$888Mic: muted");
+            } else {
+                UI::Text("\\$0f0Mic: active");
+            }
+        } else {
+            UI::TextWrapped("\\$f80Web: not open — use Copy URL above");
+        }
+    }
+
     // An inline InputText here never reliably kept keystrokes (tried a
     // persistent backing buffer, tried stabilizing the window ID with
     // "###" — neither held up in practice), so the field itself lives in
@@ -98,7 +114,7 @@ void RenderInterface() {
 // down to just its title bar.
 // Distance from the screen's top-left corner, in pixels. Bump HUD_X to push
 // the pill right, HUD_Y to push it down.
-const float HUD_X = 300.0f;
+const float HUD_X = 2105.0f;
 const float HUD_Y = 50.0f;
 const float HUD_PAD_X = 8.0f;
 const float HUD_PAD_Y = 5.0f;
@@ -110,7 +126,17 @@ void Render() {
     if (!g_windowOpen) return;
 
     bool connected = g_socket !is null && g_socket.IsReady();
-    string statusText = connected ? "connected" : (g_authFailed ? "auth failed" : "Connecting...");
+    string statusText;
+    if (!connected) {
+        statusText = g_authFailed ? "auth failed" : "Connecting...";
+    } else if (g_statePlayersInRoom < 0) {
+        statusText = "connected";
+    } else if (!g_stateWebConnected) {
+        statusText = "connected | open browser!";
+    } else {
+        string pc = g_statePlayersInRoom == 1 ? "1 in room" : (g_statePlayersInRoom + " in room");
+        statusText = "connected | " + pc;
+    }
     vec4 dotColor = connected ? vec4(0.2f, 0.85f, 0.3f, 1.0f) : (g_authFailed ? vec4(0.9f, 0.15f, 0.15f, 1.0f) : vec4(1.0f, 0.6f, 0.1f, 1.0f));
 
     nvg::FontSize(HUD_FONT_SIZE);
