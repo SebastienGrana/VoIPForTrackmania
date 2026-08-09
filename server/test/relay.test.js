@@ -26,8 +26,8 @@ function makeMockRoomService() {
 
 // Connects a TCP socket to TCP_PORT, sends the given lines (joined by \n),
 // then closes. Resolves when the socket is fully closed.
-// resume(): since Step 7 the relay may write a state push back on this same
-// connection (e.g. after a nonce). A paused Readable never reaches 'end'
+// resume(): the relay may write a state push back on this same connection
+// (e.g. after a nonce). A paused Readable never reaches 'end'
 // until its buffered data is consumed, so without draining it here, any
 // unread reply from the relay would block 'close' from ever firing and hang
 // the test. This helper doesn't care about the reply's content, just that it
@@ -75,7 +75,7 @@ describe('OnZVoIP relay', () => {
     await new Promise(resolve => relay.tcpServer.close(resolve));
   });
 
-  describe('GET /health (AUDIT #28)', () => {
+  describe('GET /health', () => {
     test('returns 200 ok', async () => {
       const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
       assert.strictEqual(res.status, 200);
@@ -113,8 +113,8 @@ describe('OnZVoIP relay', () => {
     });
   });
 
-  // A-bis: one-time nonce path
-  describe('GET /token?t= (A-bis nonce path)', () => {
+  // One-time nonce path
+  describe('GET /token?t= (nonce path)', () => {
     test('unknown nonce → 401', async () => {
       const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=doesnotexist`);
       assert.strictEqual(res.status, 401);
@@ -175,8 +175,8 @@ describe('OnZVoIP relay', () => {
     });
   });
 
-  // Step 3: position routing by server
-  describe('TCP ingest — server-based room routing (Step 3)', () => {
+  // Position routing by server
+  describe('TCP ingest — server-based room routing', () => {
     test('position with server field → sendData targets server room (not default)', async () => {
       const before = mockService.calls.length;
       await tcpSend(TCP_PORT, [
@@ -331,10 +331,10 @@ describe('OnZVoIP relay', () => {
     });
   });
 
-  // Regression tests for the ef55717 hardening — AUDIT #14. These behaviours
-  // used to have zero coverage, meaning a well-intentioned refactor could
-  // silently remove them and no test would notice.
-  describe('input validation (AUDIT #14)', () => {
+  // Regression tests for input-validation hardening. These behaviours used to
+  // have zero coverage, meaning a well-intentioned refactor could silently
+  // remove them and no test would notice.
+  describe('input validation', () => {
     test('x = NaN → rejected, no broadcast (would poison client Math.hypot)', async () => {
       const before = mockService.calls.length;
       // Cannot JSON.stringify NaN (becomes null), so send the raw JSON literal.
@@ -355,7 +355,8 @@ describe('OnZVoIP relay', () => {
     test('x = null → rejected (Number(null) is 0 but the payload is malformed)', async () => {
       // Number(null) === 0, which IS finite, so this actually passes today.
       // Kept as a regression marker: if we tighten validation, update the
-      // expected count. See AUDIT #3 (client-side) for the belt & suspenders.
+      // expected count. The web client applies its own validation too, as a
+      // belt-and-suspenders layer independent of this server-side check.
       const before = mockService.calls.length;
       await tcpSend(TCP_PORT, [
         JSON.stringify({ type: 'position', pseudo: 'velp', x: null, y: 0, z: 0 }),
@@ -433,9 +434,9 @@ describe('OnZVoIP relay', () => {
 // fixed window keyed by IP, so sharing the main describe's relay would make
 // this test's 35 requests bleed into every other /token test's count (all
 // tests hit 127.0.0.1) and start failing them with 429 instead of 200.
-// Isolated relay with tiny limits so the AUDIT #25 behaviours (connection cap,
-// idle timeout) can be exercised without opening/waiting on 1000+ real sockets.
-describe('TCP ingest — connection limits (AUDIT #25, own relay instance)', () => {
+// Isolated relay with tiny limits so the connection cap and idle timeout
+// behaviours can be exercised without opening/waiting on 1000+ real sockets.
+describe('TCP ingest — connection limits (own relay instance)', () => {
   let relay;
   let HTTP_PORT;
   let TCP_PORT;
@@ -491,10 +492,9 @@ describe('TCP ingest — connection limits (AUDIT #25, own relay instance)', () 
   });
 });
 
-// Remaining security (IMPLEMENTATION ORDER point 6): own relay instance so
-// the shared-secret gate doesn't affect the main describe's unauthenticated
-// TCP tests above.
-describe('TCP ingest — shared secret (Remaining security, own relay instance)', () => {
+// Own relay instance so the shared-secret gate doesn't affect the main
+// describe's unauthenticated TCP tests above.
+describe('TCP ingest — shared secret (own relay instance)', () => {
   let relay;
   let HTTP_PORT;
   let TCP_PORT;
@@ -566,7 +566,7 @@ describe('TCP ingest — shared secret (Remaining security, own relay instance)'
   });
 });
 
-describe('POST /tcp-auth — token exchange (Remaining security v2, own relay instance)', () => {
+describe('POST /tcp-auth — token exchange (own relay instance)', () => {
   let relay;
   let HTTP_PORT;
   let TCP_PORT;
@@ -648,10 +648,10 @@ describe('POST /tcp-auth — token exchange (Remaining security v2, own relay in
   });
 });
 
-// Step 7: state push over the TCP socket that sent the nonce.
+// State push over the TCP socket that sent the nonce.
 // Own relay instance so statePushIntervalMs can be set very high (avoids
 // timer-triggered pushes racing with the test's explicit socket.destroy()).
-describe('TCP state push — Step 7 (own relay instance)', () => {
+describe('TCP state push (own relay instance)', () => {
   let relay;
   let statePushService;
   let STATE_TCP_PORT;

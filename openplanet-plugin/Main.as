@@ -55,7 +55,7 @@ string g_lastLoggedServerLogin = "";
 // menu entry added by RenderMenu() in Interface.as.
 bool g_windowOpen = true;
 
-// State pushed by the relay (Step 7). -1 = not yet received.
+// State pushed by the relay. -1 = not yet received.
 int g_statePlayersInRoom = -1;
 bool g_stateWebConnected = false;
 bool g_stateMicMuted = false;
@@ -135,7 +135,7 @@ void Main() {
 
         // Read relay → plugin messages. The relay sends newline-delimited JSON:
         // {"type":"authError"} on rejected auth, {"type":"state",...} for
-        // periodic state updates (Step 7). Buffer incomplete lines across
+        // periodic state updates. Buffer incomplete lines across
         // yields; discard and reset if the buffer grows beyond 4 KB (guards
         // against a misbehaving relay sending garbage without newlines).
         if (g_socket.IsReady()) {

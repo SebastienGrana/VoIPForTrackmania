@@ -73,7 +73,7 @@ void RenderInterface() {
         UI::Text("(enter a race to get a link)");
     }
 
-    // Step 7: relay state — web connection status, mic, player count.
+    // Relay state — web connection status, mic, player count.
     if (connected && g_statePlayersInRoom >= 0) {
         UI::Separator();
         if (g_stateWebConnected) {
