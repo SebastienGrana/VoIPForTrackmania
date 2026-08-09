@@ -78,7 +78,7 @@ export function createRelay({
   tcpIdleTimeoutMs = 30_000,
   enableCalibrationBot = false,
   positionBroadcastIntervalMs = 100,
-  // Sécurité restante (ORDRE D'IMPLÉMENTATION point 6): port 8081 accepts any
+  // Remaining security (IMPLEMENTATION ORDER point 6): port 8081 accepts any
   // raw TCP connection with zero authentication — anyone on the internet can
   // inject positions/nonces for any pseudo. There's no verifiable Trackmania
   // identity to bind to (ManiaPlanet exposes no signed identity API to
@@ -137,10 +137,10 @@ export function createRelay({
     }
   }
   const positionFlushTimer = setInterval(flushPositions, positionBroadcastIntervalMs).unref();
-  // Étape 4/5: track which WebSocket belongs to which browser login so the
+  // Step 4/5: track which WebSocket belongs to which browser login so the
   // relay can push room-change notifications when the plugin sends a new nonce.
   const browserSockets = new Map(); // login → WebSocket
-  // Étape 7: push relay state (player count, web connected, mic muted) back to
+  // Step 7: push relay state (player count, web connected, mic muted) back to
   // the plugin over its existing TCP connection.
   const tcpSocketsByLogin = new Map(); // login → { socket, room }
 
@@ -174,12 +174,12 @@ export function createRelay({
     }
   }, statePushIntervalMs).unref();
 
-  // Rate-limiting (ORDRE D'IMPLÉMENTATION point 4): a handful of token
+  // Rate-limiting (IMPLEMENTATION ORDER point 4): a handful of token
   // requests per join is normal, dozens per second is a scripted attack.
   // Ingestion is per-connection since positions are unauthenticated (per
   // socket, not per login, since the login itself isn't verified yet).
   const tokenLimiter = createRateLimiter({ windowMs: 60_000, max: 30 }); // per IP
-  // Sécurité restante v2: lets the plugin exchange the permanent community
+  // Remaining security v2: lets the plugin exchange the permanent community
   // secret for a short-lived, single-use token over HTTPS (same host as
   // S_VoipUrl, already behind a real TLS cert via Caddy in production)
   // instead of writing the permanent secret in cleartext onto the raw TCP
@@ -240,7 +240,7 @@ export function createRelay({
       at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false });
       const token = await at.toJwt();
       // Return login + human-readable server name so the browser can skip the
-      // identity form and show which server you're on (Étape 6).
+      // identity form and show which server you're on (Step 6).
       const serverName = displayNameFor(entry.server, entry.serverName);
       res.json({ token, wsUrl: liveKitPublicWsUrl, room, login: entry.login, serverName });
       return;
@@ -272,7 +272,7 @@ export function createRelay({
     res.json({ token, wsUrl: liveKitPublicWsUrl, room });
   });
 
-  // Sécurité restante v2: POST { secret } over HTTPS, get back a one-time
+  // Remaining security v2: POST { secret } over HTTPS, get back a one-time
   // token good for a single TCP connection. 404s when no secret is
   // configured at all, so it doesn't leak whether this relay has the
   // feature enabled to an unauthenticated prober.
@@ -305,7 +305,7 @@ export function createRelay({
     if (!isFinite(x) || !isFinite(y) || !isFinite(z)) return;
     if (Math.abs(x) >= 1e6 || Math.abs(y) >= 1e6 || Math.abs(z) >= 1e6) return;
 
-    // Route to the server-specific room (Étape 3).
+    // Route to the server-specific room (Step 3).
     // Falls back to the default roomName for positions without a server field
     // (backward-compatible with older plugin versions and simulate-positions.js).
     // The room is derived from the server the sender says it is on, never
@@ -336,14 +336,14 @@ export function createRelay({
         ? msg.serverName.slice(0, 256) : '';
       nonces.set(nonce, { login, server, serverName, expiry: Date.now() + NONCE_TTL_MS });
 
-      // Étape 4/5: push room change to the browser that owns this login.
+      // Step 4/5: push room change to the browser that owns this login.
       // Includes the nonce so the browser can call /token?t= for the new room.
       const ws = browserSockets.get(login);
       if (ws && ws.readyState === 1 /* WebSocket.OPEN */) {
         const targetRoom = server ? (roomNameFor(server, serverName) ?? roomName) : null;
         const push = targetRoom
           ? { type: 'room', name: targetRoom, nonce }
-          : { type: 'room', name: null }; // Étape 5: left server
+          : { type: 'room', name: null }; // Step 5: left server
         try { ws.send(JSON.stringify(push)); } catch {}
       }
       return;
@@ -363,7 +363,7 @@ export function createRelay({
       try {
         const msg = JSON.parse(raw.toString());
         // Browser identifies itself so the relay knows which WebSocket to push
-        // room-change notifications to (Étape 4/5).
+        // room-change notifications to (Step 4/5).
         if (msg.type === 'hello') {
           const login = validateLogin(msg.login);
           if (login) {
@@ -392,7 +392,7 @@ export function createRelay({
     // No secret configured → nothing to check, same behavior as before this
     // feature existed (local dev / tests keep working unchanged).
     let authenticated = !tcpSharedSecret;
-    let tcpLogin = null; // login associated with this socket (Étape 7)
+    let tcpLogin = null; // login associated with this socket (Step 7)
     let tcpRoom = null;  // current room for this socket
     socket.setEncoding('utf8');
     socket.setTimeout(TCP_IDLE_TIMEOUT_MS);
@@ -417,11 +417,11 @@ export function createRelay({
         let msg;
         try { msg = JSON.parse(line); }
         catch (err) { console.error('TCP ingest: parse error:', err.message); continue; }
-        // Sécurité restante: the first message on a gated connection must be a
+        // Remaining security: the first message on a gated connection must be a
         // matching auth — anything else (including a well-formed nonce/position
         // sent without one) closes the socket immediately. Accepts either a
-        // one-time token from POST /tcp-auth (preferred — see Sécurité
-        // restante v2 above) or the raw secret directly (legacy path, kept for
+        // one-time token from POST /tcp-auth (preferred — see Remaining
+        // security v2 above) or the raw secret directly (legacy path, kept for
         // simulate-positions.js and older plugin builds that never fetch a
         // token).
         if (!authenticated) {
@@ -442,7 +442,7 @@ export function createRelay({
           }
         }
         handleMessage(msg);
-        // Étape 7: associate this socket with the player's login after a valid
+        // Step 7: associate this socket with the player's login after a valid
         // nonce so pushStateToSocket can write back over the same connection.
         if (msg.type === 'nonce') {
           const login = validateLogin(msg.login);

@@ -26,7 +26,7 @@ function makeMockRoomService() {
 
 // Connects a TCP socket to TCP_PORT, sends the given lines (joined by \n),
 // then closes. Resolves when the socket is fully closed.
-// resume(): since Étape 7 the relay may write a state push back on this same
+// resume(): since Step 7 the relay may write a state push back on this same
 // connection (e.g. after a nonce). A paused Readable never reaches 'end'
 // until its buffered data is consumed, so without draining it here, any
 // unread reply from the relay would block 'close' from ever firing and hang
@@ -175,8 +175,8 @@ describe('OnZVoIP relay', () => {
     });
   });
 
-  // Étape 3: position routing by server
-  describe('TCP ingest — server-based room routing (Étape 3)', () => {
+  // Step 3: position routing by server
+  describe('TCP ingest — server-based room routing (Step 3)', () => {
     test('position with server field → sendData targets server room (not default)', async () => {
       const before = mockService.calls.length;
       await tcpSend(TCP_PORT, [
@@ -491,10 +491,10 @@ describe('TCP ingest — connection limits (AUDIT #25, own relay instance)', () 
   });
 });
 
-// Sécurité restante (ORDRE D'IMPLÉMENTATION point 6): own relay instance so
+// Remaining security (IMPLEMENTATION ORDER point 6): own relay instance so
 // the shared-secret gate doesn't affect the main describe's unauthenticated
 // TCP tests above.
-describe('TCP ingest — shared secret (Sécurité restante, own relay instance)', () => {
+describe('TCP ingest — shared secret (Remaining security, own relay instance)', () => {
   let relay;
   let HTTP_PORT;
   let TCP_PORT;
@@ -566,7 +566,7 @@ describe('TCP ingest — shared secret (Sécurité restante, own relay instance)
   });
 });
 
-describe('POST /tcp-auth — token exchange (Sécurité restante v2, own relay instance)', () => {
+describe('POST /tcp-auth — token exchange (Remaining security v2, own relay instance)', () => {
   let relay;
   let HTTP_PORT;
   let TCP_PORT;
@@ -648,10 +648,10 @@ describe('POST /tcp-auth — token exchange (Sécurité restante v2, own relay i
   });
 });
 
-// Étape 7: state push over the TCP socket that sent the nonce.
+// Step 7: state push over the TCP socket that sent the nonce.
 // Own relay instance so statePushIntervalMs can be set very high (avoids
 // timer-triggered pushes racing with the test's explicit socket.destroy()).
-describe('TCP state push — Étape 7 (own relay instance)', () => {
+describe('TCP state push — Step 7 (own relay instance)', () => {
   let relay;
   let statePushService;
   let STATE_TCP_PORT;

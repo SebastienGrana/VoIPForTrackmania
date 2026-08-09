@@ -1,5 +1,5 @@
 // Turns a TM server's identity into a LiveKit room name — pure, no I/O.
-// See todo.txt "Étape 3b" for the design decision: the room is named after the
+// See todo.txt "Step 3b" for the design decision: the room is named after the
 // server so a player sees "ONZSM Stadium" rather than "room-a3f9c1".
 //
 // Three constraints make this less trivial than a slugify():
@@ -14,7 +14,7 @@
 // The suffix is NOT a secret and is not meant to be one: server logins are
 // public, so room names are guessable by design. Isolation comes from the
 // one-time token (todo.txt A-bis), never from the room name being hard to
-// guess. See todo.txt "ORDRE D'IMPLÉMENTATION RECOMMANDÉ".
+// guess. See todo.txt "RECOMMENDED IMPLEMENTATION ORDER".
 
 // $$ is an escaped literal dollar and must win over the code patterns; the
 // bracketed link tags ($l[url]) must be tried before the bare-letter form,
