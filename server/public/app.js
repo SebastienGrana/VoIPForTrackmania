@@ -89,10 +89,6 @@ let dragging = false;
 let audioCtx = null;
 let micEnabled = false;
 let wsPositionInterval = null;
-// Debug-only: room this tab joined via the manual "Room à rejoindre" override,
-// so our own position broadcasts land in the same room instead of the default
-// one. Remove along with the rest of the debug scaffolding before publication.
-let debugJoinedRoom = null;
 // Audit #6: in follow-game mode, "me" starts at the canvas-centre default
 // (below) interpreted as real game coordinates until the first DataReceived
 // for our own identity lands - without this flag that window would compute
@@ -122,7 +118,7 @@ const subscribedPeers = new Set();
 // hovering right at the edge doesn't cause rapid subscribe/unsubscribe
 // thrashing (each toggle re-negotiates the WebRTC track).
 const UNSUBSCRIBE_MARGIN = 1.2;
-// Sécurité restante: a peer whose position hasn't been re-broadcast in this
+// Safety net: a peer whose position hasn't been re-broadcast in this
 // long is treated as gone for good (server crash, alt-tab, network cut) -
 // past the ordinary 3s "stale" mute, its entry is dropped from peers/gains
 // instead of sitting in the Map for the rest of the session.
@@ -261,7 +257,7 @@ setInterval(() => {
     draw();
   }
 
-  // Sécurité restante: drop peers that stopped broadcasting a long time ago -
+  // Safety net: drop peers that stopped broadcasting a long time ago -
   // tickGains() only mutes/unsubscribes stale peers, it never removes them,
   // so without this the Maps grow for the rest of the session as players
   // come and go on a busy server.
@@ -369,7 +365,7 @@ function decodePosition(payload) {
   }
 }
 
-// Étape 6: update the server name banner above the player list.
+// Update the server name banner above the player list.
 function updateServerDisplay(name) {
   if (!serverNameEl) return;
   if (name) {
@@ -455,7 +451,7 @@ function attachRoomEvents(newRoom) {
     audioPublications.delete(p.identity);
     subscribedPeers.delete(p.identity);
 
-    // Sécurité restante: don't rely on TrackUnsubscribed to also fire here -
+    // Safety net: don't rely on TrackUnsubscribed to also fire here -
     // on an abrupt network loss it sometimes doesn't, which would otherwise
     // leak this participant's WebAudio graph and hidden <audio> element for
     // the rest of the session.
@@ -534,7 +530,7 @@ function attachRoomEvents(newRoom) {
 }
 
 // Connect (or reconnect) to a LiveKit room using an already-fetched token.
-// serverName is the human-readable display name for Étape 6, or null for legacy joins.
+// serverName is the human-readable display name shown in that banner, or null for legacy joins.
 async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
   if (!audioCtx) {
     // Created here for auto-join (no click handler). May start suspended — the
@@ -610,26 +606,24 @@ function startPositionSend() {
     // In follow mode the OpenPlanet plugin is already publishing this
     // identity's position - sending ours too would fight with it.
     if (followGameCheckbox.checked) return;
-    const msg = { type: 'position', pseudo: myIdentity, x: me.x, y: me.y, z: me.z };
-    if (debugJoinedRoom) msg.room = debugJoinedRoom;
-    ingestWs.send(JSON.stringify(msg));
+    ingestWs.send(JSON.stringify({ type: 'position', pseudo: myIdentity, x: me.x, y: me.y, z: me.z }));
   }, SEND_INTERVAL_MS);
 }
 
-// Étape 4/5: the relay pushes this when the plugin sends a new nonce.
+// The relay pushes this when the plugin sends a new nonce.
 async function handleRoomPush(msg) {
   if (!msg.name) {
-    // Étape 5: player left the server — disconnect and show waiting state.
+    // Player left the server — disconnect and show waiting state.
     await disconnectLiveKit();
     updateServerDisplay(null);
-    statusEl.textContent = 'Plus sur un serveur — vocal en attente';
+    statusEl.textContent = 'Not on a server — voice on standby';
     statusEl.className = '';
     micBtn.disabled = true;
     micBtn.className = 'idle';
     micEnabled = false;
     return;
   }
-  // Étape 4: server changed — swap to the new room using the provided nonce.
+  // Server changed — swap to the new room using the provided nonce.
   if (!msg.nonce) return;
   const res = await fetch(`/token?t=${encodeURIComponent(msg.nonce)}`);
   if (!res.ok) return; // nonce expired or already consumed — ignore
@@ -690,16 +684,7 @@ async function join() {
   identityInput.disabled = true;
   statusEl.textContent = 'Connecting...';
 
-  // Debug-only: joins the exact same room as a real player (copied from
-  // their own Debug readout), so a second tab can test follow-mode against
-  // them. Remove with the debug section before publication.
-  const debugRoomEl = document.getElementById('debugRoom');
-  const debugRoom = debugRoomEl ? debugRoomEl.value.trim() : '';
-  debugJoinedRoom = debugRoom || null;
-  const params = new URLSearchParams({ identity });
-  if (debugRoom) params.set('room', debugRoom);
-
-  const res = await fetch(`/token?${params.toString()}`);
+  const res = await fetch(`/token?identity=${encodeURIComponent(identity)}`);
   if (!res.ok) {
     statusEl.textContent = `token error: ${res.status}`;
     joinBtn.disabled = false;

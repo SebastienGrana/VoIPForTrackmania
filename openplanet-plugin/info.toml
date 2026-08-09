@@ -3,4 +3,14 @@ name        = "OnZVoIP"
 author      = "VELP"
 category    = "Multiplayer"
 version     = "0.2.0"
-description = "Proximity voice chat for Trackmania. Each game server gets its own voice room, and the link you share carries a one-time token instead of your login. Server admins can require a shared token on the relay to keep it private to their community."
+description = """
+Proximity voice chat for Trackmania² Stadium — you hear nearby players louder, and from the direction they are.
+
+No extra software to install and nothing to configure: the plugin sends your position to a relay, you click "Copy URL", open the link in your browser and allow the microphone. Voice runs in that tab (WebRTC), spatialised client-side from the positions the relay broadcasts.
+
+Each game server gets its own voice room. The link carries a single-use token rather than your login, so it can't be reused once opened. Admins can require a shared secret on the relay to keep it private to their community; the relay host is a plugin setting, so any community can self-host.
+
+The plugin itself contains no audio code: it reads your position and server name, writes to one TCP socket, and touches the clipboard only when you press "Copy URL". Nothing is sent anywhere except the relay you configured — no telemetry, no third-party endpoints.
+
+Written with AI assistance (Claude); every line has been reviewed and tested in-game by a human. Source, security notes and the full threat model for reviewers: https://github.com/SebastienGrana/VoIPForTrackmania (see REVIEWING.md).
+"""

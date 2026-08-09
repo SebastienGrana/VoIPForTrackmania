@@ -44,7 +44,16 @@ Volume and panning are computed **client-side** — LiveKit (an SFU) distributes
 
 ## Privacy
 
-The voice room is **global and unauthenticated**: anyone who opens the room URL — including people who are not connected to the game server — can see every player's Trackmania login and exact in-game position, broadcast in real time, and can join the voice chat itself. There is no per-server access control today. Don't share the URL outside your community, and be aware that your login and position are visible to anyone who has it.
+**Each game server gets its own voice room**, and the link the plugin gives you carries a **single-use nonce** rather than your login: the relay exchanges it for a LiveKit token bound to the right room and identity, then discards it. A link that has already been opened is useless to anyone else.
+
+Inside a room, though, there is no per-player access control: **anyone who is in it sees every participant's Trackmania login and exact in-game position**, broadcast in real time, and hears/can be heard by them. That is scoped to the people playing on the same server, but be aware of it.
+
+Two limits worth stating plainly:
+
+- **There is no verifiable Trackmania identity** to bind a connection to. Anyone who can reach the relay's TCP ingest port can claim a login and inject a position. Admins can set `TCP_SHARED_SECRET` to raise that from "anyone on the internet" to "anyone our community gave the token to" — it is access control for the community, not authentication of individual players.
+- **The ingest port is plaintext.** The permanent secret never travels on it: the plugin exchanges it over HTTPS for a 30-second single-use token, and only that token goes over TCP.
+
+Reviewers and self-hosters: [`REVIEWING.md`](REVIEWING.md) has the full threat model.
 
 ---
 

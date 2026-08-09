@@ -5,3 +5,7 @@ node_modules/
 openplanet pluggin folder.txt
 context.txt
 todo.txt
+
+# Local dev overrides: may contain a real TCP_SHARED_SECRET, never commit
+docker-compose.override.yml
+todo.html

@@ -247,19 +247,25 @@ export function createRelay({
     }
 
     // --- Legacy path: manual identity for bot.html / testing ---
+    // Gated behind the same flag as bot.html, its only consumer: this path is
+    // unauthenticated and takes the identity straight from the query string,
+    // so on a public relay it would let anyone join the default room under any
+    // name they like. Real players never come through here — they arrive with
+    // a nonce, handled above. 404 rather than 403 so it looks like an endpoint
+    // that simply isn't there, matching the bot.html gate.
+    if (!enableCalibrationBot) {
+      res.status(404).json({ error: 'not found' });
+      return;
+    }
     const identity = String(req.query.identity || '').trim();
     if (!identity) {
       res.status(400).json({ error: 'missing identity query param' });
       return;
     }
-    // Debug-only: an optional raw room override lets a manually-joined test
-    // tab (e.g. the "follow another player" bot) land in the exact same
-    // LiveKit room as a real in-game player — copied from that player's own
-    // Debug readout, since reconstructing it from just a server login would
-    // need the exact server display name too (label is part of the room id).
-    // Remove this param along with the debug section before publication.
-    const debugRoom = validateServer(req.query.room);
-    const room = debugRoom || roomName;
+    // Always the default room: there is deliberately no caller-supplied room
+    // override here. Honouring one would let a caller mint a publish-capable
+    // token for an arbitrary community's room.
+    const room = roomName;
     const at = new AccessToken(apiKey, apiSecret, { identity });
     at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false });
     const token = await at.toJwt();
@@ -302,17 +308,13 @@ export function createRelay({
     // Route to the server-specific room (Étape 3).
     // Falls back to the default roomName for positions without a server field
     // (backward-compatible with older plugin versions and simulate-positions.js).
-    // Debug-only: a raw `room` override lets a manually-joined test tab's own
-    // position updates land in the same room it joined via the debug room
-    // field (bot.html has no "server" to derive a room from). Remove along
-    // with the rest of the debug scaffolding before publication.
-    const debugRoom = validateServer(msg.room);
+    // The room is derived from the server the sender says it is on, never
+    // taken as a raw room id from the message: a caller-supplied room would
+    // let anyone inject positions into an arbitrary community's room.
     const serverLogin = validateServer(msg.server);
-    const targetRoom = debugRoom
-      ? debugRoom
-      : serverLogin
-        ? (roomNameFor(serverLogin, msg.serverName) ?? roomName)
-        : roomName;
+    const targetRoom = serverLogin
+      ? (roomNameFor(serverLogin, msg.serverName) ?? roomName)
+      : roomName;
 
     let posMap = pendingPositions.get(targetRoom);
     if (!posMap) {

@@ -1,6 +1,8 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+// Node 20 has no global WebSocket; the relay already depends on 'ws' anyway.
+import WebSocket from 'ws';
 import { createRelay } from '../src/relay.js';
 
 // Minimal creds — no real LiveKit needed: token generation is local JWT signing,
@@ -56,6 +58,10 @@ describe('OnZVoIP relay', () => {
       apiSecret: API_SECRET,
       liveKitPublicWsUrl: WS_URL,
       roomName: ROOM,
+      // The legacy /token?identity= path and bot.html are both gated behind
+      // this flag; enable it here so the legacy-path tests below exercise the
+      // handler itself. The gate is covered separately, further down.
+      enableCalibrationBot: true,
     });
     // Port 0 → OS picks a free port, avoids conflicts in CI
     await new Promise(resolve => relay.server.listen(0, resolve));
@@ -282,7 +288,7 @@ describe('OnZVoIP relay', () => {
     test('malformed JSON → does not crash server', async () => {
       await tcpSend(TCP_PORT, ['this is not json', '{ broken']);
       // Server should still handle new requests
-      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=postcrash`);
+      const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
       assert.strictEqual(res.status, 200);
     });
 
@@ -385,7 +391,7 @@ describe('OnZVoIP relay', () => {
         socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
       });
       // Server must still handle new work.
-      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterflood`);
+      const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
       assert.strictEqual(res.status, 200);
     });
 
@@ -402,7 +408,7 @@ describe('OnZVoIP relay', () => {
         socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
       });
       // Server must still handle new connections after destroying the flooder.
-      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterflood2`);
+      const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
       assert.strictEqual(res.status, 200);
     });
 
@@ -417,7 +423,7 @@ describe('OnZVoIP relay', () => {
           socket.on('error', (err) => (err.code === 'ECONNRESET' ? resolve() : reject(err)));
         });
       }
-      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterbursts`);
+      const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
       assert.strictEqual(res.status, 200);
     });
   });
@@ -480,7 +486,7 @@ describe('TCP ingest — connection limits (AUDIT #25, own relay instance)', () 
     for (const s of sockets) s.destroy();
     await Promise.all(closed);
 
-    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=afterlimit`);
+    const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
     assert.strictEqual(res.status, 200);
   });
 });
@@ -748,9 +754,194 @@ describe('rate limiting — /token (own relay instance)', () => {
   test('>30 requests/min from one IP → 429', async () => {
     let lastStatus;
     for (let i = 0; i < 35; i++) {
-      const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=ratelimited`);
+      // The limiter runs before the path branches, so any /token shape counts;
+      // use the nonce path so this test doesn't depend on the legacy gate.
+      const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=ratelimited`);
       lastStatus = res.status;
     }
     assert.strictEqual(lastStatus, 429);
+  });
+});
+
+// The calibration-bot gate is what keeps a public relay from handing out
+// publish-capable tokens for an arbitrary identity, so the *default* (off)
+// behaviour is the one that matters — every other describe in this file turns
+// the flag on. Nothing covered this before.
+describe('calibration bot gate — default off (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      // enableCalibrationBot deliberately omitted — this is the production shape.
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  test('legacy /token?identity= → 404, no token issued', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=impostor`);
+    assert.strictEqual(res.status, 404);
+    const body = await res.json();
+    assert.strictEqual(body.token, undefined, 'must not leak a token');
+  });
+
+  test('legacy path stays closed even with no identity (no 400 leak)', async () => {
+    // A 400 here would tell a prober the endpoint exists and just needs a param.
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token`);
+    assert.strictEqual(res.status, 404);
+  });
+
+  test('bot.html and bot.js → 404', async () => {
+    for (const path of ['/bot.html', '/bot.js']) {
+      const res = await fetch(`http://localhost:${HTTP_PORT}${path}`);
+      assert.strictEqual(res.status, 404, `${path} should not be served`);
+    }
+  });
+
+  test('nonce path still works — real players are unaffected by the gate', async () => {
+    // Registered directly rather than over TCP: this relay has no listening
+    // ingest socket, and what's under test here is the HTTP gate, not ingest.
+    const nonce = 'gateunaffected';
+    relay.nonces.set(nonce, { login: 'velp', server: 'srv-a', serverName: 'Server A', expiry: Date.now() + 60_000 });
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=${nonce}`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.token.startsWith('ey'), 'token should be a JWT');
+  });
+});
+
+// The /ingest WebSocket is a public, unauthenticated entry point that feeds the
+// same handleMessage() as the TCP ingest — and it had no coverage at all.
+describe('WebSocket /ingest (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+  let roomService;
+
+  before(async () => {
+    roomService = makeMockRoomService();
+    relay = createRelay({
+      roomService,
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  // Opens a client socket to /ingest and resolves once it's open.
+  function connect() {
+    const ws = new WebSocket(`ws://localhost:${HTTP_PORT}/ingest`);
+    return new Promise((resolve, reject) => {
+      ws.addEventListener('open', () => resolve(ws));
+      ws.addEventListener('error', reject);
+    });
+  }
+
+  test('a position sent over the WebSocket reaches LiveKit', async () => {
+    const ws = await connect();
+    ws.send(JSON.stringify({ type: 'position', pseudo: 'wsplayer', x: 1, y: 2, z: 3 }));
+    await new Promise(r => setTimeout(r, 40));
+    await relay.flushPositions();
+    ws.close();
+
+    const payloads = roomService.calls.map(([, data]) => JSON.parse(Buffer.from(data).toString()));
+    const found = payloads.flat().find(p => p.pseudo === 'wsplayer');
+    assert.ok(found, 'position from the WebSocket should be fanned out');
+    assert.deepStrictEqual([found.x, found.y, found.z], [1, 2, 3]);
+  });
+
+  test('malformed JSON does not kill the relay', async () => {
+    const ws = await connect();
+    ws.send('this is not json {{{');
+    await new Promise(r => setTimeout(r, 60));
+    ws.close();
+
+    const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
+    assert.strictEqual(res.status, 200, 'relay should still be serving');
+  });
+
+  test('a room push is delivered only to the socket that said hello for that login', async () => {
+    const [mine, other] = [await connect(), await connect()];
+    const pushes = [];
+    mine.addEventListener('message', e => pushes.push(JSON.parse(e.data)));
+    other.addEventListener('message', () => { throw new Error('push leaked to the wrong socket'); });
+
+    mine.send(JSON.stringify({ type: 'hello', login: 'velp' }));
+    other.send(JSON.stringify({ type: 'hello', login: 'someone-else' }));
+    await new Promise(r => setTimeout(r, 60));
+
+    mine.send(JSON.stringify({ type: 'nonce', nonce: 'wspush1', login: 'velp', server: 'srv-a', serverName: 'Server A' }));
+    await new Promise(r => setTimeout(r, 80));
+    mine.close(); other.close();
+
+    const roomPush = pushes.find(p => p.type === 'room');
+    assert.ok(roomPush, 'the hello-ing socket should receive its room push');
+    assert.strictEqual(roomPush.nonce, 'wspush1');
+    assert.ok(roomPush.name, 'room name should be derived, not null');
+  });
+
+  test('flooding past the per-socket rate limit closes the connection', async () => {
+    const ws = await connect();
+    const closed = new Promise(resolve => ws.addEventListener('close', resolve));
+    // WS_MAX_MSG_PER_SEC is 30; 200 in one burst is unambiguously over.
+    for (let i = 0; i < 200; i++) {
+      ws.send(JSON.stringify({ type: 'position', pseudo: 'flooder', x: i, y: 0, z: 0 }));
+    }
+    await closed;
+    assert.strictEqual(ws.readyState, WebSocket.CLOSED);
+
+    const res = await fetch(`http://localhost:${HTTP_PORT}/health`);
+    assert.strictEqual(res.status, 200, 'other clients must be unaffected');
+  });
+});
+
+// REVIEWING.md §5 claims an unconfigured relay 404s this endpoint so a prober
+// can't fingerprint whether the feature is on. That claim was untested.
+describe('POST /tcp-auth — not configured (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      // tcpSharedSecret deliberately omitted.
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  test('→ 404, and never 401 (which would confirm the feature exists)', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/tcp-auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: 'anything' }),
+    });
+    assert.strictEqual(res.status, 404);
+    const body = await res.json();
+    assert.strictEqual(body.token, undefined);
   });
 });
