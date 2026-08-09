@@ -9,6 +9,7 @@ string GetCurrentLogin() {
     CGamePlayground@ pg = mp.CurrentPlayground;
     if (pg !is null && pg.GameTerminals.Length > 0) {
         CGamePlayer@ player = pg.GameTerminals[0].GUIPlayer;
+        if (player is null) @player = pg.GameTerminals[0].ControlledPlayer;
         if (player !is null && player.User !is null) return player.User.Login;
     }
 
@@ -50,9 +51,17 @@ bool TryGetServerInfo(string &out login, string &out name, string &out failReaso
     return true;
 }
 
-// Two ways to find "the local player": the primary path matches login
-// against the full player list (works even with several players/terminals),
-// the fallback grabs the first game terminal's controlled player (local slot 0).
+// Reading the position is the one place the two games genuinely differ, and it
+// has to be resolved at compile time: OpenPlanet's AngelScript fails to compile
+// on an unknown type name, so a runtime `cast<> is null` check is not an option
+// — the branch must be a preprocessor one.
+//
+//   ManiaPlanet 4 : CGamePlayer -> cast<CTrackManiaPlayer> -> .Position
+//   TM2020        : CGamePlayer -> cast<CSmPlayer> -> .ScriptAPI
+//                                -> cast<CSmScriptPlayer> -> .Position
+//
+// (TM2020 is built on the ShootMania script API, hence the CSm* names for a
+// Trackmania car. CTrackManiaPlayer simply does not exist there.)
 bool TryGetLocalPlayerPosition(vec3 &out pos, string &out login, string &out failReason) {
     CGameCtnApp@ app = GetApp();
     CGameManiaPlanet@ mp = cast<CGameManiaPlanet>(app);
@@ -62,8 +71,13 @@ bool TryGetLocalPlayerPosition(vec3 &out pos, string &out login, string &out fai
     if (pg is null) { failReason = "mp.CurrentPlayground is null (not in a race?)"; return false; }
 
     if (pg.GameTerminals.Length == 0) { failReason = "pg.GameTerminals is empty"; return false; }
+    // GUIPlayer is who the camera is following; ControlledPlayer is who you are
+    // driving. They are the same thing while racing, but GUIPlayer goes null in
+    // some TM2020 states (menus over the playground, a few club-room modes), so
+    // fall back rather than reporting "not in a race".
     CGamePlayer@ localPlayer = pg.GameTerminals[0].GUIPlayer;
-    if (localPlayer is null) { failReason = "pg.GameTerminals[0].GUIPlayer is null"; return false; }
+    if (localPlayer is null) @localPlayer = pg.GameTerminals[0].ControlledPlayer;
+    if (localPlayer is null) { failReason = "pg.GameTerminals[0] has no GUIPlayer/ControlledPlayer"; return false; }
 
     if (localPlayer.User !is null) {
         login = localPlayer.User.Login;
@@ -72,9 +86,22 @@ bool TryGetLocalPlayerPosition(vec3 &out pos, string &out login, string &out fai
         login = (scriptApi !is null && scriptApi.LocalUser !is null) ? scriptApi.LocalUser.Login : "unknown";
     }
 
+#if TMNEXT
+    CSmPlayer@ smPlayer = cast<CSmPlayer>(localPlayer);
+    if (smPlayer is null) { failReason = "cast<CSmPlayer>(localPlayer) is null"; return false; }
+
+    // ScriptAPI is typed CGameScriptPlayer@, the shared base; the concrete
+    // object carrying Position is CSmScriptPlayer. It is null between rounds
+    // and while the car is not spawned, which is a normal state, not an error.
+    CSmScriptPlayer@ api = cast<CSmScriptPlayer>(smPlayer.ScriptAPI);
+    if (api is null) { failReason = "smPlayer.ScriptAPI is null (not spawned?)"; return false; }
+
+    pos = api.Position;
+#else
     CTrackManiaPlayer@ tmPlayer = cast<CTrackManiaPlayer>(localPlayer);
     if (tmPlayer is null) { failReason = "cast<CTrackManiaPlayer>(localPlayer) is null"; return false; }
 
     pos = tmPlayer.Position;
+#endif
     return true;
 }

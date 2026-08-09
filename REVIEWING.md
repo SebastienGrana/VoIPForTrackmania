@@ -18,7 +18,7 @@ player opens via a link the plugin generates; that page joins a
 [LiveKit](https://livekit.io) room and applies per-player gain and stereo pan in
 WebAudio based on the positions the relay broadcasts.
 
-The split matters for review: the in-game plugin is ~640 lines of AngelScript
+The split matters for review: the in-game plugin is ~670 lines of AngelScript
 with **no audio, no file I/O, and no game-state writes**. It reads position and
 writes to one TCP socket.
 
@@ -101,8 +101,12 @@ The complete list of what the plugin touches:
 - **`UI::` / `nvg::`** — the settings window and the compact status pill.
 - **`Display::GetWidth()`** — positioning that pill relative to the right edge.
 - **Game reads** (`GameState.as`): `CGameManiaPlanet`, `CGamePlayground`,
-  `CGamePlayer.User.Login`, `CTrackManiaPlayer.Position`,
-  `CGameCtnNetServerInfo.ServerLogin` / `.ServerName`.
+  `CGameTerminal.GUIPlayer` / `.ControlledPlayer`, `CGamePlayer.User.Login`,
+  `CGameCtnNetServerInfo.ServerLogin` / `.ServerName`, and the position —
+  `CTrackManiaPlayer.Position` on ManiaPlanet 4, or
+  `CSmPlayer.ScriptAPI` → `CSmScriptPlayer.Position` under `#if TMNEXT`, since
+  `CTrackManiaPlayer` does not exist in TM2020 and an unknown type name is a
+  compile error rather than a null cast.
 
 **Not used:** no file I/O, no `IO::` beyond the clipboard write, no process
 spawning, no DLL loading, no memory patching, no writes to any game object, no
@@ -213,14 +217,14 @@ about — please flag it.
 
 ## 7. Where to look
 
-Plugin (AngelScript, ~640 lines total — OpenPlanet compiles all `.as` in the
+Plugin (AngelScript, ~670 lines total — OpenPlanet compiles all `.as` in the
 folder as one module, hence no includes):
 
 | File | Lines | Contents |
 |---|---|---|
 | `Main.as` | 224 | State, main loop, connect/auth/reconnect, relay reply parsing |
 | `Interface.as` | 174 | ImGui window, menu entry, NanoVG status pill |
-| `GameState.as` | 80 | Reading player position / server info from the game |
+| `GameState.as` | 107 | Reading player position / server info from the game, `#if TMNEXT` branch for TM2020 |
 | `Network.as` | 75 | Socket connect, `/tcp-auth` exchange, nonce generation |
 | `Strings.as` | 59 | JSON escaping, Trackmania `$`-code stripping |
 | `Settings.as` | 32 | The seven user-facing settings |

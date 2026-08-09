@@ -12,7 +12,7 @@ Proximity voice chat for **Trackmania² Stadium (ManiaPlanet)**. Players who are
 
 1. Open your ManiaPlanet `Openplanet4` folder (usually `C:\Users\<you>\Openplanet4\Plugins`)
 2. Create a subfolder named `OnZVoIP`
-3. Copy [`openplanet-plugin/Main.as`](openplanet-plugin/Main.as), [`openplanet-plugin/Settings.as`](openplanet-plugin/Settings.as), and [`openplanet-plugin/info.toml`](openplanet-plugin/info.toml) into it
+3. Copy every file from [`openplanet-plugin/`](openplanet-plugin/) into it — `Main.as`, `Interface.as`, `GameState.as`, `Network.as`, `Strings.as`, `Settings.as`, and `info.toml`. OpenPlanet compiles every `.as` file in the folder as one module, so a partial copy won't compile.
 4. In-game: open the OpenPlanet overlay → Plugin Manager → **Reload plugins**
 
 The plugin window **OnZVoIP** will appear. It shows your relay connection status and your Trackmania login.
@@ -102,9 +102,24 @@ No rebuild needed — in-game, open the OpenPlanet overlay → Settings → Plug
 
 | Game | Build | Status |
 |------|-------|--------|
-| Trackmania² Stadium (ManiaPlanet) | OpenPlanet 1.29.5 | ✅ Tested |
-| TM2020 | OpenPlanet next | ⬜ Not yet (different position API) |
+| Trackmania² Stadium (ManiaPlanet) | OpenPlanet 1.29.5 | ✅ Tested in-game |
+| Trackmania (2020) | OpenPlanet next | 🟨 Code path written, **not yet tested in-game** |
 | ShootMania | ManiaPlanet build | ⬜ Untested |
+
+The two games disagree on exactly one thing: how you read the local player's
+position. ManiaPlanet 4 casts the player to `CTrackManiaPlayer` and reads
+`.Position`; TM2020 has no such type and goes through
+`CSmPlayer.ScriptAPI` → `CSmScriptPlayer.Position`. Everything else — the app,
+network, playground and server-info objects — is identical across both.
+
+Because OpenPlanet's AngelScript rejects an unknown type name at *compile*
+time, this cannot be a runtime check; `GameState.as` branches on the `TMNEXT`
+preprocessor define instead. See `TryGetLocalPlayerPosition()`.
+
+One thing to watch on TM2020: rooms are derived from the server login
+(`CGameCtnNetServerInfo.ServerLogin`). That is reliable on dedicated servers,
+but has not been verified on club rooms or Nadeo matchmaking — if a server
+reports no login there, everyone on it falls back to the default room.
 
 ---
 
