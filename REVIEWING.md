@@ -131,23 +131,26 @@ What the relay *does* enforce:
 - **Optional shared secret** (`TCP_SHARED_SECRET`). Raises the bar from "anyone
   on the internet" to "anyone the community gave the token to". Off by default,
   so self-hosters aren't forced into it.
-- **The permanent secret never touches the plaintext TCP port.** The plugin POSTs
-  it over HTTPS to `/tcp-auth` and gets back a **single-use token with a 30 s
-  TTL** (`TCP_AUTH_TOKEN_TTL_MS`), and only that disposable token goes over TCP.
-  Sniffing port 8081 yields a value that's already spent. Port 8081 has no TLS —
-  this is the mitigation for that, not a claim that it's encrypted.
+- **The plugin never puts the permanent secret on the plaintext TCP port.** It
+  POSTs it over HTTPS to `/tcp-auth` and gets back a **single-use token with a
+  30 s TTL** (`TCP_AUTH_TOKEN_TTL_MS`), and only that disposable token goes over
+  TCP. Sniffing port 8081 for plugin traffic yields a value that's already
+  spent. Port 8081 has no TLS — this is the mitigation for that, not a claim
+  that it's encrypted. A legacy path still lets a TCP client authenticate with
+  the raw secret directly (kept for `simulate-positions.js` and older plugin
+  builds); it isn't free to brute-force — it shares the same 20/min/IP limiter
+  as `/tcp-auth` — but a reviewer should know the raw secret *can* still cross
+  port 8081 on that path, just not from the plugin itself.
 - **`/tcp-auth` 404s when no secret is configured**, so an unauthenticated prober
   can't tell whether a relay has the feature on.
 - **Rate limits**: `/token` 30/min/IP, `/tcp-auth` 20/min/IP, 30 msg/s per TCP
   connection and per WebSocket, plus a cap on concurrent TCP connections and an
   idle timeout.
-- **One-time nonces** for the join link. The plugin generates an 8-hex-char nonce
-  (`GenerateNonce`, `Network.as`); the relay exchanges it for a LiveKit JWT bound
-  to the right room and identity, then deletes it. TTL is short and it is
-  single-use, so a leaked URL is useless once opened. It's a timestamp/counter
-  mix, **not a CSPRNG** — deliberately documented as such in the source. The
-  guessing window is small and the relay also requires login+server to match, but
-  a reviewer should know it isn't cryptographic.
+- **One-time nonces** for the join link. The plugin generates a nonce via
+  `Crypto::RandomBase64` (`GenerateNonce`, `Network.as`) — 6 bytes from
+  OpenPlanet's CSPRNG, URL-safe base64-encoded; the relay exchanges it for a
+  LiveKit JWT bound to the right room and identity, then deletes it. TTL is
+  short and it is single-use, so a leaked URL is useless once opened.
 - **LiveKit grants are minimal**: `canPublishData: false`, so a browser client
   can publish audio but cannot inject position packets into the data channel.
 - **No caller-supplied room id anywhere.** A room is only ever derived from the

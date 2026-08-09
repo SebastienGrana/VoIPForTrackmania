@@ -127,10 +127,19 @@ const PEER_GC_MS = 60_000;
 // Calibration sliders: each one writes its live value straight into the
 // matching constant above, and remembers it in localStorage so a page reload
 // mid-calibration doesn't lose the setting you were converging on.
+// Audit #38: minDist and maxDist are independent sliders with overlapping
+// ranges (0-500 and 20-2000) — without a floor between them, dragging
+// minDist past maxDist doesn't error, it just makes gainForDistance() treat
+// maxDist as unreachable and hard-cut at minDist instead of fading. MIN_GAP
+// keeps a slice of falloff always audible between the two.
+const MIN_DIST_MAX_DIST_GAP = 1;
+
 function setupCalibration() {
   const controls = [
-    { id: 'minDist', get: () => MIN_DIST, set: (v) => { MIN_DIST = v; } },
-    { id: 'maxDist', get: () => MAX_DIST, set: (v) => { MAX_DIST = v; } },
+    // maxDist first: on load, saved values are applied in this order, and
+    // minDist's clamp below reads the (by-then-current) MAX_DIST.
+    { id: 'maxDist', get: () => MAX_DIST, set: (v) => { MAX_DIST = Math.max(v, MIN_DIST + MIN_DIST_MAX_DIST_GAP); } },
+    { id: 'minDist', get: () => MIN_DIST, set: (v) => { MIN_DIST = Math.min(v, MAX_DIST - MIN_DIST_MAX_DIST_GAP); } },
     { id: 'panRange', get: () => PAN_RANGE, set: (v) => { PAN_RANGE = v; } },
   ];
 
@@ -149,6 +158,7 @@ function setupCalibration() {
 
     slider.addEventListener('input', () => {
       set(Number(slider.value));
+      slider.value = get(); // reflects clamping (e.g. minDist stopped short of maxDist)
       localStorage.setItem(`onzvoip.v2.${id}`, slider.value);
       sync();
     });

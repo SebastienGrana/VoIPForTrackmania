@@ -43,7 +43,6 @@ int64 g_lastAuthFailAt = 0;
 // embedded in the "Copy URL" link. The relay exchanges it for a JWT already
 // bound to the right room, so the player never has to type a login in.
 string g_nonce = "";
-int g_nonceCounter = 0;
 int64 g_nonceSentAt = 0;
 // The server login the nonce was issued for — a change means a new nonce.
 string g_nonceServerLogin = "";

@@ -201,6 +201,12 @@ export function createRelay({
   let tcpConnectionCount = 0;
 
   const app = express();
+  // Real deploy always puts Caddy in front on the same host (see
+  // deploy/Caddyfile) — trusting only loopback means req.ip resolves to the
+  // client's real IP from X-Forwarded-For instead of always being Caddy's
+  // own address, which would otherwise make every per-IP rate limiter below
+  // (token, tcp-auth) count all callers as one shared budget.
+  app.set('trust proxy', 'loopback');
   if (!enableCalibrationBot) {
     // bot.html lets anyone publish a fake "CalibBot" audio track into the
     // shared room; it's a solo-testing tool, not something to expose
@@ -216,8 +222,17 @@ export function createRelay({
   }
   app.use(express.static(staticDir));
 
-  app.get('/health', (req, res) => {
-    res.json({ status: 'ok' });
+  app.get('/health', async (req, res) => {
+    // Audit #37: this used to be a static 200 that only proved the Node
+    // process was up, not that it could actually reach LiveKit — the one
+    // dependency every other route needs. Reuses the same listRooms() call
+    // already used to gate broadcasts, so it's exercising a real code path.
+    try {
+      await roomService.listRooms([roomName]);
+      res.json({ status: 'ok' });
+    } catch (err) {
+      res.status(503).json({ status: 'error', error: 'livekit unreachable' });
+    }
   });
 
   app.get('/token', async (req, res) => {
@@ -425,12 +440,22 @@ export function createRelay({
         // path, kept for simulate-positions.js and older plugin builds that
         // never fetch a token).
         if (!authenticated) {
-          if (msg.type === 'auth' && typeof msg.token === 'string'
+          // The raw-secret branch below has no per-attempt cost of its own
+          // (unlike POST /tcp-auth, which is capped at 20/min/IP) — without
+          // this, an attacker could open new TCP connections and guess the
+          // shared secret directly, unrated. Shares tcpAuthLimiter's budget
+          // with /tcp-auth since both are attempts to guess the same secret.
+          if (msg.type !== 'auth' || !tcpAuthLimiter.allow(socket.remoteAddress)) {
+            try { socket.write('{"type":"authError"}\n'); } catch {}
+            socket.destroy();
+            return;
+          }
+          if (typeof msg.token === 'string'
               && tcpAuthTokens.has(msg.token) && tcpAuthTokens.get(msg.token) >= Date.now()) {
             tcpAuthTokens.delete(msg.token); // single-use
             authenticated = true;
             continue; // a message right after auth in the same chunk (e.g. nonce) must still be processed below
-          } else if (msg.type === 'auth' && msg.secret === tcpSharedSecret) {
+          } else if (msg.secret === tcpSharedSecret) {
             authenticated = true;
             continue;
           } else {

@@ -17,21 +17,11 @@ void SendNonce(const string &in login, const string &in serverLogin, const strin
     print("OnZVoIP: nonce sent for " + target + " → ?t=" + g_nonce);
 }
 
-// Generates an 8-char hex nonce. Not cryptographically random but hard
-// enough to guess in the 2-minute window: the relay also checks login+server
-// match, and nonces are single-use.
+// Audit #35: used to be a timestamp/counter XOR-mix, not a CSPRNG — findable
+// via OpenPlanet's Crypto namespace instead. 6 bytes of real entropy, encoded
+// URL-safe (no +, /, or = to escape when embedded in "?t=" or a JSON string).
 string GenerateNonce() {
-    // XOR-mix of timestamp + counter so two calls in the same millisecond differ.
-    uint t = uint(Time::Now) ^ uint(g_nonceCounter++ * 2654435761);
-    t ^= t >> 16;
-    t *= 0x45d9f3b;
-    t ^= t >> 16;
-    string hex = "0123456789abcdef";
-    string result = "";
-    for (int i = 7; i >= 0; i--) {
-        result += hex.SubStr(int((t >> uint(i * 4)) & uint(0xF)), 1);
-    }
-    return result;
+    return Crypto::RandomBase64(6, true);
 }
 
 void TryConnect() {
