@@ -758,3 +758,14 @@ if (urlNonce) {
   const urlIdentity = new URLSearchParams(location.search).get('identity');
   if (urlIdentity) identityInput.value = urlIdentity;
 }
+
+// Exported for server/test/app.test.js only — a <script type="module"> ignores
+// unused exports, so this has no effect on the browser build.
+export {
+  tickGains, applyRelativeMode, gainLabel, decodePosition, worldToScreen,
+  purgeAll, disconnectLiveKit, attachRoomEvents, connectLiveKit,
+  startIngestWs, startPositionSend, handleRoomPush, connectViaNonce, join,
+  renderPlayerList, renderPeerTable, draw,
+  me, peers, gains, audioNodes, audioPublications, subscribedPeers, room,
+  MIN_DIST, MAX_DIST, PAN_RANGE, PEER_GC_MS,
+};
