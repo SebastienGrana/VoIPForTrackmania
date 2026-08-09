@@ -112,10 +112,10 @@ void RenderInterface() {
 // regardless, so this is what keeps a status visible after the player closes
 // the overlay — the "retracted" look, same idea as an ImGui window collapsed
 // down to just its title bar.
-// Distance from the screen's top-left corner, in pixels. Bump HUD_X to push
-// the pill right, HUD_Y to push it down.
-const float HUD_X = 2105.0f;
-const float HUD_Y = 50.0f;
+// Screen position lives in Settings (S_HudMarginRight/S_HudY, Settings.as) —
+// anchored to the right edge via Display::GetWidth() so it lands near
+// PyPlanet's local/live times widget on every resolution instead of a fixed
+// X that only fits the developer's own screen.
 const float HUD_PAD_X = 8.0f;
 const float HUD_PAD_Y = 5.0f;
 const float HUD_GAP = 6.0f;
@@ -146,17 +146,18 @@ void Render() {
     float contentHeight = Math::Max(titleSize.y, statusSize.y);
     float boxWidth = HUD_PAD_X * 2.0f + titleSize.x + HUD_GAP + HUD_DOT_RADIUS * 2.0f + HUD_GAP + statusSize.x;
     float boxHeight = HUD_PAD_Y * 2.0f + contentHeight;
-    float midY = HUD_Y + boxHeight / 2.0f;
+    float hudX = float(Display::GetWidth()) - boxWidth - S_HudMarginRight;
+    float midY = S_HudY + boxHeight / 2.0f;
 
     nvg::BeginPath();
-    nvg::RoundedRect(HUD_X, HUD_Y, boxWidth, boxHeight, 6.0f);
+    nvg::RoundedRect(hudX, S_HudY, boxWidth, boxHeight, 6.0f);
     nvg::FillColor(vec4(0.0f, 0.0f, 0.0f, 0.55f));
     nvg::Fill();
     nvg::ClosePath();
 
     nvg::TextAlign(nvg::Align::Left | nvg::Align::Middle);
 
-    float x = HUD_X + HUD_PAD_X;
+    float x = hudX + HUD_PAD_X;
     nvg::FillColor(vec4(1.0f, 1.0f, 1.0f, 1.0f));
     nvg::Text(x, midY, "OnZVoIP");
     x += titleSize.x + HUD_GAP;

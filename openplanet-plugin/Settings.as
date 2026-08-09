@@ -20,3 +20,13 @@ string S_VoipUrl = "https://62.238.61.115.sslip.io";
 // set one. Ask your community's admin for the value if their relay requires it.
 [Setting category="Connection" name="Relay secret" description="Shared token required by some relays on the TCP ingest port. Leave blank unless your community's admin gave you one."]
 string S_RelaySecret = "";
+
+// Anchored to the right edge (Display::GetWidth() in Interface.as) rather
+// than a fixed X, so it lands in the same spot — near PyPlanet's local/live
+// times widget — on every resolution instead of running off-screen on
+// anything smaller than the developer's own screen.
+[Setting category="Display" name="HUD margin from right edge" description="Distance from the right edge of the screen, in pixels, for the compact status pill."]
+float S_HudMarginRight = 20.0f;
+
+[Setting category="Display" name="HUD position Y" description="Distance from the top edge of the screen, in pixels, for the compact status pill."]
+float S_HudY = 50.0f;
