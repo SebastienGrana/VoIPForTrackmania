@@ -40,6 +40,15 @@ class FakeElement {
     if (i !== -1) parent.children.splice(i, 1);
     this.parentNode = null;
   }
+  // A real setter, not a plain field: app.js empties containers with
+  // `el.innerHTML = ''` before rebuilding them, and a stub that kept the old
+  // children around let a test read rows from a previous render.
+  get innerHTML() { return this._innerHTML; }
+  set innerHTML(value) {
+    this._innerHTML = String(value);
+    for (const child of this.children) child.parentNode = null;
+    this.children.length = 0;
+  }
   setAttribute(name, value) { (this._attrs ??= {})[name] = String(value); }
   getAttribute(name) { return this._attrs?.[name] ?? null; }
   get lastChild() { return this.children[this.children.length - 1]; }

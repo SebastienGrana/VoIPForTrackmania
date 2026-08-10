@@ -9,7 +9,7 @@
 // top-level code once per process) and drives it through its exported
 // internals for the rest of the suite.
 
-import { describe, test, beforeEach } from 'node:test';
+import { describe, test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { installDomStubs } from './dom-stub.js';
 
@@ -730,5 +730,60 @@ describe('calibration reset', () => {
     assert.strictEqual(app.PAN_RANGE, defPan);
     assert.strictEqual(localStorage.getItem('onzvoip.v2.minDist'), null);
     assert.strictEqual(stub.elements.calibReset.style.display, 'none');
+  });
+});
+
+describe('renderPlayerList() (who the list shows)', () => {
+  // Earlier suites deliberately lose the room, and app.room stays null after
+  // them — reconnect so this one runs against a live room like the page does.
+  before(async () => {
+    await app.connectLiveKit({ token: 'tok', wsUrl: 'ws://fake', roomName: 'listRoom', login: 'me', serverName: null });
+  });
+
+  // Walks the fake DOM because the assertion has to be about what a player
+  // actually reads, not about the Set the function built internally.
+  function rowTexts() {
+    // Starts from innerHTML because the empty state is written as markup
+    // rather than built out of elements.
+    const out = [stub.elements.playerList.innerHTML];
+    (function walk(node, acc) {
+      if (node.textContent) acc.push(node.textContent);
+      for (const child of node.children) walk(child, acc);
+    })(stub.elements.playerList, out);
+    return out.join(' | ');
+  }
+
+  test('a participant with neither a position nor audio is still listed', () => {
+    // Exactly the case that made the page lie: someone on the web page with no
+    // game running (a debug tab) and the mic still off. The header counts them
+    // from remoteParticipants, so the list has to as well.
+    app.room.remoteParticipants.set('totor', { identity: 'totor' });
+    try {
+      app.renderPlayerList();
+      const text = rowTexts();
+      assert.ok(text.includes('totor'), `expected totor in the list, got: ${text}`);
+      assert.ok(text.includes('no position yet'), `expected the no-position label, got: ${text}`);
+      assert.ok(!/\d+ m/.test(text), `a player we cannot place must not get a distance: ${text}`);
+    } finally {
+      app.room.remoteParticipants.delete('totor');
+    }
+  });
+
+  test('the list stays empty when nobody else is in the room', () => {
+    app.renderPlayerList();
+    assert.ok(rowTexts().includes('No other players in the room yet'));
+  });
+
+  test('a participant who does have a position is placed, not listed as unknown', () => {
+    app.room.remoteParticipants.set('velp', { identity: 'velp' });
+    app.peers.set('velp', { x: app.me.x + 10, y: 0, z: app.me.z, lastSeen: Date.now() });
+    try {
+      app.renderPlayerList();
+      const text = rowTexts();
+      assert.ok(text.includes('velp'));
+      assert.ok(!text.includes('no position yet'), `expected a real distance, got: ${text}`);
+    } finally {
+      app.room.remoteParticipants.delete('velp');
+    }
   });
 });

@@ -926,7 +926,16 @@ function renderPlayerList() {
   // Audit #9: union of peers (have a position) and audioNodes (have a
   // subscribed track) — a player who's connected with mic open but still in
   // the menus has audio and no position yet, and must still show up.
-  const identities = new Set([...peers.keys(), ...audioNodes.keys()]);
+  // Plus everyone LiveKit says is in the room, even with neither: the header
+  // counts exactly those, so anything narrower here means the page claims
+  // "2 in the room" over an empty list. Happens for real in the ~200 ms before
+  // a first position arrives, when a plugin drops, and for anyone on the page
+  // without the game running.
+  const identities = new Set([
+    ...peers.keys(),
+    ...audioNodes.keys(),
+    ...(room ? room.remoteParticipants.keys() : []),
+  ]);
   if (identities.size === 0) {
     list.innerHTML = '<li class="pl-empty">No other players in the room yet</li>';
     return;
