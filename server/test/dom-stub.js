@@ -21,14 +21,25 @@ class FakeElement {
     this.innerHTML = '';
     this.className = '';
     this.disabled = false;
+    this.parentNode = null;
   }
   addEventListener(type, cb) { (this._listeners[type] ??= []).push(cb); }
   removeEventListener() {}
   dispatch(type, evt = {}) { for (const cb of (this._listeners[type] || []).slice()) cb(evt); }
-  appendChild(child) { this.children.push(child); return child; }
-  append(...nodes) { this.children.push(...nodes); }
-  prepend(node) { this.children.unshift(node); }
-  remove() {}
+  appendChild(child) { this._adopt(child); this.children.push(child); return child; }
+  append(...nodes) { for (const n of nodes) this._adopt(n); this.children.push(...nodes); }
+  prepend(node) { this._adopt(node); this.children.unshift(node); }
+  _adopt(node) { if (node instanceof FakeElement) node.parentNode = this; }
+  // Really detaches, instead of being a no-op: logEvent() trims its journal
+  // with `while (childElementCount > 20) lastChild.remove()`, so a remove()
+  // that removed nothing spun forever the moment the suite logged 21 lines.
+  remove() {
+    const parent = this.parentNode;
+    if (!parent) return;
+    const i = parent.children.indexOf(this);
+    if (i !== -1) parent.children.splice(i, 1);
+    this.parentNode = null;
+  }
   setAttribute(name, value) { (this._attrs ??= {})[name] = String(value); }
   getAttribute(name) { return this._attrs?.[name] ?? null; }
   get lastChild() { return this.children[this.children.length - 1]; }
@@ -182,6 +193,15 @@ export function installDomStubs() {
   el('playerList', 'ul');
   const optBody = el('optBody', 'div'); optBody.style.display = 'none';
   el('debugRoomVal', 'span');
+  // Debug-only room picker (only rendered when the relay allows debug, but the
+  // stub always provides it so the picker's own logic stays testable).
+  el('debugRoom', 'input');
+  el('debugRoomJoin', 'button');
+  el('debugRoomMsg', 'div');
+  // Shown to someone who opened the site without coming from the game; the
+  // bootstrap in index.html hides the rest of the page behind it.
+  el('noGameMsg', 'div');
+  el('appBody', 'div');
   const maxDist = el('maxDist', 'input'); maxDist.value = '150';
   el('maxDistVal', 'span');
   el('calibMaxLabel', 'span');

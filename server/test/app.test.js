@@ -493,6 +493,50 @@ describe('join() (legacy manual join)', () => {
     stub.setFetch(async () => { throw new Error('should not fetch for a blank identity'); });
     await app.join();
   });
+
+  test('a room override is passed to the relay, and encoded', async () => {
+    stub.elements.identity.value = 'legacyuser';
+    let asked = null;
+    stub.setFetch(async (url) => { asked = url; return { ok: false, status: 500 }; });
+    await app.join('other room');
+    assert.match(asked, /[?&]room=other%20room/);
+  });
+
+  test('no override means no room param at all — the relay picks its default', async () => {
+    stub.elements.identity.value = 'legacyuser';
+    let asked = null;
+    stub.setFetch(async (url) => { asked = url; return { ok: false, status: 500 }; });
+    await app.join();
+    assert.ok(!asked.includes('room='), `expected no room param, got ${asked}`);
+  });
+});
+
+// The picker is only rendered when the relay allows debug, and the relay
+// refuses the room anyway when it doesn't — so what matters here is that a
+// name the relay would silently drop is caught in front of the user instead of
+// looking like the button did nothing.
+describe('debug room picker', () => {
+  test('an empty name says so and never calls the relay', () => {
+    stub.elements.debugRoom.value = '  ';
+    stub.setFetch(async () => { throw new Error('should not fetch'); });
+    stub.elements.debugRoomJoin.dispatch('click');
+    assert.match(stub.elements.debugRoomMsg.textContent, /Type a room name/);
+  });
+
+  test('a name the relay would reject is refused here, with the rule spelled out', () => {
+    stub.elements.debugRoom.value = '../evil room';
+    stub.setFetch(async () => { throw new Error('should not fetch'); });
+    stub.elements.debugRoomJoin.dispatch('click');
+    assert.match(stub.elements.debugRoomMsg.textContent, /Letters, digits/);
+  });
+
+  test('a valid room with no login asks for the login first', () => {
+    stub.elements.debugRoom.value = 'other-room_1';
+    stub.elements.identity.value = '';
+    stub.setFetch(async () => { throw new Error('should not fetch'); });
+    stub.elements.debugRoomJoin.dispatch('click');
+    assert.match(stub.elements.debugRoomMsg.textContent, /login/);
+  });
 });
 
 // The page used to keep showing "Connected — you'll hear nearby players

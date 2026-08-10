@@ -119,6 +119,34 @@
   #status.err { color: var(--onz-warn); }
   #status.err strong { font-weight: 600; }
 
+  /* Not in the approved render — it only ever draws the connected state. Built
+     out of the tokens the rest of the page already uses (card background,
+     card border, muted body text) so it reads as part of the same interface
+     rather than as an error. Deliberately not warn-coloured: nothing has gone
+     wrong, the visitor is simply at the wrong door. */
+  .nogame {
+    padding: 20px;
+    background: var(--onz-surface);
+    border: 1px solid var(--onz-border);
+    border-radius: 12px;
+    margin-top: 8px;
+  }
+  .debug-room-row { display: flex; gap: 8px; margin: 8px 0 4px; }
+  .debug-room-row input {
+    flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px;
+    background: var(--onz-input-bg); color: var(--onz-text);
+    border: 1px solid var(--onz-border3); border-radius: 6px;
+  }
+  .debug-room-row button {
+    padding: 6px 12px; font-size: 12px; cursor: pointer;
+    background: var(--onz-accent); color: #fff;
+    border: none; border-radius: 6px;
+  }
+  .debug-room-msg { font-size: 11px; color: var(--onz-warn); min-height: 14px; }
+
+  .nogame-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  .nogame-body { font-size: 13px; line-height: 1.6; color: var(--onz-muted); margin: 0; }
+
   .expired-msg {
     font-size: 13px;
     color: var(--onz-warn);
@@ -524,7 +552,26 @@
     This link has expired — click <strong>Copy URL</strong> again in the game
   </div>
 
-  <div class="onz-cols">
+  <!-- Shown to someone who opened the site directly instead of arriving from
+       the game. Until now they got the join row, typed a name, and were told
+       "the server refused this name (error 404)" — which is the truthful
+       answer (the manual join is closed on a public relay, see DEBUG_MODE in
+       .env.example) but reads like a broken site. The door is walled up; this
+       takes the handle off it and says where the real door is.
+       Decision 2026-08-10 with the user: the rest of the interface is hidden
+       too, because an empty radar and dead settings under the message were
+       what made it look broken in the first place. -->
+  <div id="noGameMsg" class="nogame" style="display:none">
+    <p class="nogame-title">This page opens from the game</p>
+    <p class="nogame-body">
+      In Trackmania, open the <strong>OnZVoIP</strong> plugin window and click
+      <strong>Copy URL</strong>, then paste the link in your browser. The link
+      is what proves to the server which player you are — that is why there is
+      no name to type here.
+    </p>
+  </div>
+
+  <div class="onz-cols" id="appBody">
   <div class="onz-col">
 
   <!-- Radar: always visible (moved out of Advanced settings so it matches
@@ -685,6 +732,16 @@
     <div class="opt-section debug-only">
       <div class="opt-title">Debug</div>
       <div id="debugRoomInfo" class="opt-label">Current room: <span class="val" id="debugRoomVal">—</span></div>
+      <!-- Debug-only room picker. The server is what decides this is allowed
+           (DEBUG_MODE, see relay.js): with it off, /token answers 404 and this
+           row never renders in the first place. Letting a caller name the room
+           is the sharpest thing the relay does — it hands out a token for a
+           room nobody proved they belong to. -->
+      <div class="debug-room-row">
+        <input id="debugRoom" placeholder="room name" autocomplete="off" />
+        <button type="button" id="debugRoomJoin">Join room</button>
+      </div>
+      <div id="debugRoomMsg" class="debug-room-msg"></div>
       <div id="meReadout"></div>
       <table id="peers">
         <thead><tr><th>player</th><th>dist</th><th>gain</th><th>pan</th><th>audio</th></tr></thead>
@@ -702,16 +759,36 @@
 
 </div>
 
-<!-- Hide join form immediately if ?t= nonce is present, before app.js loads -->
+<!-- Sets window.ONZ_DEBUG_ALLOWED from the relay's DEBUG_MODE env var. A plain
+     blocking <script>, so the bootstrap below already has the answer and the
+     debug panel never flashes into view on a relay that forbids it. -->
+<script src="/config.js"></script>
+
+<!-- Decides what the page shows, before app.js loads -->
 <script>
   const onzParams = new URLSearchParams(location.search);
+  // ?debug=1 reveals the Debug panel, the room picker and the follow-mode
+  // offset sliders — but only where the SERVER allows it. Without that second
+  // condition the switch would be purely cosmetic: the panel's one dangerous
+  // control (the room picker) calls /token, and /token is what actually says
+  // yes or no. This just keeps the page from offering a button that 404s.
+  const onzDebug = onzParams.get('debug') === '1' && window.ONZ_DEBUG_ALLOWED === true;
+  if (onzDebug) document.documentElement.classList.add('onz-debug');
+
   if (onzParams.get('t')) {
+    // Arriving from the game: skip the form entirely.
     document.getElementById('joinSection').style.display = 'none';
     document.getElementById('tagline').style.display = 'none';
     document.getElementById('status').textContent = 'Connecting…';
+  } else if (!onzDebug) {
+    // Opened by hand on a relay where the manual join is closed. Everything
+    // here would either fail or sit empty, so show the way in instead of an
+    // interface that looks broken (decision 2026-08-10 with the user).
+    document.getElementById('joinSection').style.display = 'none';
+    document.getElementById('status').style.display = 'none';
+    document.getElementById('appBody').style.display = 'none';
+    document.getElementById('noGameMsg').style.display = '';
   }
-  // ?debug=1 reveals the Debug panel and the follow-mode offset sliders.
-  if (onzParams.get('debug') === '1') document.documentElement.classList.add('onz-debug');
 </script>
 
 <script>

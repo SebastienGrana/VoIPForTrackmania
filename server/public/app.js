@@ -1723,8 +1723,12 @@ async function connectViaNonce(nonce) {
   startIngestWs(login);
 }
 
-// Legacy manual join (identity input + Join button).
-async function join() {
+// Manual join (identity input + Join button), and the debug room picker.
+// Both are behind the relay's DEBUG_MODE: without it /token answers 404, which
+// is exactly the "The server refused this name (error 404)" a player sees if
+// they reach this on a published relay. That is intended - see .env.example.
+// `roomOverride` names the room to land in; ignored by a relay with debug off.
+async function join(roomOverride = null) {
   const identity = identityInput.value.trim();
   if (!identity) return;
   myIdentity = identity;
@@ -1732,7 +1736,9 @@ async function join() {
   identityInput.disabled = true;
   statusEl.textContent = 'Connecting...';
 
-  const res = await fetchToken(`/token?identity=${encodeURIComponent(identity)}`);
+  let url = `/token?identity=${encodeURIComponent(identity)}`;
+  if (roomOverride) url += `&room=${encodeURIComponent(roomOverride)}`;
+  const res = await fetchToken(url);
   if (!res.ok) {
     if (res.unreachable) showRelayUnreachable();
     else showFailure(`The server refused this name (error ${res.status})`,
@@ -1763,7 +1769,42 @@ async function join() {
   startIngestWs(identity);
 }
 
-joinBtn.addEventListener('click', join);
+// Wrapped, not passed directly: a listener is called with the click event, and
+// join() now takes a room name as its first argument - handing it a MouseEvent
+// would put "[object MouseEvent]" in the query string.
+joinBtn.addEventListener('click', () => join());
+
+// Debug-only room picker. Rendered only when the relay allows debug (see the
+// bootstrap script in index.html), and refused server-side otherwise, so the
+// guard here is about the element being absent, not about permission.
+const debugRoomInput = document.getElementById('debugRoom');
+const debugRoomJoinBtn = document.getElementById('debugRoomJoin');
+const debugRoomMsgEl = document.getElementById('debugRoomMsg');
+if (debugRoomJoinBtn) {
+  debugRoomJoinBtn.addEventListener('click', async () => {
+    const target = debugRoomInput.value.trim();
+    if (debugRoomMsgEl) debugRoomMsgEl.textContent = '';
+    if (!target) {
+      if (debugRoomMsgEl) debugRoomMsgEl.textContent = 'Type a room name first';
+      return;
+    }
+    // Same character set the relay accepts (validateServer in relay.js). A
+    // rejected name there silently falls back to the default room, which would
+    // look like the picker did nothing - so say it here instead.
+    if (!/^[a-z0-9_-]{1,64}$/i.test(target)) {
+      if (debugRoomMsgEl) debugRoomMsgEl.textContent = 'Letters, digits, - and _ only';
+      return;
+    }
+    if (!identityInput.value.trim()) {
+      if (debugRoomMsgEl) debugRoomMsgEl.textContent = 'Type a login above first';
+      return;
+    }
+    // Leave whatever room we are in first: connectLiveKit() would otherwise
+    // hand `room` a second connection and the first one would keep playing.
+    if (room) await disconnectLiveKit();
+    await join(target);
+  });
+}
 
 micBtn.addEventListener('click', async () => {
   if (!room) return;

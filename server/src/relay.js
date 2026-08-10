@@ -77,6 +77,21 @@ export function createRelay({
   tcpMaxConnections = 1000,
   tcpIdleTimeoutMs = 30_000,
   enableCalibrationBot = false,
+  // Master switch for the whole debug surface: the ?debug=1 panel in the
+  // browser, the manual "pick your own login" join, and the room picker that
+  // comes with it. Off by default and meant to stay off once a relay is
+  // published — it is kept in the code for the project's own testing and for
+  // whoever forks it, not as a feature of the deployed site.
+  //
+  // Understand what turning it on does: it makes /token?identity=<anything>
+  // answer, and lets that caller name the room. That is a publish-capable
+  // token for an arbitrary room, minted from a query string, with no proof of
+  // anything. On a public relay it means any visitor can walk into any
+  // community's voice room under any name and listen. That is why the browser
+  // asks the server (GET /config.js) whether debug is allowed instead of
+  // deciding on its own: hiding the panel client-side would hide the buttons,
+  // not close the door.
+  debugMode = false,
   positionBroadcastIntervalMs = 100,
   // Port 8081 accepts any raw TCP connection with zero authentication —
   // anyone on the internet can inject positions/nonces for any pseudo.
@@ -222,6 +237,18 @@ export function createRelay({
   }
   app.use(express.static(staticDir));
 
+  // The page has to know whether debug is allowed BEFORE it decides what to
+  // render, so this is a tiny classic <script> in the head rather than a JSON
+  // endpoint: it is fetched and executed before the inline bootstrap runs, and
+  // there is no window where the debug panel flashes into view.
+  app.get('/config.js', (req, res) => {
+    res.type('application/javascript');
+    // no-store: this answer flips when the operator flips the env var, and a
+    // page cached from the debug era must not keep believing debug is allowed.
+    res.set('Cache-Control', 'no-store');
+    res.send(`window.ONZ_DEBUG_ALLOWED=${debugMode ? 'true' : 'false'};\n`);
+  });
+
   app.get('/health', async (req, res) => {
     // Audit #37: this used to be a static 200 that only proved the Node
     // process was up, not that it could actually reach LiveKit — the one
@@ -273,14 +300,13 @@ export function createRelay({
       return;
     }
 
-    // --- Legacy path: manual identity for bot.html / testing ---
-    // Gated behind the same flag as bot.html, its only consumer: this path is
-    // unauthenticated and takes the identity straight from the query string,
-    // so on a public relay it would let anyone join the default room under any
-    // name they like. Real players never come through here — they arrive with
-    // a nonce, handled above. 404 rather than 403 so it looks like an endpoint
+    // --- Manual path: caller-supplied identity, for bot.html and debugging ---
+    // Unauthenticated by construction: the identity comes straight from the
+    // query string, so on a public relay this lets anyone join under any name
+    // they like. Real players never come through here — they arrive with a
+    // nonce, handled above. 404 rather than 403 so it looks like an endpoint
     // that simply isn't there, matching the bot.html gate.
-    if (!enableCalibrationBot) {
+    if (!enableCalibrationBot && !debugMode) {
       res.status(404).json({ error: 'not found' });
       return;
     }
@@ -289,10 +315,17 @@ export function createRelay({
       res.status(400).json({ error: 'missing identity query param' });
       return;
     }
-    // Always the default room: there is deliberately no caller-supplied room
-    // override here. Honouring one would let a caller mint a publish-capable
-    // token for an arbitrary community's room.
-    const room = roomName;
+    // The room override is the sharpest edge in the whole file: it mints a
+    // publish-capable token for a room the caller names. It rides on DEBUG_MODE
+    // alone and never on ENABLE_CALIBRATION_BOT, so enabling the calibration
+    // tool cannot drag it along — the bot only ever needs the default room.
+    // Anything unparseable falls back to the default room instead of erroring:
+    // a debug-only field is not worth a failure mode.
+    let room = roomName;
+    if (debugMode) {
+      const requested = validateServer(req.query.room);
+      if (requested) room = requested;
+    }
     const at = new AccessToken(apiKey, apiSecret, { identity });
     // Same grant as the nonce path above, for the same reason (avatars), with
     // the same receiving-side guard. See the comment there.

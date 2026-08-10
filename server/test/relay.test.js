@@ -820,6 +820,151 @@ describe('calibration bot gate — default off (own relay instance)', () => {
   });
 });
 
+// DEBUG_MODE is the switch a fork or a test deploy flips to get the ?debug=1
+// panel back. It also re-opens the manual /token?identity= join and adds a
+// room override on top of it - a token for a room nobody proved they belong
+// to. So the *off* shape is what these assert first, then that the room
+// override cannot be reached any other way (notably not via the calibration
+// bot flag, which shares the same endpoint).
+describe('debug mode — off (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      // debugMode deliberately omitted — this is the production shape.
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  test('/config.js tells the page debug is not allowed', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/config.js`);
+    assert.strictEqual(res.status, 200);
+    assert.match(await res.text(), /window\.ONZ_DEBUG_ALLOWED=false;/);
+  });
+
+  test('/config.js is never cached — flipping the env var must take effect', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/config.js`);
+    assert.match(res.headers.get('cache-control') ?? '', /no-store/);
+  });
+
+  test('a room override cannot open the manual join by itself', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=impostor&room=someoneelse`);
+    assert.strictEqual(res.status, 404);
+  });
+});
+
+describe('debug mode — on, room override (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+
+  // Reads the room out of the signed JWT rather than trusting the JSON body:
+  // the body is what the relay says it did, the grant is what the token
+  // actually permits, and only the second one is what LiveKit enforces.
+  function roomInToken(jwt) {
+    const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
+    return payload.video.room;
+  }
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      debugMode: true,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  test('/config.js tells the page debug is allowed', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/config.js`);
+    assert.match(await res.text(), /window\.ONZ_DEBUG_ALLOWED=true;/);
+  });
+
+  test('debugMode alone re-opens the manual join (no calibration flag needed)', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=velp`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.strictEqual(roomInToken(body.token), ROOM, 'no override → default room');
+  });
+
+  test('?room= lands in that room, and the grant says so too', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=velp&room=other-room_1`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.strictEqual(body.room, 'other-room_1');
+    assert.strictEqual(roomInToken(body.token), 'other-room_1');
+  });
+
+  test('a malformed room name falls back to the default instead of erroring', async () => {
+    // A debug-only field is not worth a failure mode; what matters is that the
+    // junk never reaches the grant.
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=velp&room=${encodeURIComponent('../evil room')}`);
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(roomInToken((await res.json()).token), ROOM);
+  });
+
+  test('bot.html stays closed — debug mode is not the calibration flag', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/bot.html`);
+    assert.strictEqual(res.status, 404);
+  });
+});
+
+// The calibration bot shares /token with debug mode. It only ever needs the
+// default room, so enabling it must not drag the room override along.
+describe('calibration bot on, debug off — no room override (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      enableCalibrationBot: true,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+  });
+
+  after(async () => {
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  test('?room= is ignored, the token stays on the default room', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?identity=CalibBot&room=other-room`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.strictEqual(body.room, ROOM);
+    const payload = JSON.parse(Buffer.from(body.token.split('.')[1], 'base64url').toString());
+    assert.strictEqual(payload.video.room, ROOM);
+  });
+
+  test('and the page is still told debug is off', async () => {
+    const res = await fetch(`http://localhost:${HTTP_PORT}/config.js`);
+    assert.match(await res.text(), /window\.ONZ_DEBUG_ALLOWED=false;/);
+  });
+});
+
 // The /ingest WebSocket is a public, unauthenticated entry point that feeds the
 // same handleMessage() as the TCP ingest — and it had no coverage at all.
 describe('WebSocket /ingest (own relay instance)', () => {
