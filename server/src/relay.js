@@ -156,6 +156,24 @@ export function createRelay({
   // Tracks which WebSocket belongs to which browser login so the relay can
   // push room-change notifications when the plugin sends a new nonce.
   const browserSockets = new Map(); // login → WebSocket
+  // Which room each browser was actually issued a token for. A browser can
+  // send its own position (free-move / follow-a-player debug modes), but it
+  // has no way to name the room: the /token response hands it a technical room
+  // name, never the server login broadcastPosition() routes on. Without this
+  // the position fell back to the default room and nobody on a server-specific
+  // room ever saw it. Recorded here at token issuance, so it stays
+  // server-derived — never a room id taken from the sender.
+  const browserRooms = new Map(); // login → room
+  const BROWSER_ROOMS_MAX = 5000;
+  function rememberBrowserRoom(login, room) {
+    if (!login || !room) return;
+    browserRooms.delete(login); // re-insert to keep Map order = least-recent-first
+    browserRooms.set(login, room);
+    if (browserRooms.size > BROWSER_ROOMS_MAX) {
+      const oldest = browserRooms.keys().next().value;
+      browserRooms.delete(oldest);
+    }
+  }
   // Pushes relay state (player count, web connected, mic muted) back to
   // the plugin over its existing TCP connection.
   const tcpSocketsByLogin = new Map(); // login → { socket, room }
@@ -305,6 +323,7 @@ export function createRelay({
       // Return login + human-readable server name so the browser can skip the
       // identity form and show which server you're on.
       const serverName = displayNameFor(entry.server, entry.serverName);
+      rememberBrowserRoom(entry.login, room);
       res.json({ token, wsUrl: liveKitPublicWsUrl, room, login: entry.login, serverName });
       return;
     }
@@ -340,6 +359,7 @@ export function createRelay({
     // the same receiving-side guard. See the comment there.
     at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: true });
     const token = await at.toJwt();
+    rememberBrowserRoom(identity, room);
     res.json({ token, wsUrl: liveKitPublicWsUrl, room });
   });
 
@@ -368,7 +388,7 @@ export function createRelay({
 
   const server = http.createServer(app);
 
-  function broadcastPosition(msg) {
+  function broadcastPosition(msg, fallbackRoom) {
     if (msg.type !== 'position') return;
     const { pseudo } = msg;
     if (typeof pseudo !== 'string' || pseudo.length === 0 || pseudo.length > 64) return;
@@ -377,15 +397,16 @@ export function createRelay({
     if (Math.abs(x) >= 1e6 || Math.abs(y) >= 1e6 || Math.abs(z) >= 1e6) return;
 
     // Route to the server-specific room.
-    // Falls back to the default roomName for positions without a server field
-    // (backward-compatible with older plugin versions and simulate-positions.js).
+    // Without a server field, fall back to the room the sender's own token was
+    // issued for (browsers publishing their own position — see browserRooms),
+    // then to the default roomName (older plugin versions, simulate-positions.js).
     // The room is derived from the server the sender says it is on, never
     // taken as a raw room id from the message: a caller-supplied room would
     // let anyone inject positions into an arbitrary community's room.
     const serverLogin = validateServer(msg.server);
     const targetRoom = serverLogin
       ? (roomNameFor(serverLogin, msg.serverName) ?? roomName)
-      : roomName;
+      : (fallbackRoom ?? roomName);
 
     let posMap = pendingPositions.get(targetRoom);
     if (!posMap) {
@@ -395,7 +416,7 @@ export function createRelay({
     posMap.set(pseudo, { x, y, z, ts: Date.now() });
   }
 
-  function handleMessage(msg) {
+  function handleMessage(msg, fallbackRoom) {
     if (msg.type === 'nonce') {
       // Plugin registers a nonce so the browser can later call /token?t=
       const nonce = String(msg.nonce ?? '').trim();
@@ -419,7 +440,7 @@ export function createRelay({
       }
       return;
     }
-    broadcastPosition(msg);
+    broadcastPosition(msg, fallbackRoom);
   }
 
   const wss = new WebSocketServer({ server, path: '/ingest' });
@@ -444,7 +465,7 @@ export function createRelay({
           }
           return;
         }
-        handleMessage(msg);
+        handleMessage(msg, wsLogin ? browserRooms.get(wsLogin) : undefined);
       } catch {}
     });
     ws.on('close', () => {

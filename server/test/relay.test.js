@@ -1072,6 +1072,49 @@ describe('WebSocket /ingest (own relay instance)', () => {
     assert.ok(roomPush.name, 'room name should be derived, not null');
   });
 
+  // A browser publishing its own position (free-move / follow-a-player) has no
+  // way to name a room, so its payload carries no `server` field. It used to
+  // fall back to the default room, which meant nobody on a server-specific
+  // room ever saw it — the whole point of the feature.
+  test('a browser position with no server field goes to the room its token was issued for', async () => {
+    const ws = await connect();
+    ws.send(JSON.stringify({ type: 'nonce', nonce: 'wsroute1', login: 'router', server: 'srv-route', serverName: 'Route Server' }));
+    await new Promise(r => setTimeout(r, 40));
+
+    const tokenRes = await fetch(`http://localhost:${HTTP_PORT}/token?t=wsroute1`);
+    const { room: issuedRoom } = await tokenRes.json();
+    assert.notStrictEqual(issuedRoom, ROOM, 'a server-specific room, not the default one');
+
+    ws.send(JSON.stringify({ type: 'hello', login: 'router' }));
+    await new Promise(r => setTimeout(r, 40));
+    const before = roomService.calls.length;
+    ws.send(JSON.stringify({ type: 'position', pseudo: 'router', x: 7, y: 8, z: 9 }));
+    await new Promise(r => setTimeout(r, 40));
+    await relay.flushPositions();
+    ws.close();
+
+    const call = roomService.calls.slice(before)
+      .find(([, data]) => JSON.parse(Buffer.from(data).toString()).some(p => p.pseudo === 'router'));
+    assert.ok(call, 'the position should have been fanned out');
+    assert.strictEqual(call[0], issuedRoom);
+  });
+
+  // The fallback must stay per-login: a socket that never said hello (older
+  // plugin versions, simulate-positions.js) still lands in the default room.
+  test('a position from a socket with no token still falls back to the default room', async () => {
+    const ws = await connect();
+    const before = roomService.calls.length;
+    ws.send(JSON.stringify({ type: 'position', pseudo: 'anon', x: 1, y: 1, z: 1 }));
+    await new Promise(r => setTimeout(r, 40));
+    await relay.flushPositions();
+    ws.close();
+
+    const call = roomService.calls.slice(before)
+      .find(([, data]) => JSON.parse(Buffer.from(data).toString()).some(p => p.pseudo === 'anon'));
+    assert.ok(call);
+    assert.strictEqual(call[0], ROOM);
+  });
+
   test('flooding past the per-socket rate limit closes the connection', async () => {
     const ws = await connect();
     const closed = new Promise(resolve => ws.addEventListener('close', resolve));
