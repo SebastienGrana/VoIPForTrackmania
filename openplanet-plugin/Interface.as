@@ -63,6 +63,15 @@ void RenderInterface() {
     if (g_nonce != "") {
         UI::Text("Open in your browser:");
         UI::SameLine();
+        // One click instead of copy-then-paste: OpenBrowserURL() hands the
+        // link (nonce included) straight to the default browser. Copy URL is
+        // kept next to it, because it is the only way out when the default
+        // browser is not the one the player wants to talk in, or when the
+        // game runs somewhere the browser doesn't (streaming, second PC).
+        if (UI::Button("Open in browser")) {
+            OpenBrowserURL(url);
+        }
+        UI::SameLine();
         if (UI::Button("Copy URL")) {
             IO::SetClipboard(url);
         }
