@@ -24,9 +24,11 @@ string S_RelaySecret = "";
 // Anchored to the right edge (Display::GetWidth() in Interface.as) rather
 // than a fixed X, so it lands in the same spot — near PyPlanet's local/live
 // times widget — on every resolution instead of running off-screen on
-// anything smaller than the developer's own screen.
+// anything smaller than the developer's own screen. 295 is the value found by
+// trying it in game: at 20 the pill sat under PyPlanet's own panels, this
+// clears them.
 [Setting category="Display" name="HUD margin from right edge" description="Distance from the right edge of the screen, in pixels, for the compact status pill."]
-float S_HudMarginRight = 20.0f;
+float S_HudMarginRight = 295.0f;
 
 [Setting category="Display" name="HUD position Y" description="Distance from the top edge of the screen, in pixels, for the compact status pill."]
 float S_HudY = 50.0f;
