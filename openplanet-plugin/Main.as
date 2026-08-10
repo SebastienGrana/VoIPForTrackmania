@@ -133,8 +133,9 @@ void Main() {
         }
 
         // Read relay → plugin messages. The relay sends newline-delimited JSON:
-        // {"type":"authError"} on rejected auth, {"type":"state",...} for
-        // periodic state updates. Buffer incomplete lines across
+        // {"type":"authError"} on rejected auth, {"type":"nonceUsed"} when a
+        // browser has spent our link, {"type":"state",...} for periodic state
+        // updates. Buffer incomplete lines across
         // yields; discard and reset if the buffer grows beyond 4 KB (guards
         // against a misbehaving relay sending garbage without newlines).
         if (g_socket.IsReady()) {
@@ -151,6 +152,13 @@ void Main() {
                         line = line.Trim();
                         if (line.Contains("authError")) {
                             g_authFailed = true;
+                        } else if (line.Contains("nonceUsed")) {
+                            // A browser just spent our link, so the URL on
+                            // screen is dead. Blanking it makes the loop below
+                            // mint another within 200 ms — otherwise the player
+                            // would have to wait out NONCE_REFRESH_MS (or
+                            // reload the plugin) before the link worked again.
+                            g_nonce = "";
                         } else if (line.Contains("\"state\"")) {
                             Json::Value@ json = Json::Parse(line);
                             if (json !is null) {

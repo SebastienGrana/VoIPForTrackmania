@@ -276,6 +276,15 @@ export function createRelay({
         return;
       }
       nonces.delete(t); // single-use
+      // Single-use also means the URL the plugin is showing in game is dead the
+      // instant this runs, and the plugin would keep showing it until its own
+      // 9-minute refresh — so leaving and reopening the link said "expired"
+      // even though the game looked like it had just handed out a fresh one.
+      // Telling it here makes it mint another within a tick.
+      const pluginConn = tcpSocketsByLogin.get(entry.login);
+      if (pluginConn && !pluginConn.socket.destroyed) {
+        try { pluginConn.socket.write('{"type":"nonceUsed"}\n'); } catch {}
+      }
       const room = entry.server
         ? (roomNameFor(entry.server, entry.serverName) ?? roomName)
         : roomName;

@@ -655,6 +655,7 @@ describe('TCP state push (own relay instance)', () => {
   let relay;
   let statePushService;
   let STATE_TCP_PORT;
+  let STATE_HTTP_PORT;
 
   before(async () => {
     statePushService = makeMockRoomService();
@@ -669,6 +670,7 @@ describe('TCP state push (own relay instance)', () => {
     await new Promise(resolve => relay.server.listen(0, resolve));
     await new Promise(resolve => relay.tcpServer.listen(0, resolve));
     STATE_TCP_PORT = relay.tcpServer.address().port;
+    STATE_HTTP_PORT = relay.server.address().port;
   });
 
   after(async () => {
@@ -678,10 +680,13 @@ describe('TCP state push (own relay instance)', () => {
 
   // Opens a TCP socket, sends lines, waits durationMs, destroys the socket,
   // and resolves with everything the relay wrote back.
-  function tcpOpenAndCollect(port, lines, durationMs) {
+  // `afterLines`, when given, runs once the lines are out — for tests that need
+  // something to happen (an HTTP call) while the socket is still open.
+  function tcpOpenAndCollect(port, lines, durationMs, afterLines) {
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(port, '127.0.0.1', () => {
         for (const line of lines) socket.write(line + '\n');
+        if (afterLines) Promise.resolve().then(afterLines).catch(reject);
       });
       socket.setEncoding('utf8');
       let buf = '';
@@ -728,6 +733,32 @@ describe('TCP state push (own relay instance)', () => {
     } finally {
       statePushService.listParticipants = original;
     }
+  });
+
+  // The link the plugin shows is single-use, and the plugin has no other way of
+  // knowing it has been used: without this push it kept a dead URL on screen
+  // until its own 9-minute refresh, so leaving the page and reopening the link
+  // said "expired" while the game looked like it was offering a fresh one.
+  test('a browser spending the nonce → relay tells the plugin on the same socket', async () => {
+    const data = await tcpOpenAndCollect(STATE_TCP_PORT, [
+      JSON.stringify({ type: 'nonce', nonce: 'used-nonce-1', login: 'velp', server: 'test-srv', serverName: 'TestServer' }),
+    ], 250, async () => {
+      const res = await fetch(`http://localhost:${STATE_HTTP_PORT}/token?t=used-nonce-1`);
+      assert.strictEqual(res.status, 200, 'the nonce should still be good the first time');
+    });
+
+    assert.ok(
+      data.split('\n').some(l => l.includes('"nonceUsed"')),
+      `expected a nonceUsed push, received: ${JSON.stringify(data)}`,
+    );
+  });
+
+  test('no nonceUsed when the link was never spent', async () => {
+    const data = await tcpOpenAndCollect(STATE_TCP_PORT, [
+      JSON.stringify({ type: 'nonce', nonce: 'unused-nonce-1', login: 'velp', server: 'test-srv', serverName: 'TestServer' }),
+    ], 250);
+
+    assert.ok(!data.includes('nonceUsed'), `unexpected nonceUsed push: ${JSON.stringify(data)}`);
   });
 });
 

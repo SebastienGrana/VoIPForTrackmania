@@ -462,6 +462,24 @@ describe('handleRoomPush() (server-switch pushed over /ingest)', () => {
     assert.match(stub.elements.status.textContent, /changed server/);
     assert.match(stub.elements.status.textContent, /Copy URL/);
   });
+
+  // The plugin re-issues a nonce on a timer, and now also every time one gets
+  // spent. Acting on a push for the room we are already in rebuilt the LiveKit
+  // connection for nothing — a voice cut every 9 minutes — and, with the
+  // spent-nonce push, the reconnect would spend another nonce and loop.
+  test('a push for the room we are already in changes nothing', async () => {
+    stub.setFetch(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ token: 't5', wsUrl: 'ws://fake', room: 'SameRoom', login: 'z', serverName: 'Server Same' }),
+    }));
+    await app.handleRoomPush({ name: 'SameRoom', nonce: 'nonce5' });
+    const connected = app.room;
+    assert.ok(connected !== null);
+
+    stub.setFetch(async () => { throw new Error('should not spend another nonce'); });
+    await app.handleRoomPush({ name: 'SameRoom', nonce: 'nonce6' });
+    assert.strictEqual(app.room, connected, 'the live room must survive a redundant push');
+  });
 });
 
 describe('join() (legacy manual join)', () => {

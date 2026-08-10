@@ -1662,6 +1662,13 @@ async function handleRoomPush(msg) {
   }
   // Server changed — swap to the new room using the provided nonce.
   if (!msg.nonce) return;
+  // ...unless it is the room we are already in. The plugin re-issues a nonce on
+  // a timer, and every one of those pushes used to tear the LiveKit connection
+  // down and rebuild it: a voice cut every 9 minutes, on a server nobody left.
+  // It also has to stop here now that the relay asks the plugin for a fresh
+  // nonce as soon as one is spent — consuming this one would trigger another
+  // push, and the two would chase each other forever.
+  if (room && lastRoomCredentials?.roomName === msg.name) return;
   const res = await fetchToken(`/token?t=${encodeURIComponent(msg.nonce)}`);
   if (!res.ok) {
     // This used to `return` silently: the player changed server, voice stopped
