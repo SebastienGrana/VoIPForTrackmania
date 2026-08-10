@@ -34,11 +34,11 @@ beforeEach(() => {
   stub.elements.minDist.value = '1'; stub.elements.minDist.dispatch('input');
   stub.elements.panRange.value = '10'; stub.elements.panRange.dispatch('input');
 
-  stub.elements.relativeMode.checked = false;
+  stub.elements.relativeMode.setAttribute('aria-checked', 'false');
   stub.elements.relativeTarget.value = '';
   stub.elements.relativeOffsetX.value = '0';
   stub.elements.relativeOffsetY.value = '0';
-  stub.elements.followGame.checked = false;
+  stub.elements.followGame.setAttribute('aria-checked', 'false');
 
   stub.setFetch(async () => { throw new Error('fetch not mocked for this test'); });
 });
@@ -92,14 +92,14 @@ describe('applyRelativeMode()', () => {
   });
 
   test('no-op when the target has no known position yet', () => {
-    stub.elements.relativeMode.checked = true;
+    stub.elements.relativeMode.setAttribute('aria-checked', 'true');
     stub.elements.relativeTarget.value = 'ghost';
     app.applyRelativeMode();
     assert.strictEqual(app.me.x, 200);
   });
 
   test('follows the target plus the configured offset', () => {
-    stub.elements.relativeMode.checked = true;
+    stub.elements.relativeMode.setAttribute('aria-checked', 'true');
     stub.elements.relativeTarget.value = 'bob';
     stub.elements.relativeOffsetX.value = '3';
     stub.elements.relativeOffsetY.value = '-4';
@@ -108,6 +108,56 @@ describe('applyRelativeMode()', () => {
     assert.strictEqual(app.me.x, 53);
     assert.strictEqual(app.me.z, 56);
     assert.strictEqual(app.me.y, 5);
+  });
+});
+
+describe('switch wiring', () => {
+  // A <button role="switch"> has no built-in toggle: whoever moved these off
+  // native checkboxes had to give each one a listener. #relativeMode never got
+  // it, so "Follow instead of free position" was simply dead to the click and
+  // nothing else in the app could notice - isSwitchOn() just kept saying false.
+  test('clicking #relativeMode flips it both ways', () => {
+    const btn = stub.elements.relativeMode;
+    assert.strictEqual(btn.getAttribute('aria-checked'), 'false');
+    btn.dispatch('click');
+    assert.strictEqual(btn.getAttribute('aria-checked'), 'true');
+    btn.dispatch('click');
+    assert.strictEqual(btn.getAttribute('aria-checked'), 'false');
+  });
+
+  test('and it really drives relative mode, not just the pill', () => {
+    stub.elements.relativeMode.dispatch('click');
+    stub.elements.relativeTarget.value = 'bob';
+    stub.elements.relativeOffsetX.value = '3';
+    app.peers.set('bob', { x: 50, y: 5, z: 60, lastSeen: Date.now() });
+    app.applyRelativeMode();
+    assert.strictEqual(app.me.x, 53);
+  });
+});
+
+describe('renderFollowChips()', () => {
+  // The chips are redrawn from the 10Hz render tick. Rebuilding them destroys
+  // the <button> the mouse is on: it flickers, and a click never completes
+  // because mousedown and mouseup land on two different elements. So an
+  // unchanged list has to leave the existing buttons alone.
+  test('a redraw with the same players and the same selection touches nothing', () => {
+    app.peers.set('chipA', { x: 0, y: 0, z: 0, lastSeen: Date.now() });
+    app.renderFollowChips();
+    const before = stub.elements.relativeTargetChips.children.length;
+    assert.ok(before > 0);
+
+    app.renderFollowChips();
+    assert.strictEqual(stub.elements.relativeTargetChips.children.length, before);
+  });
+
+  test('a new player does cause a redraw', () => {
+    app.peers.set('chipB', { x: 0, y: 0, z: 0, lastSeen: Date.now() });
+    app.renderFollowChips();
+    const before = stub.elements.relativeTargetChips.children.length;
+
+    app.peers.set('chipC', { x: 0, y: 0, z: 0, lastSeen: Date.now() });
+    app.renderFollowChips();
+    assert.ok(stub.elements.relativeTargetChips.children.length > before);
   });
 });
 
@@ -218,10 +268,13 @@ describe('calibration clamp (AUDIT #38)', () => {
 });
 
 describe('DataReceived position validation (attachRoomEvents)', () => {
-  const fakeParticipant = {};
+  // The relay sends positions through the LiveKit *server* API, so they reach
+  // the client with no publishing participant. That absence is not incidental:
+  // it is how the client tells a relay packet from one a browser made up.
+  const fromRelay = undefined;
   function emitPositions(positions, topic = 'position') {
     const payload = new TextEncoder().encode(JSON.stringify(positions));
-    stub.lastRoom().emit('dataReceived', payload, fakeParticipant, undefined, topic);
+    stub.lastRoom().emit('dataReceived', payload, fromRelay, undefined, topic);
   }
 
   test('ignores payloads on a topic other than "position"', () => {
@@ -254,8 +307,73 @@ describe('DataReceived position validation (attachRoomEvents)', () => {
 
   test('ignores malformed (non-array) payloads', () => {
     const payload = new TextEncoder().encode(JSON.stringify({ not: 'an array' }));
-    stub.lastRoom().emit('dataReceived', payload, fakeParticipant, undefined, 'position');
+    stub.lastRoom().emit('dataReceived', payload, fromRelay, undefined, 'position');
     assert.strictEqual(app.peers.size, 0);
+  });
+
+  test('a position published by a participant is refused, whoever they claim to be', () => {
+    // Browsers can publish data since avatars shipped. A well-formed position
+    // is now something any participant can put on the wire, and positions are
+    // what decide who you hear - so this one has to be dropped on the fact
+    // that it came from a participant at all, not on its contents.
+    const payload = new TextEncoder().encode(JSON.stringify([{ pseudo: 'victim', x: 0, y: 0, z: 0 }]));
+    stub.lastRoom().emit('dataReceived', payload, { identity: 'attacker' }, undefined, 'position');
+    assert.strictEqual(app.peers.has('victim'), false);
+    assert.strictEqual(app.peers.size, 0);
+  });
+});
+
+// The avatar a player picked travels browser-to-browser over the room's data
+// channel, which means it is the one piece of another participant's input that
+// ends up drawn on your screen. These tests pin the two properties that make
+// that safe: it is filed under the identity LiveKit signed, and a rejected
+// payload degrades to the hashed emoji rather than to nothing.
+describe('DataReceived avatar announcements (attachRoomEvents)', () => {
+  function emitAvatar(body, identity, topic = 'avatar') {
+    const payload = new TextEncoder().encode(JSON.stringify(body));
+    stub.lastRoom().emit('dataReceived', payload, { identity }, undefined, topic);
+  }
+
+  test('a flag announced by a player is what gets drawn for them', () => {
+    emitAvatar({ kind: 'flag', code: 'fr' }, 'frenchy');
+    assert.deepStrictEqual(app.avatarFor('frenchy'), { kind: 'flag', code: 'fr', url: 'flags/fr.svg' });
+  });
+
+  // The whole reason the map is keyed on participant.identity: a pseudo inside
+  // the body would let anyone repaint anyone.
+  test('a payload cannot set the avatar of a player other than its sender', () => {
+    emitAvatar({ kind: 'flag', code: 'de', pseudo: 'victim', identity: 'victim' }, 'attacker');
+    assert.strictEqual(app.avatarFor('victim').kind, 'emoji');
+    assert.strictEqual(app.avatarFor('attacker').kind, 'flag');
+  });
+
+  test('a rejected payload leaves the player on their hashed emoji', () => {
+    emitAvatar({ kind: 'flag', code: '../../../etc/passwd' }, 'sneaky');
+    assert.strictEqual(app.avatarFor('sneaky').kind, 'emoji');
+    assert.strictEqual(app.peerAvatars.has('sneaky'), false);
+  });
+
+  test('an empty body means "back to Auto" and clears a previous choice', () => {
+    emitAvatar({ kind: 'flag', code: 'it' }, 'flipflop');
+    assert.strictEqual(app.avatarFor('flipflop').kind, 'flag');
+    emitAvatar({}, 'flipflop');
+    assert.strictEqual(app.avatarFor('flipflop').kind, 'emoji');
+  });
+
+  test('another topic is ignored, and a sender with no identity is dropped', () => {
+    emitAvatar({ kind: 'flag', code: 'es' }, 'wrongtopic', 'position');
+    assert.strictEqual(app.avatarFor('wrongtopic').kind, 'emoji');
+    const payload = new TextEncoder().encode(JSON.stringify({ kind: 'flag', code: 'es' }));
+    stub.lastRoom().emit('dataReceived', payload, {}, undefined, 'avatar');
+    assert.strictEqual(app.peerAvatars.has(undefined), false);
+  });
+
+  // Avatars are announcements made inside a room; keeping them across a server
+  // change would paint a stale flag on a same-named player who has said nothing.
+  test('leaving the room forgets everyone\'s avatar', () => {
+    emitAvatar({ kind: 'flag', code: 'pl' }, 'transient');
+    app.purgeAll();
+    assert.strictEqual(app.peerAvatars.size, 0);
   });
 });
 
@@ -291,10 +409,21 @@ describe('connectViaNonce() (auto-join from a ?t= URL)', () => {
     assert.strictEqual(stub.elements.expiredMsg.style.display, '');
   });
 
-  test('other token errors surface the status code', async () => {
+  test('other token errors name the code AND say what to do about it', async () => {
     stub.setFetch(async () => ({ ok: false, status: 500 }));
     await app.connectViaNonce('whatever');
-    assert.strictEqual(stub.elements.status.textContent, 'Token error: 500');
+    assert.match(stub.elements.status.textContent, /error 500/);
+    assert.match(stub.elements.status.textContent, /Copy URL/);
+    assert.strictEqual(stub.elements.status.className, 'err');
+  });
+
+  // The relay being unreachable used to escape as an unhandled rejection and
+  // leave the page frozen on "Connecting…" with no explanation at all.
+  test('an unreachable relay is reported, not thrown', async () => {
+    stub.setFetch(async () => { throw new TypeError('Failed to fetch'); });
+    await app.connectViaNonce('whatever');
+    assert.match(stub.elements.status.textContent, /Can't reach the OnZVoIP server/);
+    assert.match(stub.elements.status.textContent, /internet connection/);
   });
 });
 
@@ -323,11 +452,15 @@ describe('handleRoomPush() (server-switch pushed over /ingest)', () => {
     assert.ok(app.room !== null);
   });
 
-  test('an expired/consumed nonce is silently ignored, leaving the room untouched', async () => {
+  // Previously a bare `return`: voice stopped working on the new server while
+  // the page still claimed to be connected to the old room.
+  test('an expired/consumed nonce leaves the room untouched but says so', async () => {
     const before = app.room;
     stub.setFetch(async () => ({ ok: false, status: 401 }));
     await app.handleRoomPush({ name: 'ServerZ', nonce: 'stale' });
     assert.strictEqual(app.room, before);
+    assert.match(stub.elements.status.textContent, /changed server/);
+    assert.match(stub.elements.status.textContent, /Copy URL/);
   });
 });
 
@@ -338,7 +471,19 @@ describe('join() (legacy manual join)', () => {
     stub.elements.identity.disabled = false;
     stub.setFetch(async () => ({ ok: false, status: 500 }));
     await app.join();
-    assert.strictEqual(stub.elements.status.textContent, 'token error: 500');
+    assert.match(stub.elements.status.textContent, /error 500/);
+    assert.match(stub.elements.status.textContent, /try a different name/);
+    assert.strictEqual(stub.elements.joinBtn.disabled, false);
+    assert.strictEqual(stub.elements.identity.disabled, false);
+  });
+
+  test('an unreachable relay re-enables the join form instead of locking it', async () => {
+    stub.elements.identity.value = 'legacyuser';
+    stub.elements.joinBtn.disabled = false;
+    stub.elements.identity.disabled = false;
+    stub.setFetch(async () => { throw new TypeError('Failed to fetch'); });
+    await app.join();
+    assert.match(stub.elements.status.textContent, /Can't reach the OnZVoIP server/);
     assert.strictEqual(stub.elements.joinBtn.disabled, false);
     assert.strictEqual(stub.elements.identity.disabled, false);
   });
@@ -347,5 +492,181 @@ describe('join() (legacy manual join)', () => {
     stub.elements.identity.value = '   ';
     stub.setFetch(async () => { throw new Error('should not fetch for a blank identity'); });
     await app.join();
+  });
+});
+
+// The page used to keep showing "Connected — you'll hear nearby players
+// automatically" over a room that had died, which tells a player the silence is
+// normal. These cover the three lifecycle events that say otherwise.
+describe('losing the room after a successful connect', () => {
+  async function connectFresh(login = 'droptest') {
+    stub.setFetch(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ token: 't', wsUrl: 'ws://fake', room: 'r', login, serverName: 'S' }),
+    }));
+    await app.connectViaNonce('n');
+    return app.room;
+  }
+
+  test('Disconnected stops claiming to be connected and disables the mic', async () => {
+    const r = await connectFresh();
+    r.emit('disconnected');
+    assert.strictEqual(app.room, null);
+    assert.strictEqual(stub.elements.status.className, 'err');
+    assert.match(stub.elements.status.textContent, /Disconnected from the voice room/);
+    assert.match(stub.elements.status.textContent, /Rejoin/);
+    assert.strictEqual(stub.elements.micBtn.disabled, true);
+    // The cached token usually still works, so the way back is one click here
+    // rather than a round trip through the game.
+    assert.strictEqual(stub.elements.leaveBtn.style.display, '');
+    assert.match(stub.elements.leaveBtn.textContent, /Rejoin/);
+  });
+
+  test('Reconnecting says so, and Reconnected puts the connected state back', async () => {
+    const r = await connectFresh();
+    r.emit('reconnecting');
+    assert.strictEqual(stub.elements.status.className, 'err');
+    assert.match(stub.elements.status.textContent, /Connection lost/);
+    r.emit('reconnected');
+    assert.strictEqual(stub.elements.status.className, 'ok');
+    assert.match(stub.elements.status.textContent, /Connected/);
+  });
+
+  // Guards the ordering in disconnectLiveKit(): it clears `room` before calling
+  // disconnect() precisely so this teardown isn't mistaken for a dropped link.
+  test('an intentional server change does NOT show a disconnection error', async () => {
+    await connectFresh('switcher');
+    stub.setFetch(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ token: 't2', wsUrl: 'ws://fake', room: 'r2', login: 'switcher', serverName: 'Server B' }),
+    }));
+    await app.handleRoomPush({ name: 'ServerB', nonce: 'n2' });
+    assert.strictEqual(stub.elements.status.className, 'ok');
+    assert.match(stub.elements.status.textContent, /Connected/);
+  });
+
+  // A stale room object must not be able to overwrite the live room's status.
+  test('an event from a room we already replaced is ignored', async () => {
+    const old = await connectFresh('stale');
+    stub.setFetch(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ token: 't3', wsUrl: 'ws://fake', room: 'r3', login: 'stale', serverName: 'Server C' }),
+    }));
+    await app.handleRoomPush({ name: 'ServerC', nonce: 'n3' });
+    old.emit('disconnected');
+    assert.ok(app.room !== null);
+    assert.strictEqual(stub.elements.status.className, 'ok');
+  });
+});
+
+// Before the Leave button the only exit was closing the tab, and the only way
+// back was going into the game to click Copy URL. The credential that makes the
+// return cheap lives in memory only — see the note in app.js — so these tests
+// guard the two behaviours that make that safe: the plugin must not drag anyone
+// back in, and a server change while out must not send them to the wrong room.
+describe('leaving the voice chat and coming back', () => {
+  async function connectFresh(login = 'leaver') {
+    stub.setFetch(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ token: 't', wsUrl: 'ws://fake', room: 'r', login, serverName: 'S' }),
+    }));
+    await app.connectViaNonce('n');
+  }
+
+  test('joining shows the button in its Leave state', async () => {
+    await connectFresh();
+    assert.strictEqual(stub.elements.leaveBtn.style.display, '');
+    assert.match(stub.elements.leaveBtn.textContent, /Leave/);
+  });
+
+  test('leaving drops the room, mutes the mic, and offers the way back', async () => {
+    await connectFresh();
+    await app.leaveVoice();
+    assert.strictEqual(app.room, null);
+    assert.strictEqual(stub.elements.micBtn.disabled, true);
+    // Not an error state: stepping out on purpose is not a failure.
+    assert.notStrictEqual(stub.elements.status.className, 'err');
+    assert.match(stub.elements.leaveBtn.textContent, /Rejoin/);
+  });
+
+  test('rejoining reconnects with the remembered credentials', async () => {
+    await connectFresh('backagain');
+    await app.leaveVoice();
+    // No fetch: the point of the cached credentials is that coming back needs
+    // no new nonce, and a nonce is single-use anyway.
+    stub.setFetch(async () => { throw new Error('should not fetch'); });
+    await app.rejoinVoice();
+    assert.ok(app.room !== null);
+    assert.match(stub.elements.status.textContent, /Connected/);
+    assert.match(stub.elements.leaveBtn.textContent, /Leave/);
+  });
+
+  // Without the leftVoluntarily guard the plugin's next push would silently
+  // reconnect someone who just left, making the button useless.
+  test('a room push does not drag a player who left back in', async () => {
+    await connectFresh('stubborn');
+    await app.leaveVoice();
+    stub.setFetch(async () => { throw new Error('should not fetch'); });
+    await app.handleRoomPush({ name: 'ServerB', nonce: 'n2' });
+    assert.strictEqual(app.room, null);
+    assert.match(stub.elements.leaveBtn.textContent, /Rejoin/);
+  });
+
+  test('a server change while out sends the rejoin to the NEW room', async () => {
+    await connectFresh('mover');
+    await app.leaveVoice();
+    await app.handleRoomPush({ name: 'ServerB', nonce: 'n2' });
+
+    let asked = null;
+    stub.setFetch(async (url) => {
+      asked = url;
+      return {
+        ok: true, status: 200,
+        json: async () => ({ token: 't2', wsUrl: 'ws://fake', room: 'r2', login: 'mover', serverName: 'Server B' }),
+      };
+    });
+    await app.rejoinVoice();
+    assert.match(asked, /t=n2/);
+    assert.ok(app.room !== null);
+  });
+
+  test('leaving the server entirely withdraws the rejoin offer', async () => {
+    await connectFresh('quitter');
+    await app.handleRoomPush({ name: null });
+    assert.strictEqual(app.room, null);
+    assert.strictEqual(stub.elements.leaveBtn.style.display, 'none');
+  });
+});
+
+// A calibration stored by an earlier session keeps overriding the shipped
+// defaults, and the sliders that produced it now live behind ?debug=1 — so
+// without this button a player has no way back to a working sound range.
+describe('calibration reset', () => {
+  test('the button stays hidden when nothing was ever calibrated', () => {
+    localStorage.clear();
+    app.setupCalibration();
+    assert.strictEqual(stub.elements.calibReset.style.display, 'none');
+  });
+
+  test('a stored value reveals the button and clicking it restores the defaults', () => {
+    localStorage.clear();
+    app.setupCalibration();
+    const defMin = app.MIN_DIST, defMax = app.MAX_DIST, defPan = app.PAN_RANGE;
+
+    // A stale minDist LARGER than the default maxDist: the setters clamp
+    // against each other, so a single-pass reset would leave maxDist stranded
+    // at minDist+1 instead of its default.
+    localStorage.setItem('onzvoip.v2.minDist', '200');
+    localStorage.setItem('onzvoip.v2.maxDist', '400');
+    app.setupCalibration();
+    assert.strictEqual(stub.elements.calibReset.style.display, '');
+    assert.notStrictEqual(app.MAX_DIST, defMax);
+
+    stub.elements.calibReset.dispatch('click');
+    assert.strictEqual(app.MIN_DIST, defMin);
+    assert.strictEqual(app.MAX_DIST, defMax);
+    assert.strictEqual(app.PAN_RANGE, defPan);
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.minDist'), null);
+    assert.strictEqual(stub.elements.calibReset.style.display, 'none');
   });
 });

@@ -9,3 +9,6 @@ todo.txt
 # Local dev overrides: may contain a real TCP_SHARED_SECRET, never commit
 docker-compose.override.yml
 todo.html
+
+# Maquette de référence et sa spec : décision 2026-08-10, restent en local.
+design/

@@ -29,6 +29,8 @@ class FakeElement {
   append(...nodes) { this.children.push(...nodes); }
   prepend(node) { this.children.unshift(node); }
   remove() {}
+  setAttribute(name, value) { (this._attrs ??= {})[name] = String(value); }
+  getAttribute(name) { return this._attrs?.[name] ?? null; }
   get lastChild() { return this.children[this.children.length - 1]; }
   get childElementCount() { return this.children.length; }
   getBoundingClientRect() { return { left: 0, top: 0 }; }
@@ -36,7 +38,9 @@ class FakeElement {
 
 const fakeCtx = {
   clearRect() {}, beginPath() {}, arc() {}, stroke() {}, fill() {}, fillText() {},
-  strokeStyle: '', fillStyle: '', font: '',
+  moveTo() {}, closePath() {}, save() {}, restore() {}, roundRect() {},
+  measureText: (text) => ({ width: text.length * 6 }),
+  strokeStyle: '', fillStyle: '', font: '', lineWidth: 1,
 };
 
 class FakeGainParam {
@@ -85,7 +89,10 @@ class FakeRoom {
   on(event, cb) { (this._listeners[event] ??= []).push(cb); return this; }
   emit(event, ...args) { for (const cb of (this._listeners[event] || []).slice()) cb(...args); }
   async connect(wsUrl, token, opts) { this._connectArgs = { wsUrl, token, opts }; }
-  async disconnect() {}
+  // The real client fires Disconnected on an explicit disconnect() too, so the
+  // fake does the same. Without it, a teardown wrongly treated as a dropped
+  // connection would pass the tests and only show up in front of a player.
+  async disconnect() { this.emit('disconnected'); }
 }
 FakeRoom.instances = [];
 
@@ -97,6 +104,12 @@ const RoomEvent = {
   TrackUnpublished: 'trackUnpublished',
   TrackSubscribed: 'trackSubscribed',
   TrackUnsubscribed: 'trackUnsubscribed',
+  ActiveSpeakersChanged: 'activeSpeakersChanged',
+  // Connection-lifecycle events: the page has to stop claiming to be connected
+  // when the room dies under it.
+  Reconnecting: 'reconnecting',
+  Reconnected: 'reconnected',
+  Disconnected: 'disconnected',
 };
 const Track = { Kind: { Audio: 'audio', Video: 'video' } };
 
@@ -125,10 +138,25 @@ export function installDomStubs() {
   canvas.height = 400;
   canvas.getContext = () => fakeCtx;
 
+  el('onzRoot', 'div');
+  const themeToggle = el('themeToggle', 'button'); themeToggle.setAttribute('aria-checked', 'true');
+  el('joinSection', 'div');
+  el('tagline', 'p');
+  el('roomStats', 'span');
+  el('peerCount', 'span');
+  el('roomTime', 'span');
+  el('toast', 'div');
+  el('toastText', 'span');
+  el('micMeter', 'div');
+  el('reduceMotionToggle', 'input');
+  el('highContrastToggle', 'input');
+  const showEmojiToggle = el('showEmojiToggle', 'input'); showEmojiToggle.setAttribute('aria-checked', 'true');
+
   el('identity', 'input');
   el('followGame', 'input');
   el('relativeMode', 'input');
   el('relativeTarget', 'input');
+  el('relativeTargetChips', 'div');
   const relativeRange = el('relativeRange', 'input'); relativeRange.value = '10';
   el('relativeRangeVal', 'span');
   const relativeOffsetX = el('relativeOffsetX', 'input'); relativeOffsetX.value = '0';
@@ -137,6 +165,15 @@ export function installDomStubs() {
   el('relativeOffsetYVal', 'span');
   el('joinBtn', 'button');
   el('micBtn', 'button');
+  el('leaveBtn', 'button');
+  // Avatar picker (Advanced settings > My avatar).
+  el('avatarPreview', 'span');
+  el('avatarPreviewName', 'span');
+  el('avatarToggle', 'button');
+  el('avatarPicker', 'div');
+  el('avatarSearch', 'input');
+  el('avatarFlagGrid', 'div');
+  el('avatarEmojiGrid', 'div');
   el('status', 'div');
   el('expiredMsg', 'div');
   el('serverName', 'div');
@@ -147,22 +184,27 @@ export function installDomStubs() {
   el('debugRoomVal', 'span');
   const maxDist = el('maxDist', 'input'); maxDist.value = '150';
   el('maxDistVal', 'span');
+  el('calibMaxLabel', 'span');
   const minDist = el('minDist', 'input'); minDist.value = '1';
   el('minDistVal', 'span');
+  el('calibMinLabel', 'span');
   const panRange = el('panRange', 'input'); panRange.value = '10';
   el('panRangeVal', 'span');
+  el('calibReset', 'button');
 
   const peersTable = new FakeElement('table');
   const peersTbody = new FakeElement('tbody');
   peersTable.appendChild(peersTbody);
 
   const body = new FakeElement('body');
+  const documentElement = new FakeElement('html');
 
   global.document = {
     getElementById: (id) => elementsById.get(id) ?? null,
     querySelector: (sel) => (sel === '#peers tbody' ? peersTbody : null),
     createElement: (tag) => new FakeElement(tag),
     body,
+    documentElement,
   };
   global.window = { addEventListener() {}, removeEventListener() {} };
 
@@ -199,7 +241,7 @@ export function installDomStubs() {
   return {
     elements: {
       canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody,
-      maxDist, minDist, panRange, peersTbody, body,
+      maxDist, minDist, panRange, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },
     fakeCtx,

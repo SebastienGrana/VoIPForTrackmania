@@ -5,7 +5,11 @@
 // proximity-audio math: distance -> gain, applied locally per remote track.
 // See ../../context.txt "ARCHITECTURE AUDIO" for why this lives client-side.
 
-import { distance, clamp, gainForDistance, panForOffset } from './audio-math.js';
+import { distance, gainForDistance, panForOffset } from './audio-math.js';
+import {
+  AVATAR_EMOJI, emojiForPseudo, guessCountry, validateAvatar, resolveAvatar,
+  flagUrl, flagName, allFlagCodes, isFlagCode,
+} from './avatar.js';
 
 // Live-tunable from the calibration sliders (see index.html #calib) because
 // these are in *game* units now that real positions come from the OpenPlanet
@@ -26,6 +30,9 @@ const identityInput = document.getElementById('identity');
 const followGameCheckbox = document.getElementById('followGame');
 const relativeModeCheckbox = document.getElementById('relativeMode');
 const relativeTargetInput = document.getElementById('relativeTarget');
+const relativeTargetChipsEl = document.getElementById('relativeTargetChips');
+const calibMinLabel = document.getElementById('calibMinLabel');
+const calibMaxLabel = document.getElementById('calibMaxLabel');
 const relativeRangeSlider = document.getElementById('relativeRange');
 const relativeRangeVal = document.getElementById('relativeRangeVal');
 const relativeOffsetXSlider = document.getElementById('relativeOffsetX');
@@ -34,12 +41,33 @@ const relativeOffsetYSlider = document.getElementById('relativeOffsetY');
 const relativeOffsetYVal = document.getElementById('relativeOffsetYVal');
 const joinBtn = document.getElementById('joinBtn');
 const micBtn = document.getElementById('micBtn');
+const leaveBtn = document.getElementById('leaveBtn');
 const statusEl = document.getElementById('status');
 const expiredMsgEl = document.getElementById('expiredMsg');
 const serverNameEl = document.getElementById('serverName');
 const peersBody = document.querySelector('#peers tbody');
 const meReadoutEl = document.getElementById('meReadout');
 const eventLogEl = document.getElementById('eventLog');
+const onzRoot = document.getElementById('onzRoot');
+const themeToggle = document.getElementById('themeToggle');
+const joinSectionEl = document.getElementById('joinSection');
+const taglineEl = document.getElementById('tagline');
+const roomStatsEl = document.getElementById('roomStats');
+const peerCountEl = document.getElementById('peerCount');
+const roomTimeEl = document.getElementById('roomTime');
+const toastEl = document.getElementById('toast');
+const toastTextEl = document.getElementById('toastText');
+const micMeterEl = document.getElementById('micMeter');
+const reduceMotionToggle = document.getElementById('reduceMotionToggle');
+const highContrastToggle = document.getElementById('highContrastToggle');
+const showEmojiToggle = document.getElementById('showEmojiToggle');
+
+// The 6 boolean settings (followGame, relativeMode, themeToggle,
+// reduceMotionToggle, highContrastToggle, showEmojiToggle) are
+// <button role="switch"> elements,
+// not native checkboxes - state lives in aria-checked instead of .checked.
+function isSwitchOn(btn) { return btn.getAttribute('aria-checked') === 'true'; }
+function setSwitchOn(btn, on) { btn.setAttribute('aria-checked', on ? 'true' : 'false'); }
 
 function updateRelativeRange() {
   const range = Number(relativeRangeSlider.value);
@@ -67,12 +95,48 @@ updateRelativeRange();
 // of a mouse-dragged position in an unrelated coordinate space, so testing
 // with 2 tabs doesn't need a 2nd TM account.
 function applyRelativeMode() {
-  if (!relativeModeCheckbox.checked) return;
+  if (!isSwitchOn(relativeModeCheckbox)) return;
   const target = peers.get(relativeTargetInput.value.trim());
   if (!target) return; // no position received yet for that login
   me.x = target.x + Number(relativeOffsetXSlider.value);
   me.z = target.z + Number(relativeOffsetYSlider.value); // "front/back" is depth (Z), not altitude
   me.y = target.y;
+}
+
+// "Follow another player" target picker: chips instead of a free-text field,
+// populated from whoever currently has a known position - clicking one just
+// writes into the same #relativeTarget value applyRelativeMode() already reads.
+// Rebuilding the chips throws away the actual <button> the mouse is over, so
+// doing it on every render tick (10Hz) made them flicker and swallowed clicks:
+// mousedown landed on a button that was gone before mouseup, and no mouseup on
+// the same element means no click event at all. So redraw only when the list
+// or the selection really changed.
+let lastChipsKey = null;
+
+function renderFollowChips() {
+  if (!relativeTargetChipsEl) return;
+  const identities = [...peers.keys()].filter((p) => p !== myIdentity).sort();
+  const selected = relativeTargetInput.value.trim();
+  const key = JSON.stringify([identities, selected]);
+  if (key === lastChipsKey) return;
+  lastChipsKey = key;
+
+  if (identities.length === 0) {
+    relativeTargetChipsEl.innerHTML = '<span class="chip-empty">No other players with a known position yet</span>';
+    return;
+  }
+  relativeTargetChipsEl.innerHTML = '';
+  for (const pseudo of identities) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip' + (pseudo === selected ? ' selected' : '');
+    chip.textContent = `${emojiForPseudo(pseudo)} ${pseudo}`;
+    chip.addEventListener('click', () => {
+      relativeTargetInput.value = relativeTargetInput.value.trim() === pseudo ? '' : pseudo;
+      renderFollowChips();
+    });
+    relativeTargetChipsEl.appendChild(chip);
+  }
 }
 
 function logEvent(msg) {
@@ -82,7 +146,72 @@ function logEvent(msg) {
   while (eventLogEl.childElementCount > 20) eventLogEl.lastChild.remove();
 }
 
+// Appearance settings (theme / reduce motion / high contrast / emoji avatars)
+// live on #onzRoot as data attributes so CSS alone can react to them - this
+// mirrors setupCalibration()'s "read localStorage, wire a listener, persist
+// on change" shape below.
+let reduceMotion = false;
+let showEmoji = true;
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-onz-theme', theme);
+  setSwitchOn(themeToggle, theme === 'dark');
+  localStorage.setItem('onzvoip.v2.theme', theme);
+}
+
+function setupAppearance() {
+  applyTheme(localStorage.getItem('onzvoip.v2.theme') === 'light' ? 'light' : 'dark');
+  themeToggle.addEventListener('click', () => {
+    applyTheme(document.documentElement.getAttribute('data-onz-theme') === 'dark' ? 'light' : 'dark');
+  });
+
+  reduceMotion = localStorage.getItem('onzvoip.v2.reduceMotion') === '1';
+  setSwitchOn(reduceMotionToggle, reduceMotion);
+  document.documentElement.setAttribute('data-onz-motion', reduceMotion ? 'reduced' : 'normal');
+  reduceMotionToggle.addEventListener('click', () => {
+    reduceMotion = !isSwitchOn(reduceMotionToggle);
+    setSwitchOn(reduceMotionToggle, reduceMotion);
+    document.documentElement.setAttribute('data-onz-motion', reduceMotion ? 'reduced' : 'normal');
+    localStorage.setItem('onzvoip.v2.reduceMotion', reduceMotion ? '1' : '0');
+  });
+
+  const highContrast = localStorage.getItem('onzvoip.v2.highContrast') === '1';
+  setSwitchOn(highContrastToggle, highContrast);
+  document.documentElement.setAttribute('data-onz-contrast', highContrast ? 'high' : 'normal');
+  highContrastToggle.addEventListener('click', () => {
+    const on = !isSwitchOn(highContrastToggle);
+    setSwitchOn(highContrastToggle, on);
+    document.documentElement.setAttribute('data-onz-contrast', on ? 'high' : 'normal');
+    localStorage.setItem('onzvoip.v2.highContrast', on ? '1' : '0');
+  });
+
+  // Default on: emoji avatars are the more legible look for most players;
+  // stored value only overrides once someone has actually flipped it.
+  const savedShowEmoji = localStorage.getItem('onzvoip.v2.showEmoji');
+  showEmoji = savedShowEmoji === null ? true : savedShowEmoji === '1';
+  setSwitchOn(showEmojiToggle, showEmoji);
+  showEmojiToggle.addEventListener('click', () => {
+    showEmoji = !isSwitchOn(showEmojiToggle);
+    setSwitchOn(showEmojiToggle, showEmoji);
+    localStorage.setItem('onzvoip.v2.showEmoji', showEmoji ? '1' : '0');
+  });
+}
+setupAppearance();
+
+let toastTimer = null;
+function showToast(msg) {
+  if (!toastEl) return;
+  if (toastTextEl) toastTextEl.textContent = msg;
+  toastEl.className = 'onz-toast show';
+  toastEl.style.opacity = '.95';
+  clearTimeout(toastTimer);
+  // Matches the mockup: only fades via opacity, stays in the header's flex
+  // flow afterwards instead of being removed - see onzvoip_ui_mockup_spec.md §2.
+  toastTimer = setTimeout(() => { toastEl.style.opacity = '0'; }, 3200);
+}
+
 let room = null;
+let roomConnectedAt = null;
 let ingestWs = null;
 let myIdentity = null;
 let dragging = false;
@@ -95,8 +224,18 @@ let wsPositionInterval = null;
 // fantasy distances to real peers and could make someone briefly audible who
 // shouldn't be.
 let meKnown = false;
-followGameCheckbox.addEventListener('change', () => {
-  if (followGameCheckbox.checked) meKnown = false;
+followGameCheckbox.addEventListener('click', () => {
+  const on = !isSwitchOn(followGameCheckbox);
+  setSwitchOn(followGameCheckbox, on);
+  if (on) meKnown = false;
+});
+
+// A <button role="switch"> does not toggle itself the way a checkbox did: the
+// migration away from native checkboxes has to hand every switch its own
+// listener, and this one was left without. Nothing read the switch as broken -
+// isSwitchOn() simply kept answering false forever.
+relativeModeCheckbox.addEventListener('click', () => {
+  setSwitchOn(relativeModeCheckbox, !isSwitchOn(relativeModeCheckbox));
 });
 
 const me = { x: canvas.width / 2, y: 0, z: canvas.height / 2 };
@@ -114,6 +253,13 @@ const audioPublications = new Map();
 // pseudos we're currently subscribed to, so tickGains only calls
 // setSubscribed() on an actual state change instead of every frame.
 const subscribedPeers = new Set();
+// pseudo -> Date.now() of the last time LiveKit reported them as an active
+// speaker, fed by RoomEvent.ActiveSpeakersChanged (see attachRoomEvents()) -
+// purely a "how long since they last talked" readout, independent of the
+// gain-based distance tiers above. currentSpeakers mirrors the event's most
+// recent snapshot so renderPlayerList() can show "speaking" instead.
+const lastSpokenAt = new Map();
+let currentSpeakers = new Set();
 // Unsubscribe only once meaningfully past MAX_DIST (20% margin) so a player
 // hovering right at the edge doesn't cause rapid subscribe/unsubscribe
 // thrashing (each toggle re-negotiates the WebRTC track).
@@ -143,6 +289,23 @@ function setupCalibration() {
     { id: 'panRange', get: () => PAN_RANGE, set: (v) => { PAN_RANGE = v; } },
   ];
 
+  // Captured before any stored value is applied, so "back to default" means the
+  // values this build ships with rather than whatever the browser remembers.
+  const defaults = Object.fromEntries(controls.map(({ id, get }) => [id, get()]));
+  const syncs = [];
+
+  const resetBtn = document.getElementById('calibReset');
+  // The button is the only remaining way back: the sliders that produced a
+  // custom range are behind ?debug=1, so a player who inherits one from an old
+  // session cannot undo it. Showing the button only when it applies keeps the
+  // screen identical to the approved render for everyone else, and makes its
+  // appearance the signal that the sound range is not the stock one.
+  const refreshResetBtn = () => {
+    if (!resetBtn) return;
+    const custom = controls.some(({ id }) => Number(localStorage.getItem(`onzvoip.v2.${id}`)) > 0);
+    resetBtn.style.display = custom ? '' : 'none';
+  };
+
   for (const { id, get, set } of controls) {
     const slider = document.getElementById(id);
     const label = document.getElementById(`${id}Val`);
@@ -152,7 +315,12 @@ function setupCalibration() {
     const saved = Number(localStorage.getItem(`onzvoip.v2.${id}`));
     if (saved > 0) set(saved);
 
-    const sync = () => { label.textContent = get(); };
+    const sync = () => {
+      label.textContent = get();
+      if (id === 'minDist' && calibMinLabel) calibMinLabel.textContent = get();
+      if (id === 'maxDist' && calibMaxLabel) calibMaxLabel.textContent = get();
+    };
+    syncs.push(() => { slider.value = get(); sync(); });
     slider.value = get();
     sync();
 
@@ -161,8 +329,26 @@ function setupCalibration() {
       slider.value = get(); // reflects clamping (e.g. minDist stopped short of maxDist)
       localStorage.setItem(`onzvoip.v2.${id}`, slider.value);
       sync();
+      refreshResetBtn();
     });
   }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      // Applied twice, and that is not redundant. Each setter clamps against
+      // the OTHER value's current state, so one pass starting from a stale
+      // MIN_DIST of 200 leaves MAX_DIST stuck at 201 instead of 150. The second
+      // pass runs once both sides hold their defaults, where no clamp bites.
+      for (let pass = 0; pass < 2; pass++) {
+        for (const { id, set } of controls) set(defaults[id]);
+      }
+      for (const { id } of controls) localStorage.removeItem(`onzvoip.v2.${id}`);
+      for (const s of syncs) s();
+      refreshResetBtn();
+      logEvent('calibration reset to defaults');
+    });
+  }
+  refreshResetBtn();
 }
 setupCalibration();
 
@@ -183,49 +369,473 @@ function worldToScreen(pos, scale) {
   };
 }
 
-// Audit #21: the canvas radar and the peer/player tables all live in either
-// the always-visible player list or the collapsed-by-default Advanced panel.
-// Redrawing them at the 60Hz of requestAnimationFrame burned CPU on DOM work
-// nobody could see. draw()/renderPeerTable() only run from the throttled
-// RENDER_INTERVAL_MS timer below, and are skipped outright while #optBody is
-// collapsed; renderPlayerList() still runs there too since it's the one
-// thing players actually look at, just no longer 60 times a second.
+// Asymptotic radar projection: real distance never actually reaches the edge
+// of the canvas, it just compresses harder the farther out a peer is, so
+// someone 10x MAX_DIST away is still visible near the rim instead of clipped
+// off-screen or overlapping someone at 2x MAX_DIST. scale shrinks the glyph
+// as it approaches the rim so far-away peers read as visually smaller too.
+function projectToRadar(x, y, R, k) {
+  const d = Math.hypot(x, y);
+  const theta = Math.atan2(y, x);
+  const dRadar = R * (2 / Math.PI) * Math.atan(d * k);
+  const scale = Math.max(0.2, 2 * (1 - dRadar / R));
+  return { x_display: Math.cos(theta) * dRadar, y_display: Math.sin(theta) * dRadar, scale };
+}
+
+const MIN_EMOJI_PX = 11;
+const MAX_EMOJI_PX = 18;
+// The palette, the country guess and the validation of a chosen avatar live in
+// ./avatar.js, which is DOM-free so the tests can hit it directly. What stays
+// here is everything that needs the page: what this player picked, what the
+// others announced, and the images the canvas draws from.
+
+// pseudo -> avatar, as announced by that player. Populated only from LiveKit
+// data packets, and keyed on the *sender identity LiveKit signs into the token* -
+// never on a pseudo read out of the payload, which any participant could set to
+// someone else's and repaint a stranger's blip.
+const peerAvatars = new Map();
+
+// This player's own pick. null is not a third kind of avatar, it is the absence
+// of a pick: "Auto", resolved below to the guessed country and failing that to
+// the hashed emoji.
+let myAvatar = null;
+const AVATAR_STORAGE_KEY = 'onzvoip.avatar';
+
+// Guessed once at startup rather than per draw: it reads the time zone and the
+// language list, neither of which changes mid-session, and both are things the
+// browser had already computed for itself - no geolocation service is contacted,
+// so no player's address leaves the machine to decide which flag to draw.
+const guessedCountry = guessCountry();
+
+// What we actually announce. The guess is resolved here rather than left for
+// other clients to redo, so everyone draws the same thing even though the guess
+// only makes sense on the machine that made it. Staying null is fine and cheap:
+// every client can derive the hashed emoji from the pseudo on its own.
+function myEffectiveAvatar() {
+  if (myAvatar) return myAvatar;
+  if (guessedCountry) return { kind: 'flag', code: guessedCountry };
+  return null;
+}
+
+// The avatar travels player-to-player over the room's data channel, not through
+// the relay: the relay only ever forwards what the game plugin tells it, and the
+// plugin knows nothing about a picture chosen in a browser. This also means the
+// feature needs no server change and no plugin change to work.
+const AVATAR_TOPIC = 'avatar';
+
+// `to` narrows the announcement to one participant - used when somebody joins,
+// so a newcomer learns everyone's avatar without the whole room re-broadcasting
+// to everyone else at the same time.
+async function announceAvatar(to) {
+  if (!room || !room.localParticipant || !room.localParticipant.publishData) return;
+  try {
+    // An empty object where an avatar would be is how "I went back to Auto and
+    // have nothing to announce" is said: it fails validation on the other side,
+    // which deletes the entry and falls back to the hashed emoji.
+    const body = new TextEncoder().encode(JSON.stringify(myEffectiveAvatar() ?? {}));
+    // Reliable, unlike positions: this is sent a handful of times per session and
+    // a lost packet would leave a wrong picture up until the next join.
+    const opts = { reliable: true, topic: AVATAR_TOPIC };
+    if (to) opts.destinationIdentities = [to];
+    await room.localParticipant.publishData(body, opts);
+  } catch { /* a failed announcement costs a flag, not a connection */ }
+}
+
+function loadStoredAvatar() {
+  try {
+    const raw = globalThis.localStorage?.getItem(AVATAR_STORAGE_KEY);
+    // A cosmetic preference, so localStorage is the right home - unlike the
+    // room credentials, which are deliberately kept in memory only (see the
+    // note above lastRoomCredentials). Nothing here grants access to anything.
+    myAvatar = raw ? validateAvatar(JSON.parse(raw)) : null;
+  } catch { myAvatar = null; }
+}
+
+function storeAvatar() {
+  try {
+    if (myAvatar) globalThis.localStorage?.setItem(AVATAR_STORAGE_KEY, JSON.stringify(myAvatar));
+    else globalThis.localStorage?.removeItem(AVATAR_STORAGE_KEY);
+  } catch { /* private mode, or storage full: the choice just won't survive a reload */ }
+}
+loadStoredAvatar();
+
+// Decoded SVGs, kept across draws because the radar redraws every frame and
+// re-decoding 8 flags 60 times a second would be absurd. The map holds the
+// element from the moment it is requested, still loading - drawImage would throw
+// on it, hence the readiness check in flagReady().
+const flagImages = new Map();
+
+function flagImage(code) {
+  let img = flagImages.get(code);
+  if (!img) {
+    if (typeof Image === 'undefined') return null;
+    img = new Image();
+    img.src = flagUrl(code);
+    flagImages.set(code, img);
+  }
+  return img;
+}
+
+function flagReady(img) {
+  return !!img && img.complete && img.naturalWidth > 0;
+}
+
+// The one answer to "what do I draw for this player". Falls back through the
+// same chain everywhere - chosen flag, chosen emoji, hashed emoji - so a blip
+// and a list row are always the same picture, and neither is ever blank.
+function avatarFor(pseudo) {
+  return resolveAvatar(pseudo, peerAvatars.get(pseudo));
+}
+
+// Fills a DOM element with an avatar, in the list and in the picker alike, so
+// the two can never drift apart. Emoji stay text (they inherit the row's font
+// size and colour); flags become an <img>, since the browser has no glyph for
+// them. Written with textContent / createElement rather than innerHTML because
+// a flag code, though whitelisted, still originates from another player.
+function paintAvatar(el, av, pseudo) {
+  el.textContent = '';
+  if (av.kind === 'flag') {
+    const img = document.createElement('img');
+    img.className = 'flag-img';
+    img.src = flagUrl(av.code);
+    img.alt = flagName(av.code);
+    // Belt and braces: if the file ever fails to load, the row falls back to the
+    // picture that needs no network at all rather than showing a broken icon.
+    img.addEventListener('error', () => { el.textContent = emojiForPseudo(pseudo); }, { once: true });
+    el.appendChild(img);
+    return;
+  }
+  el.textContent = av.value;
+}
+
+// --- The picker: Advanced settings > My avatar ---
+//
+// It lives there rather than on the main screen so the default view still
+// matches the approved render, and it is also the only place a player can see
+// their own avatar at all - the player list deliberately shows everyone else.
+const avatarPreview     = document.getElementById('avatarPreview');
+const avatarPreviewName = document.getElementById('avatarPreviewName');
+const avatarToggleBtn   = document.getElementById('avatarToggle');
+const avatarPicker      = document.getElementById('avatarPicker');
+const avatarSearch      = document.getElementById('avatarSearch');
+const avatarFlagGrid    = document.getElementById('avatarFlagGrid');
+const avatarEmojiGrid   = document.getElementById('avatarEmojiGrid');
+
+function avatarLabel() {
+  if (myAvatar && myAvatar.kind === 'flag') return flagName(myAvatar.code);
+  if (myAvatar) return 'Character';
+  // Saying *where* the guess came from matters: a player handed the wrong flag
+  // needs to understand it was inferred, not assigned, or the picker below looks
+  // like a bug report rather than the fix.
+  if (guessedCountry) return `Auto — ${flagName(guessedCountry)}, from your browser`;
+  return 'Auto — from your name';
+}
+
+function renderAvatarPreview() {
+  if (!avatarPreview) return;
+  // Before a room is joined there is no login yet; '' still hashes to a stable
+  // emoji, and the preview is refreshed on connect so it settles on the real one.
+  const who = myIdentity || '';
+  paintAvatar(avatarPreview, resolveAvatar(who, myEffectiveAvatar()), who);
+  if (avatarPreviewName) avatarPreviewName.textContent = avatarLabel();
+}
+
+function markAvatarSelection() {
+  const key = !myAvatar ? 'auto'
+    : myAvatar.kind === 'flag' ? `flag:${myAvatar.code}` : `emoji:${myAvatar.value}`;
+  for (const grid of [avatarFlagGrid, avatarEmojiGrid]) {
+    if (!grid) continue;
+    for (const cell of grid.children) cell.classList.toggle('selected', cell.dataset.key === key);
+  }
+}
+
+function setMyAvatar(next) {
+  myAvatar = next; // null means Auto
+  storeAvatar();
+  renderAvatarPreview();
+  markAvatarSelection();
+  announceAvatar();
+}
+
+function avatarCell(key, title, fill) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'avatar-cell';
+  b.dataset.key = key;
+  b.title = title;
+  fill(b);
+  return b;
+}
+
+// Fetches the flags currently scrolled into view, one screen ahead in each
+// direction so scrolling never outruns the loading. Fetching all 270 up front
+// would be 2.3 MB the moment somebody opens the panel, most of it for countries
+// they will never scroll past.
+function revealVisibleFlags() {
+  if (!avatarFlagGrid) return;
+  // The `|| 168` matters: on the very first call the grid has just been
+  // un-hidden and can still measure 0 tall, and a zero-height window reveals
+  // nothing - which is exactly the blank grid this function exists to avoid.
+  // 168 is the max-height the stylesheet gives it.
+  const h = avatarFlagGrid.clientHeight || 168;
+  const top = avatarFlagGrid.scrollTop - h;
+  const bottom = avatarFlagGrid.scrollTop + h * 2;
+  for (const cell of avatarFlagGrid.children) {
+    if (cell.style.display === 'none') continue;
+    const img = cell.firstChild;
+    if (!img || !img.dataset || !img.dataset.src) continue;
+    if (cell.offsetTop < top || cell.offsetTop > bottom) continue;
+    img.src = img.dataset.src;
+    delete img.dataset.src;
+  }
+}
+
+function buildAvatarPicker() {
+  if (!avatarFlagGrid || !avatarEmojiGrid) return;
+  ensureAvatarNoMatch();
+
+  // Auto sits first and inside the grid rather than off to the side, because
+  // going back to it is a choice like any other and should be in the same place
+  // as the choices that replaced it.
+  avatarFlagGrid.appendChild(avatarCell('auto', 'Automatic', (b) => { b.textContent = '✨'; }));
+  for (const code of allFlagCodes()) {
+    avatarFlagGrid.appendChild(avatarCell(`flag:${code}`, `${flagName(code)} (${code})`, (b) => {
+      const img = document.createElement('img');
+      // The src is parked in data-src and moved over by revealVisibleFlags().
+      // loading="lazy" was tried first and left the grid blank: it is driven by
+      // the rendering lifecycle, which a scrollable box the browser has decided
+      // not to paint does not run. Reading offsetTop instead depends only on
+      // layout, which always happens - so the pictures are there whether or not
+      // the browser felt like compositing that frame.
+      img.dataset.src = flagUrl(code);
+      img.alt = flagName(code);
+      b.appendChild(img);
+    }));
+  }
+  for (const value of AVATAR_EMOJI) {
+    avatarEmojiGrid.appendChild(avatarCell(`emoji:${value}`, 'Character', (b) => { b.textContent = value; }));
+  }
+
+  avatarFlagGrid.addEventListener('scroll', revealVisibleFlags);
+  revealVisibleFlags();
+
+  for (const grid of [avatarFlagGrid, avatarEmojiGrid]) {
+    grid.addEventListener('click', (e) => {
+      const cell = e.target.closest ? e.target.closest('.avatar-cell') : null;
+      if (!cell) return;
+      const key = cell.dataset.key;
+      if (key === 'auto') return setMyAvatar(null);
+      const [kind, rest] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+      setMyAvatar(kind === 'flag' ? { kind: 'flag', code: rest } : { kind: 'emoji', value: rest });
+    });
+  }
+
+  if (avatarSearch) {
+    avatarSearch.addEventListener('input', () => {
+      const q = avatarSearch.value.trim().toLowerCase();
+      let shown = 0;
+      for (const cell of avatarFlagGrid.children) {
+        // Auto always stays reachable: filtering the way back out of a search is
+        // how someone ends up stuck with a flag they picked by accident.
+        const hit = cell.dataset.key === 'auto' || !q || cell.title.toLowerCase().includes(q);
+        cell.style.display = hit ? '' : 'none';
+        if (hit && cell.dataset.key !== 'auto') shown++;
+      }
+      if (avatarNoMatch) avatarNoMatch.style.display = (q && shown === 0) ? '' : 'none';
+      // Filtering moves everything up: what was three screens down is now the
+      // first row, and it has no picture yet.
+      revealVisibleFlags();
+    });
+  }
+
+  markAvatarSelection();
+}
+
+// Sits under the flag grid rather than inside it, so an empty search reads as a
+// message and not as a cell you could click. Created next to the grid only when
+// the page actually gives it a parent to sit in.
+let avatarNoMatch = null;
+function ensureAvatarNoMatch() {
+  if (avatarNoMatch || !avatarFlagGrid || !avatarFlagGrid.parentNode) return;
+  avatarNoMatch = document.createElement('div');
+  avatarNoMatch.className = 'avatar-empty';
+  avatarNoMatch.textContent = 'No country matches that.';
+  avatarNoMatch.style.display = 'none';
+  avatarFlagGrid.parentNode.insertBefore(avatarNoMatch, avatarFlagGrid.nextSibling);
+}
+
+if (avatarToggleBtn && avatarPicker) {
+  avatarToggleBtn.addEventListener('click', () => {
+    const open = avatarPicker.style.display === 'none';
+    avatarPicker.style.display = open ? '' : 'none';
+    avatarToggleBtn.setAttribute('aria-expanded', String(open));
+    avatarToggleBtn.textContent = open ? 'Done' : 'Change';
+    // Built on first open, not at load: 270 <button><img> is real work, and most
+    // sessions never open this panel at all.
+    if (open && !avatarFlagGrid.children.length) buildAvatarPicker();
+  });
+}
+renderAvatarPreview();
+
+function cssVar(name, fallback) {
+  try {
+    const v = getComputedStyle(onzRoot).getPropertyValue(name).trim();
+    return v || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+// Audit #21: redrawing the radar/tables at the 60Hz of requestAnimationFrame
+// burned CPU on DOM work nobody could see. draw()/renderPlayerList() run from
+// the throttled RENDER_INTERVAL_MS timer below instead; the debug peer table
+// and follow-chips are additionally skipped outright while the
+// collapsed-by-default Advanced panel (#optBody) is closed, since nothing
+// there is visible either way.
 const RENDER_INTERVAL_MS = 100; // ~10Hz, plenty for a status readout
 const optBody = document.getElementById('optBody');
 
+// Hover/tap-to-reveal state for radar dots, refreshed each draw() so the
+// canvas mousemove/click handlers below can hit-test against where things
+// actually got drawn instead of duplicating the projection math.
+let hoveredPseudo = null;
+let lastDrawnPeers = []; // [{ pseudo, x, y, r }]
+
+function hitTestPeer(x, y) {
+  for (const p of lastDrawnPeers) {
+    if (Math.hypot(x - p.x, y - p.y) <= p.r) return p.pseudo;
+  }
+  return null;
+}
+
+// The canvas box is sized by CSS (a letterbox on mobile, near-square on desktop
+// — see the aspect-ratio rules in index.html). Match the bitmap to that box so
+// the radar is drawn at native resolution instead of being stretched, and so
+// draw() picks up the new proportions when the viewport crosses the breakpoint.
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  // Guard for the headless test stub, whose getBoundingClientRect has no size:
+  // fall back to whatever the bitmap already is rather than writing NaN.
+  const w = Math.round(rect.width) || canvas.width;
+  const h = Math.round(rect.height) || canvas.height;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+}
+
 function draw() {
+  resizeCanvas();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const scale = (Math.min(canvas.width, canvas.height) / 2 - 20) / Math.max(MAX_DIST, 1);
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
+  const R = Math.min(canvas.width, canvas.height) / 2 - 20;
+  // Chosen so MAX_DIST lands at ~70% of the radar radius (atan(2)*2/pi),
+  // leaving room for farther peers to keep compressing toward the rim
+  // instead of piling up exactly on the MAX_DIST ring.
+  const k = 2 / Math.max(MAX_DIST, 1);
 
-  // range rings around me, for visual reference
-  ctx.strokeStyle = '#333';
-  ctx.beginPath(); ctx.arc(cx, cy, MIN_DIST * scale, 0, Math.PI * 2); ctx.stroke();
-  ctx.beginPath(); ctx.arc(cx, cy, MAX_DIST * scale, 0, Math.PI * 2); ctx.stroke();
+  const gridColor = cssVar('--onz-canvas-grid', '#2a2a2a');
+  const accentColor = cssVar('--onz-accent', '#4aa8ff');
+  const meColor = cssVar('--onz-accent', '#4aa8ff');
+  const sweepColor = cssVar('--onz-sweep', 'rgba(74,168,255,0.18)');
+  const tooltipBg = cssVar('--onz-tooltip-bg', '#000');
+  const tooltipText = cssVar('--onz-tooltip-text', '#fff');
 
-  for (const [pseudo, pos] of peers) {
-    const gain = gains.get(pseudo)?.current ?? 0;
-    const p = worldToScreen(pos, scale);
-    ctx.fillStyle = `rgba(220,60,60,${0.25 + 0.75 * gain})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#ccc';
-    ctx.font = '11px sans-serif';
-    ctx.fillText(pseudo, p.x + 12, p.y + 4);
+  // Fixed reference grid at 33/66/100% of the radar radius - purely visual
+  // spacing, independent of MIN_DIST/MAX_DIST (those are shown via each
+  // peer's projected distance, not a dedicated ring).
+  ctx.strokeStyle = gridColor;
+  for (const frac of [0.33, 0.66, 1]) {
+    ctx.beginPath(); ctx.arc(cx, cy, R * frac, 0, Math.PI * 2); ctx.stroke();
   }
 
-  ctx.fillStyle = '#4aa8ff';
-  ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#9cf';
-  ctx.fillText(myIdentity ? `${myIdentity} (you)` : 'you', cx + 12, cy + 4);
+  // Animated sweep wedge, disabled under reduced motion.
+  if (!reduceMotion) {
+    const sweepAngle = (Date.now() / 3000) % 1 * Math.PI * 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, R, sweepAngle, sweepAngle + Math.PI / 6);
+    ctx.closePath();
+    ctx.fillStyle = sweepColor;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  lastDrawnPeers = [];
+  let activePeer = null; // hovered/tapped dot, drawn last so its tooltip sits on top
+  for (const [pseudo, pos] of peers) {
+    const gain = gains.get(pseudo)?.current ?? 0;
+    const proj = projectToRadar(pos.x - me.x, pos.z - me.z, R, k);
+    const px = cx + proj.x_display;
+    const py = cy + proj.y_display;
+    const size = Math.min(MAX_EMOJI_PX, Math.max(MIN_EMOJI_PX, 20 * proj.scale));
+
+    if (pseudo === hoveredPseudo) {
+      ctx.beginPath(); ctx.arc(px, py, size / 2 + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = accentColor; ctx.lineWidth = 1.5; ctx.stroke();
+      activePeer = { pseudo, px, py, dist: distance(me, pos) };
+    }
+
+    if (showEmoji) {
+      const av = avatarFor(pseudo);
+      // Same fade-with-distance as the emoji had: how solid a blip looks is how
+      // well you can hear that player, and a flag must not opt out of that.
+      ctx.globalAlpha = 0.35 + 0.65 * gain;
+      const img = av.kind === 'flag' ? flagImage(av.code) : null;
+      if (flagReady(img)) {
+        // 4:3, the aspect the SVGs are authored at - stretching them to a square
+        // makes Germany and Belgium look like each other's cousins.
+        const w = size, h = size * 0.75;
+        ctx.drawImage(img, px - w / 2, py - h / 2, w, h);
+        // Several flags are mostly white (Japan, Poland, Finland...), and on a
+        // dark radar they read as a hole rather than a shape. A hairline edge
+        // costs nothing and gives every flag the same silhouette.
+        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px - w / 2 + 0.5, py - h / 2 + 0.5, w - 1, h - 1);
+      } else {
+        // Covers both "no flag chosen" and "the SVG has not decoded yet", which
+        // is at most the first frame after a player appears. Drawing the hashed
+        // emoji there beats leaving a gap where a car is.
+        ctx.font = `${size}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(av.kind === 'emoji' ? av.value : emojiForPseudo(pseudo), px, py);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+      }
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.fillStyle = `rgba(220,60,60,${0.25 + 0.75 * gain})`;
+      ctx.beginPath(); ctx.arc(px, py, size / 2, 0, Math.PI * 2); ctx.fill();
+    }
+
+    lastDrawnPeers.push({ pseudo, x: px, y: py, r: size / 2 + 8 });
+  }
+
+  if (activePeer) {
+    const label = `${activePeer.pseudo} · ${Math.round(activePeer.dist)} m`;
+    ctx.font = '11px sans-serif';
+    const w = ctx.measureText(label).width + 14;
+    let tx = activePeer.px + 10, ty = activePeer.py - 22;
+    if (tx + w > canvas.width) tx = activePeer.px - w - 10;
+    if (ty < 0) ty = activePeer.py + 14;
+    ctx.fillStyle = tooltipBg;
+    ctx.beginPath(); ctx.roundRect(tx, ty, w, 20, 5); ctx.fill();
+    ctx.fillStyle = tooltipText;
+    ctx.fillText(label, tx + 7, ty + 14);
+  }
+
+  ctx.fillStyle = meColor;
+  ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
 }
 
 function tickGains() {
   applyRelativeMode();
   // Audit #6: while waiting for our first real in-game position, force
   // silence instead of computing distance from the placeholder "me".
-  const meReady = !followGameCheckbox.checked || meKnown;
+  const meReady = !isSwitchOn(followGameCheckbox) || meKnown;
   for (const [pseudo, pos] of peers) {
     const stale = Date.now() - pos.lastSeen > 3000;
     const dist = distance(me, pos);
@@ -260,11 +870,24 @@ function tickGains() {
 }
 requestAnimationFrame(tickGains);
 
+function updateRoomStats() {
+  if (!roomStatsEl || !room || roomConnectedAt === null) return;
+  if (peerCountEl) peerCountEl.textContent = String(room.remoteParticipants.size + 1);
+  if (roomTimeEl) {
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - roomConnectedAt) / 1000));
+    const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+    const ss = String(elapsedSec % 60).padStart(2, '0');
+    roomTimeEl.textContent = `${mm}:${ss}`;
+  }
+}
+
 setInterval(() => {
   renderPlayerList();
+  updateRoomStats();
+  draw();
   if (optBody.style.display !== 'none') {
     renderPeerTable();
-    draw();
+    renderFollowChips();
   }
 
   // Safety net: drop peers that stopped broadcasting a long time ago -
@@ -288,6 +911,16 @@ function gainLabel(g) {
   return 'Out of range';
 }
 
+// Shared teal/accent/warn/muted tiers used to color the avatar ring, the
+// trailing dot, the zone-bar fill and the status text consistently — one
+// gain value drives four visual cues instead of each rolling its own bucketing.
+function gainTierColorVar(g) {
+  if (g > 0.5) return '--onz-teal';
+  if (g > 0.15) return '--onz-accent';
+  if (g > 0.01) return '--onz-warn';
+  return '--onz-muted3';
+}
+
 function renderPlayerList() {
   const list = document.getElementById('playerList');
   // Audit #9: union of peers (have a position) and audioNodes (have a
@@ -298,29 +931,96 @@ function renderPlayerList() {
     list.innerHTML = '<li class="pl-empty">No other players in the room yet</li>';
     return;
   }
+
+  // Closest-first: players without a position yet (audio-only) sort after
+  // everyone we can actually place, since "distance" is meaningless for them.
+  const withPos = [];
+  const withoutPos = [];
+  for (const pseudo of identities) (peers.has(pseudo) ? withPos : withoutPos).push(pseudo);
+  withPos.sort((a, b) => distance(me, peers.get(a)) - distance(me, peers.get(b)));
+  const ordered = [...withPos, ...withoutPos];
+
+  const fullPct = Math.min(100, (MIN_DIST / Math.max(MAX_DIST, 1)) * 100);
+
   list.innerHTML = '';
-  for (const pseudo of identities) {
+  ordered.forEach((pseudo, idx) => {
     const hasPosition = peers.has(pseudo);
     const g = hasPosition ? (gains.get(pseudo)?.current ?? 0) : 0;
     const hasAudio = audioNodes.has(pseudo);
-    const pct = Math.round(g * 100);
-    const icon = !hasAudio ? '👤' : g > 0.5 ? '🔊' : g > 0.05 ? '🔉' : '🔈';
+    const stale = hasPosition && Date.now() - peers.get(pseudo).lastSeen > 3000;
+    // Same emoji the radar draws for this player, so a blip and a row are
+    // obviously the same person. It replaced a 🔊/🔉/🔈 volume icon: the ring
+    // colour, the trailing dot and the zone bar already say how loud they are,
+    // and none of them said *who* they are.
+    const av = avatarFor(pseudo);
+    const isSpeaking = currentSpeakers.has(pseudo);
+    const dist = hasPosition ? distance(me, peers.get(pseudo)) : null;
+
+    const tierVar = hasPosition ? gainTierColorVar(g) : '--onz-muted3';
+
+    const outOfRange = hasPosition && g <= 0.01;
+
     const li = document.createElement('li');
-    const iconEl = document.createElement('span'); iconEl.className = 'pl-icon'; iconEl.textContent = icon;
+    li.className = 'pl-row' + (outOfRange ? ' out' : '');
+
+    if (idx === 0 && hasPosition) {
+      const badge = document.createElement('div');
+      badge.className = 'pl-badge';
+      badge.innerHTML = '<svg class="ti"><use href="#ti-focus-2"></use></svg> Closest to you';
+      li.appendChild(badge);
+    }
+
+    const card = document.createElement('div');
+    card.className = 'pl-card';
+
+    const top = document.createElement('div');
+    top.className = 'pl-top';
+    const avatar = document.createElement('span');
+    avatar.className = 'pl-avatar' + (isSpeaking ? ' onzPulse' : '');
+    avatar.style.background = `color-mix(in srgb, var(${tierVar}) 25%, transparent)`;
+    paintAvatar(avatar, av, pseudo);
     const nameEl = document.createElement('span'); nameEl.className = 'pl-name'; nameEl.textContent = pseudo;
-    const labelEl = document.createElement('span'); labelEl.className = 'pl-label'; labelEl.textContent = hasPosition ? gainLabel(g) : 'no position yet';
-    const barEl = document.createElement('div'); barEl.className = 'pl-bar';
-    const fillEl = document.createElement('div'); fillEl.className = 'pl-fill'; fillEl.style.width = `${pct}%`;
-    barEl.appendChild(fillEl);
-    li.append(iconEl, nameEl, labelEl, barEl);
+    const dot = document.createElement('span');
+    dot.className = 'pl-dot';
+    dot.style.background = `var(${tierVar})`;
+    top.append(avatar, nameEl, dot);
+
+    const bottom = document.createElement('div');
+    bottom.className = 'pl-bottom';
+    const labelEl = document.createElement('span');
+    labelEl.className = 'pl-label';
+    labelEl.textContent = !hasPosition ? 'no position yet' : stale ? 'quiet — no recent update' : (isSpeaking ? 'speaking' : gainLabel(g));
+    if (!isSpeaking && lastSpokenAt.has(pseudo)) {
+      const minutesAgo = Math.floor((Date.now() - lastSpokenAt.get(pseudo)) / 60000);
+      labelEl.textContent += ` · silent ${minutesAgo}m ago`;
+    }
+    // Distance last, as in the render. The zone bar gives an impression; the
+    // number tells you how much closer you have to get to hear someone.
+    if (dist !== null) labelEl.textContent += ` · ${Math.round(dist)} m`;
+    labelEl.style.color = hasPosition ? `var(${tierVar})` : '';
+    const zonebar = document.createElement('div');
+    zonebar.className = 'pl-zonebar';
+    if (hasPosition) {
+      const d = distance(me, peers.get(pseudo));
+      const distPct = Math.min(100, (d / Math.max(MAX_DIST, 1)) * 100);
+      zonebar.style.background = `linear-gradient(to right, var(--onz-teal) 0%, var(--onz-teal) ${fullPct}%, var(--onz-border) ${fullPct}%, var(--onz-border) 100%)`;
+      const marker = document.createElement('div');
+      marker.className = 'pl-marker';
+      marker.style.left = `${distPct}%`;
+      zonebar.appendChild(marker);
+    }
+    bottom.append(labelEl, zonebar);
+
+    card.append(top, bottom);
+    li.appendChild(card);
     list.appendChild(li);
-  }
+  });
 }
 
 function renderPeerTable() {
-  const mode = followGameCheckbox.checked
+  const mode = isSwitchOn(followGameCheckbox)
     ? 'from game'
-    : relativeModeCheckbox.checked
+    : isSwitchOn(relativeModeCheckbox)
       ? `relative to "${relativeTargetInput.value.trim()}"`
       : 'mouse';
   meReadoutEl.textContent = `me: x=${me.x.toFixed(0)} y=${me.y.toFixed(0)} z=${me.z.toFixed(0)} (${mode})`;
@@ -348,7 +1048,7 @@ function renderPeerTable() {
 let lastMouse = null;
 
 canvas.addEventListener('mousedown', (e) => {
-  if (followGameCheckbox.checked || relativeModeCheckbox.checked) return;
+  if (isSwitchOn(followGameCheckbox) || isSwitchOn(relativeModeCheckbox)) return;
   const r = canvas.getBoundingClientRect();
   const x = e.clientX - r.left, y = e.clientY - r.top;
   if (Math.hypot(x - canvas.width / 2, y - canvas.height / 2) < 20) {
@@ -358,13 +1058,28 @@ canvas.addEventListener('mousedown', (e) => {
 });
 window.addEventListener('mouseup', () => { dragging = false; lastMouse = null; });
 canvas.addEventListener('mousemove', (e) => {
-  if (!dragging || lastMouse === null) return;
   const r = canvas.getBoundingClientRect();
   const x = e.clientX - r.left, y = e.clientY - r.top;
-  const scale = (Math.min(canvas.width, canvas.height) / 2 - 20) / Math.max(MAX_DIST, 1);
-  me.x += (x - lastMouse.x) / scale;
-  me.z += (y - lastMouse.y) / scale; // screen-Y drives depth (Z), matching worldToScreen
-  lastMouse = { x, y };
+
+  if (dragging && lastMouse !== null) {
+    const scale = (Math.min(canvas.width, canvas.height) / 2 - 20) / Math.max(MAX_DIST, 1);
+    me.x += (x - lastMouse.x) / scale;
+    me.z += (y - lastMouse.y) / scale; // screen-Y drives depth (Z), matching worldToScreen
+    lastMouse = { x, y };
+  }
+
+  // Independent of dragging: hovering a radar dot reveals its name (see draw()).
+  hoveredPseudo = hitTestPeer(x, y);
+  canvas.style.cursor = hoveredPseudo
+    ? 'pointer'
+    : (isSwitchOn(followGameCheckbox) || isSwitchOn(relativeModeCheckbox) ? 'default' : 'grab');
+});
+// Touch devices don't hover: tapping a dot toggles its name label instead.
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const hit = hitTestPeer(x, y);
+  hoveredPseudo = (hit && hit === hoveredPseudo) ? null : hit;
 });
 
 function decodePosition(payload) {
@@ -390,6 +1105,8 @@ function updateServerDisplay(name) {
 function purgeAll() {
   peers.clear();
   gains.clear();
+  lastSpokenAt.clear();
+  currentSpeakers = new Set();
   for (const nodes of audioNodes.values()) {
     try { nodes.source.disconnect(); } catch {}
     try { nodes.panner.disconnect(); } catch {}
@@ -399,19 +1116,87 @@ function purgeAll() {
   audioNodes.clear();
   audioPublications.clear();
   subscribedPeers.clear();
+  // Avatars are announcements made *inside* a room, so they do not survive it:
+  // keeping them would paint a stale flag on a same-named player in the next
+  // server before that player has said anything.
+  peerAvatars.clear();
 }
 
 async function disconnectLiveKit() {
   if (!room) return;
-  try { await room.disconnect(); } catch {}
+  // Cleared BEFORE disconnecting, not after: room.disconnect() fires
+  // RoomEvent.Disconnected, and that handler must be able to tell an
+  // intentional teardown (server change, leaving) from a connection that died
+  // on its own. It checks `room !== newRoom`, so the field has to be released
+  // first or a normal server change would show "Disconnected from the voice
+  // room" to a player who did nothing wrong.
+  const old = room;
   room = null;
+  try { await old.disconnect(); } catch {}
+  roomConnectedAt = null;
+  if (roomStatsEl) roomStatsEl.style.display = 'none';
   purgeAll();
 }
 
 // Wire up all LiveKit room events. Called once per LiveKit room instance.
 function attachRoomEvents(newRoom) {
+  // The room can drop long after a successful connect - server restart, wifi
+  // dying, laptop waking from sleep. Without these three the page kept showing
+  // "Connected, you'll hear nearby players automatically" over a dead room,
+  // which is the worst possible failure: it tells the player the silence is
+  // normal. Each one is ignored if it arrives from a room we already replaced
+  // (a server change disconnects the old room on purpose).
+  newRoom.on(LivekitClient.RoomEvent.Reconnecting, () => {
+    if (room !== newRoom) return;
+    showFailure('Connection lost', 'reconnecting, hang on…');
+  });
+  newRoom.on(LivekitClient.RoomEvent.Reconnected, () => {
+    if (room !== newRoom) return;
+    statusEl.textContent = `✅ Connected — you'll hear nearby players automatically`;
+    statusEl.className = 'ok';
+  });
+  newRoom.on(LivekitClient.RoomEvent.Disconnected, () => {
+    if (room !== newRoom) return;
+    room = null;
+    roomConnectedAt = null;
+    if (roomStatsEl) roomStatsEl.style.display = 'none';
+    purgeAll();
+    micEnabled = false;
+    micBtn.disabled = true;
+    micBtn.className = 'idle';
+    stopMicMeter();
+    // The room dropped on its own, so the button becomes the cheap way back:
+    // the cached token is usually still valid, and trying it costs one click
+    // instead of a round trip through the game.
+    showLeaveBtn('rejoin');
+    showFailure('Disconnected from the voice room',
+      'click Rejoin below, or reload this page.');
+  });
+
   newRoom.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+    if (topic === AVATAR_TOPIC) {
+      // The key is participant.identity, which LiveKit takes from the signed
+      // token, and never a name inside the payload - otherwise announcing an
+      // avatar "for" another player would be a one-liner. validateAvatar() then
+      // reduces the body to a flag we ship or an emoji from our own palette, so
+      // the worst a hostile participant can do to someone else's screen is pick
+      // an ugly flag for themselves.
+      if (!participant || !participant.identity) return;
+      const decoded = decodePosition(payload);
+      const av = validateAvatar(decoded);
+      if (av) peerAvatars.set(participant.identity, av);
+      else peerAvatars.delete(participant.identity);
+      renderPlayerList();
+      return;
+    }
     if (topic !== 'position') return;
+    // Positions come from the relay, which speaks through the LiveKit server
+    // API - so they arrive with NO participant attached. A 'position' packet
+    // that has one was published by somebody's browser, and since positions
+    // decide who you can hear, honouring it would let a participant place
+    // themselves next to anyone. Browsers can publish data now (they announce
+    // their avatar), so this line is what stops that door being open.
+    if (participant) return;
     // Audit #27: the relay now aggregates every player's latest position into
     // one array per broadcast instead of one message per player, so this
     // handler runs the same per-position logic in a loop instead of once.
@@ -422,7 +1207,7 @@ function attachRoomEvents(newRoom) {
       if (msg.pseudo === myIdentity) {
         // Our own position coming back from the game: in follow mode this is
         // where "me" comes from (the car), instead of the dragged canvas dot.
-        if (followGameCheckbox.checked) {
+        if (isSwitchOn(followGameCheckbox)) {
           const x = Number(msg.x), y = Number(msg.y), z = Number(msg.z ?? 0);
           if (isFinite(x) && isFinite(y) && isFinite(z)
               && Math.abs(x) < 1e6 && Math.abs(y) < 1e6 && Math.abs(z) < 1e6) {
@@ -454,10 +1239,17 @@ function attachRoomEvents(newRoom) {
 
   newRoom.on(LivekitClient.RoomEvent.ParticipantConnected, (p) => {
     logEvent(`participant joined: ${p.identity}`);
+    showToast(`${p.identity} joined`);
     registerPublications(p);
+    // Data packets are not replayed to latecomers, so someone joining an
+    // established room would otherwise see everyone wearing a hashed animal.
+    // Aimed at them specifically rather than broadcast, so a join does not
+    // trigger n announcements to n players.
+    announceAvatar(p.identity);
   });
   newRoom.on(LivekitClient.RoomEvent.ParticipantDisconnected, (p) => {
     logEvent(`participant left: ${p.identity}`);
+    showToast(`${p.identity} left`);
     audioPublications.delete(p.identity);
     subscribedPeers.delete(p.identity);
 
@@ -527,6 +1319,15 @@ function attachRoomEvents(newRoom) {
     audioNodes.set(participant.identity, { source, panner, gainNode, el });
   });
 
+  // LiveKit's SFU computes active speakers for every connected client
+  // regardless of subscriptions, so listening here costs nothing extra in
+  // server load or bandwidth - it's already flowing to us.
+  newRoom.on(LivekitClient.RoomEvent.ActiveSpeakersChanged, (speakers) => {
+    const now = Date.now();
+    currentSpeakers = new Set(speakers.map((s) => s.identity));
+    for (const identity of currentSpeakers) lastSpokenAt.set(identity, now);
+  });
+
   newRoom.on(LivekitClient.RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     logEvent(`TrackUnsubscribed: ${participant.identity}`);
     track.detach().forEach((el) => el.remove());
@@ -536,6 +1337,196 @@ function attachRoomEvents(newRoom) {
     nodes.panner.disconnect();
     nodes.gainNode.disconnect();
     audioNodes.delete(participant.identity);
+  });
+}
+
+// Personal mic level meter: builds its bars once, then is started/stopped
+// around the local mic actually being enabled/disabled. The row itself stays
+// visible either way (bars just idle at their base height).
+// Feature-detected (createAnalyser) rather than assumed, since the test
+// double for AudioContext doesn't implement it and this must stay a no-op
+// there - the meter is a pure visual nicety, never load-bearing.
+const MIC_METER_BARS = 16;
+const micMeterBars = [];
+function setupMicMeter() {
+  if (!micMeterEl) return;
+  for (let i = 0; i < MIC_METER_BARS; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'mic-bar';
+    // Arc-shaped base height (short at the edges, tall in the middle) so an
+    // idle meter reads as an EQ strip rather than a flat row of ticks.
+    bar.style.height = `${Math.round(25 + 55 * Math.sin((i + 1) / (MIC_METER_BARS + 1) * Math.PI))}%`;
+    micMeterBars.push(bar);
+    micMeterEl.appendChild(bar);
+  }
+}
+setupMicMeter();
+
+let micAnalyser = null;
+let micAnalyserData = null;
+let micMeterRAF = null;
+
+function findLocalAudioTrack() {
+  if (!room || !room.localParticipant || !room.localParticipant.trackPublications) return null;
+  for (const pub of room.localParticipant.trackPublications.values()) {
+    if (pub.kind === LivekitClient.Track.Kind.Audio && pub.track) return pub.track.mediaStreamTrack;
+  }
+  return null;
+}
+
+function tickMicMeter() {
+  if (!micAnalyser || reduceMotion) return; // reduced motion: meter stays visible but static
+  micAnalyser.getByteFrequencyData(micAnalyserData);
+  const avg = micAnalyserData.reduce((a, b) => a + b, 0) / micAnalyserData.length;
+  // Same 1.6x headroom the old 5-bar meter used (8/5), scaled to bar count,
+  // so an average speaking voice still lights most of the strip.
+  const level = Math.min(MIC_METER_BARS, Math.round((avg / 255) * MIC_METER_BARS * 1.6));
+  micMeterBars.forEach((bar, i) => { bar.className = 'mic-bar' + (i < level ? ' on' : ''); });
+  micMeterRAF = requestAnimationFrame(tickMicMeter);
+}
+
+function startMicMeter(track) {
+  stopMicMeter();
+  if (!track || !audioCtx || typeof audioCtx.createAnalyser !== 'function') return;
+  try {
+    const source = audioCtx.createMediaStreamSource(new MediaStream([track]));
+    micAnalyser = audioCtx.createAnalyser();
+    micAnalyser.fftSize = 32;
+    source.connect(micAnalyser);
+    micAnalyserData = new Uint8Array(micAnalyser.frequencyBinCount);
+    tickMicMeter();
+  } catch {}
+}
+
+function stopMicMeter() {
+  if (micMeterRAF) cancelAnimationFrame(micMeterRAF);
+  micMeterRAF = null;
+  micAnalyser = null;
+  for (const bar of micMeterBars) bar.className = 'mic-bar';
+}
+
+// Every failure path ends here, and every message has to answer "what do I do
+// now?". A player who sees a raw "Connection error: NetworkError when attempting
+// to fetch resource" learns nothing and reloads at random; the second half of
+// each sentence is the part that actually helps.
+function showFailure(what, whatToDo) {
+  statusEl.textContent = `${what} — ${whatToDo}`;
+  statusEl.className = 'err';
+  logEvent(`failure shown: ${what}`);
+}
+
+// Reaching the relay at all. Distinguished from a room failure because the
+// remedies differ: here nothing on the page works, so there is no point telling
+// someone to click a button in the game.
+function showRelayUnreachable() {
+  showFailure("Can't reach the OnZVoIP server",
+    'check your internet connection, then reload this page.');
+}
+
+// Wraps fetch so a dead relay produces a message instead of an unhandled
+// rejection. Without this the ?t= flow left the page frozen on "Connecting…"
+// and the manual flow left the Join button greyed out for good: the audit's
+// try/catch (#7) only ever covered room.connect(), not the token request that
+// runs before it.
+async function fetchToken(url) {
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    logEvent(`token fetch failed: ${err.message}`);
+    return { ok: false, unreachable: true };
+  }
+  if (!res.ok) return { ok: false, status: res.status };
+  return { ok: true, data: await res.json() };
+}
+
+// --- Leaving the voice chat, and coming back ---
+//
+// Kept in memory only, never in localStorage. That is the whole security
+// design: a resume credential written to disk would turn the relay's
+// single-use, 12-minute nonce - which proves you are on that server *right
+// now*, because the in-game plugin is what issues it - into something
+// replayable from a machine that left the game hours ago. In a tab, it dies
+// with the tab, so leaving and returning costs nothing while the risk window
+// stays exactly as long as the session the player is already sitting in.
+let lastRoomCredentials = null;
+// Set only by the Leave button. Distinguishes "I chose to step out" from "the
+// connection died", which need opposite handling: the second is a failure to
+// report, the first must not be undone behind the player's back.
+let leftVoluntarily = false;
+// If the player changes server while out, the relay pushes a fresh nonce. It is
+// parked here rather than acted on, so Rejoin lands in the room they are
+// actually on instead of the one they left.
+let pendingRoomNonce = null;
+
+function showLeaveBtn(mode) {
+  if (!leaveBtn) return;
+  if (!mode) { leaveBtn.style.display = 'none'; return; }
+  leaveBtn.style.display = '';
+  const rejoin = mode === 'rejoin';
+  leaveBtn.textContent = rejoin ? '↩ Rejoin voice chat' : 'Leave voice chat';
+  leaveBtn.className = rejoin ? 'leave-btn rejoin' : 'leave-btn';
+}
+
+async function leaveVoice() {
+  if (!room) return;
+  leftVoluntarily = true;
+  micEnabled = false;
+  stopMicMeter();
+  await disconnectLiveKit();
+  micBtn.disabled = true;
+  micBtn.className = 'idle';
+  micBtn.textContent = '🎤 Enable microphone';
+  statusEl.textContent = "You left the voice chat — nobody can hear you";
+  statusEl.className = '';
+  showLeaveBtn('rejoin');
+  logEvent('left voice chat');
+}
+
+async function rejoinVoice() {
+  if (room) return;
+  statusEl.textContent = 'Connecting...';
+  statusEl.className = '';
+  // A parked nonce wins over the cached token: it is newer, and it is the only
+  // one pointing at the server the player moved to while they were out.
+  let creds = lastRoomCredentials;
+  if (pendingRoomNonce) {
+    const res = await fetchToken(`/token?t=${encodeURIComponent(pendingRoomNonce)}`);
+    pendingRoomNonce = null;
+    if (!res.ok) {
+      if (res.unreachable) showRelayUnreachable();
+      else showFailure('Could not rejoin the voice room',
+        'click Copy URL in the game to get a fresh link.');
+      showLeaveBtn('rejoin');
+      return;
+    }
+    const { token, wsUrl, room: roomName, login, serverName } = res.data;
+    creds = { token, wsUrl, roomName, login, serverName };
+  }
+  if (!creds) {
+    showFailure('Could not rejoin the voice room',
+      'click Copy URL in the game to get a fresh link.');
+    showLeaveBtn('rejoin');
+    return;
+  }
+  leftVoluntarily = false;
+  try {
+    await connectLiveKit(creds);
+  } catch {
+    // The cached token outlives the tab's usefulness only if the room is still
+    // there; when it is not, the way back is the game, not a retry loop.
+    leftVoluntarily = true;
+    showFailure('Could not rejoin the voice room',
+      'click Copy URL in the game to get a fresh link.');
+    showLeaveBtn('rejoin');
+    return;
+  }
+  logEvent('rejoined voice chat');
+}
+
+if (leaveBtn) {
+  leaveBtn.addEventListener('click', () => {
+    if (room) leaveVoice(); else rejoinVoice();
   });
 }
 
@@ -571,6 +1562,13 @@ async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
   await newRoom.localParticipant.setMicrophoneEnabled(false);
 
   room = newRoom;
+  roomConnectedAt = Date.now();
+  if (roomStatsEl) roomStatsEl.style.display = '';
+  // Once we're in a room the join row and the tagline have done their job, and
+  // the approved render shows neither. The ?t= flow hides the join row up front
+  // (see the head script in index.html); this covers the manual flow too.
+  if (joinSectionEl) joinSectionEl.style.display = 'none';
+  if (taglineEl) taglineEl.style.display = 'none';
   updateServerDisplay(serverName ?? null);
   const debugRoomVal = document.getElementById('debugRoomVal');
   if (debugRoomVal) debugRoomVal.textContent = roomName;
@@ -580,6 +1578,18 @@ async function connectLiveKit({ token, wsUrl, roomName, login, serverName }) {
   micBtn.textContent = '🎤 Enable microphone';
   micBtn.className = 'muted';
   if (expiredMsgEl) expiredMsgEl.style.display = 'none';
+  // Remembered so the Leave button has something to come back to. Held in this
+  // variable and nowhere else - see the note above its declaration.
+  lastRoomCredentials = { token, wsUrl, roomName, login, serverName };
+  leftVoluntarily = false;
+  pendingRoomNonce = null;
+  showLeaveBtn('leave');
+  // Tell whoever is already here. Not awaited: a flag is not worth delaying the
+  // moment the player can start talking.
+  announceAvatar();
+  // The login is only known now, so an Auto preview drawn at page load was
+  // hashing the empty string. This settles it on the real one.
+  renderAvatarPreview();
 }
 
 // Start the persistent /ingest WebSocket. Stays alive across room changes.
@@ -615,13 +1625,25 @@ function startPositionSend() {
     if (!ingestWs || ingestWs.readyState !== WebSocket.OPEN) return;
     // In follow mode the OpenPlanet plugin is already publishing this
     // identity's position - sending ours too would fight with it.
-    if (followGameCheckbox.checked) return;
+    if (isSwitchOn(followGameCheckbox)) return;
     ingestWs.send(JSON.stringify({ type: 'position', pseudo: myIdentity, x: me.x, y: me.y, z: me.z }));
   }, SEND_INTERVAL_MS);
 }
 
 // The relay pushes this when the plugin sends a new nonce.
 async function handleRoomPush(msg) {
+  // Someone who pressed Leave stays out. Without this the plugin's next push -
+  // and it pushes on every server change - would drag them straight back into
+  // a room they deliberately left, which makes the button useless. The nonce is
+  // kept so Rejoin lands on the right server.
+  if (leftVoluntarily) {
+    pendingRoomNonce = msg.name ? (msg.nonce ?? null) : null;
+    // The push carries the room's technical name, not the display one (that
+    // comes back with the token), so the banner is only ever cleared here,
+    // never rewritten with something a player would not recognise.
+    if (!msg.name) updateServerDisplay(null);
+    return;
+  }
   if (!msg.name) {
     // Player left the server — disconnect and show waiting state.
     await disconnectLiveKit();
@@ -631,20 +1653,32 @@ async function handleRoomPush(msg) {
     micBtn.disabled = true;
     micBtn.className = 'idle';
     micEnabled = false;
+    stopMicMeter();
+    // Nothing to go back to while off-server: the old room's token points at a
+    // server this player is no longer on, so offering Rejoin would only fail.
+    showLeaveBtn(null);
+    lastRoomCredentials = null;
     return;
   }
   // Server changed — swap to the new room using the provided nonce.
   if (!msg.nonce) return;
-  const res = await fetch(`/token?t=${encodeURIComponent(msg.nonce)}`);
-  if (!res.ok) return; // nonce expired or already consumed — ignore
-  const { token, wsUrl, room: roomName, login, serverName } = await res.json();
+  const res = await fetchToken(`/token?t=${encodeURIComponent(msg.nonce)}`);
+  if (!res.ok) {
+    // This used to `return` silently: the player changed server, voice stopped
+    // working, and the page still claimed to be connected to the old room.
+    if (res.unreachable) showRelayUnreachable();
+    else showFailure('You changed server, but the new room could not be opened',
+      'click Copy URL in the game to join it.');
+    return;
+  }
+  const { token, wsUrl, room: roomName, login, serverName } = res.data;
   const wasMicEnabled = micEnabled;
   await disconnectLiveKit();
   try {
     await connectLiveKit({ token, wsUrl, roomName, login, serverName });
-  } catch (err) {
-    statusEl.textContent = `Connection error: ${err.message}`;
-    statusEl.className = '';
+  } catch {
+    showFailure('Could not join the new server’s voice room',
+      'click Copy URL in the game to try again.');
     return;
   }
   // Restore mic state in the new room.
@@ -657,6 +1691,7 @@ async function handleRoomPush(msg) {
     micEnabled = true;
     micBtn.textContent = '🔴 Mute microphone';
     micBtn.className = 'live';
+    startMicMeter(findLocalAudioTrack());
   }
 }
 
@@ -665,21 +1700,24 @@ async function connectViaNonce(nonce) {
   statusEl.textContent = 'Connecting...';
   if (expiredMsgEl) expiredMsgEl.style.display = 'none';
 
-  const res = await fetch(`/token?t=${encodeURIComponent(nonce)}`);
+  const res = await fetchToken(`/token?t=${encodeURIComponent(nonce)}`);
   if (!res.ok) {
     statusEl.textContent = '';
-    // Show a friendly message if the nonce expired (e.g. user opened an old link).
-    if (res.status === 401 && expiredMsgEl) expiredMsgEl.style.display = '';
-    else statusEl.textContent = `Token error: ${res.status}`;
+    if (res.unreachable) showRelayUnreachable();
+    // An expired nonce is the common case (an old tab, a link kept around), and
+    // it has its own panel spelling out the fix.
+    else if (res.status === 401 && expiredMsgEl) expiredMsgEl.style.display = '';
+    else showFailure(`The server refused this link (error ${res.status})`,
+      'click Copy URL again in the game to get a fresh one.');
     return;
   }
-  const { token, wsUrl, room: roomName, login, serverName } = await res.json();
+  const { token, wsUrl, room: roomName, login, serverName } = res.data;
   myIdentity = login;
   try {
     await connectLiveKit({ token, wsUrl, roomName, login, serverName });
-  } catch (err) {
-    statusEl.textContent = `Connection error: ${err.message}`;
-    statusEl.className = '';
+  } catch {
+    showFailure('Could not join the voice room',
+      'click Copy URL again in the game, or reload this page.');
     return;
   }
   startIngestWs(login);
@@ -694,14 +1732,16 @@ async function join() {
   identityInput.disabled = true;
   statusEl.textContent = 'Connecting...';
 
-  const res = await fetch(`/token?identity=${encodeURIComponent(identity)}`);
+  const res = await fetchToken(`/token?identity=${encodeURIComponent(identity)}`);
   if (!res.ok) {
-    statusEl.textContent = `token error: ${res.status}`;
+    if (res.unreachable) showRelayUnreachable();
+    else showFailure(`The server refused this name (error ${res.status})`,
+      'try a different name, or reload the page.');
     joinBtn.disabled = false;
     identityInput.disabled = false;
     return;
   }
-  const { token, wsUrl, room: roomName } = await res.json();
+  const { token, wsUrl, room: roomName } = res.data;
 
   // Created inside this click handler so the browser's autoplay policy
   // treats it as user-initiated and doesn't leave it suspended.
@@ -713,9 +1753,9 @@ async function join() {
 
   try {
     await connectLiveKit({ token, wsUrl, roomName, login: identity, serverName: null });
-  } catch (err) {
-    statusEl.textContent = `Connection error: ${err.message}`;
-    statusEl.className = '';
+  } catch {
+    showFailure('Could not join the voice room',
+      'check your internet connection and press Join again.');
     joinBtn.disabled = false;
     identityInput.disabled = false;
     return;
@@ -744,6 +1784,8 @@ micBtn.addEventListener('click', async () => {
   });
   micBtn.textContent = micEnabled ? '🔴 Mute microphone' : '🎤 Enable microphone';
   micBtn.className = micEnabled ? 'live' : 'muted';
+  if (micEnabled) startMicMeter(findLocalAudioTrack());
+  else stopMicMeter();
 });
 
 // Auto-join: if URL contains ?t=<nonce>, skip the form and join immediately.
@@ -765,7 +1807,10 @@ export {
   tickGains, applyRelativeMode, gainLabel, decodePosition, worldToScreen,
   purgeAll, disconnectLiveKit, attachRoomEvents, connectLiveKit,
   startIngestWs, startPositionSend, handleRoomPush, connectViaNonce, join,
-  renderPlayerList, renderPeerTable, draw,
+  renderPlayerList, renderPeerTable, renderFollowChips, draw,
+  projectToRadar, emojiForPseudo, setupCalibration,
+  leaveVoice, rejoinVoice,
+  avatarFor, setMyAvatar, myEffectiveAvatar, announceAvatar, peerAvatars,
   me, peers, gains, audioNodes, audioPublications, subscribedPeers, room,
   MIN_DIST, MAX_DIST, PAN_RANGE, PEER_GC_MS,
 };

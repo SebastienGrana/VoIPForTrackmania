@@ -1,39 +1,105 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-onz-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OnZVoIP</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
+
+  /* Theme tokens live on <html> (not #onzRoot) so body and everything else
+     actually inherits them — custom properties only cascade to descendants,
+     and body is an ancestor of #onzRoot, not a descendant. */
+  html[data-onz-theme="dark"] {
+    color-scheme: dark;
+    --onz-bg:#111; --onz-surface:#1e1e1e; --onz-surface2:#161616;
+    --onz-border:#2a2a2a; --onz-border2:#242424; --onz-border3:#333;
+    --onz-text:#eee; --onz-muted:#888; --onz-muted2:#666; --onz-muted3:#555; --onz-faint:#444;
+    --onz-accent:#4aa8ff; --onz-accent-dim:#1d6fbc; --onz-accent-hover:#2585d4;
+    --onz-teal:#3ecf8e; --onz-teal-dim:#4a9; --onz-warn:#c84; --onz-danger:#a44;
+    --onz-canvas-bg:#1a1a1a; --onz-input-bg:#111; --onz-canvas-grid:#2a2a2a; --onz-sweep:rgba(74,168,255,0.18);
+    --onz-mic-idle-bg:#1e1e1e; --onz-mic-idle-text:#555; --onz-mic-idle-border:#333;
+    --onz-mic-muted-bg:#1e1e1e; --onz-mic-muted-border:#3a3a3a;
+    --onz-mic-live-bg:#1a4a1a; --onz-mic-live-text:#4c8; --onz-mic-live-border:#3a8a3a; --onz-mic-live-hover:#1f5a1f;
+    --onz-expired-bg:#2a1e00; --onz-expired-border:#5a3e00;
+    --onz-tooltip-bg:#000; --onz-tooltip-text:#fff;
+    --onz-row-border:#1e1e1e;
+  }
+  html[data-onz-theme="light"] {
+    color-scheme: light;
+    --onz-bg:#f3f4f6; --onz-surface:#ffffff; --onz-surface2:#f7f8f9;
+    --onz-border:#dde0e4; --onz-border2:#e7e9eb; --onz-border3:#c9cdd2;
+    --onz-text:#1a1c1f; --onz-muted:#5c6066; --onz-muted2:#787d84; --onz-muted3:#8b8f95; --onz-faint:#a1a5ab;
+    --onz-accent:#1d6fbc; --onz-accent-dim:#1d6fbc; --onz-accent-hover:#2585d4;
+    --onz-teal:#0f9d63; --onz-teal-dim:#0f9d63; --onz-warn:#a8650a; --onz-danger:#c23a3a;
+    --onz-canvas-bg:#eceef1; --onz-input-bg:#ffffff; --onz-canvas-grid:#d5d8dc; --onz-sweep:rgba(29,111,188,0.14);
+    --onz-mic-idle-bg:#f0f1f3; --onz-mic-idle-text:#9a9ea4; --onz-mic-idle-border:#d8dbdf;
+    --onz-mic-muted-bg:#ffffff; --onz-mic-muted-border:#cdd1d6;
+    --onz-mic-live-bg:#e3f7e9; --onz-mic-live-text:#0f8a4c; --onz-mic-live-border:#8fd6ab; --onz-mic-live-hover:#d3f1dd;
+    --onz-expired-bg:#fdf1d9; --onz-expired-border:#eecb85;
+    --onz-tooltip-bg:#1a1c1f; --onz-tooltip-text:#fff;
+    --onz-row-border:#eef0f2;
+  }
+  html[data-onz-contrast="high"] {
+    --onz-muted: var(--onz-text); --onz-muted2: var(--onz-text); --onz-muted3: var(--onz-text); --onz-faint: var(--onz-text);
+    --onz-border: var(--onz-border3);
+  }
+  html[data-onz-motion="reduced"] * { animation: none !important; }
+
   body {
     font-family: system-ui, -apple-system, sans-serif;
-    background: #111;
-    color: #eee;
+    background: var(--onz-bg);
+    color: var(--onz-text);
     margin: 0;
-    padding: 24px 16px;
-    max-width: 400px;
+    padding: 0;
+  }
+  #onzRoot { padding: 24px 16px 40px; max-width: 400px; margin: 0 auto; }
+  @media (min-width: 700px) { #onzRoot { max-width: 720px; } }
+  /* Écart assumé avec la maquette (demande utilisateur 2026-08-10, « élargir ET
+     grossir ») : le rendu approuvé dessine une colonne de 720px, ce qui est
+     minuscule sur un écran de bureau moderne. Au-delà de 1100px de fenêtre on
+     élargit la colonne ET on agrandit tout de 25 %.
+     zoom plutôt qu'un jeu de font-size : les 36 tailles de police du fichier
+     sont en px, et les marges/icônes/pastilles aussi - ne grossir que le texte
+     l'aurait tassé dans des boîtes restées petites. zoom met tout à l'échelle
+     d'un bloc, y compris le canvas (resizeCanvas() suit le nouveau rectangle).
+     La colonne du radar passe de 260 à 300 pour qu'il grandisse lui aussi.
+     Les media queries se mesurent sur la fenêtre, pas sur l'élément zoomé :
+     900 x 1.25 = 1125px réellement occupés. */
+  @media (min-width: 1100px) {
+    #onzRoot { zoom: 1.25; max-width: 900px; }
+    .onz-cols { grid-template-columns: 300px 1fr; }
   }
 
-  /* Header */
-  .logo { font-size: 22px; font-weight: 700; color: #4aa8ff; margin: 0 0 2px; }
-  .sub  { font-size: 13px; color: #555; margin: 0 0 28px; }
+  /* Header: logo, room stats and the toast, and nothing else - the approved
+     render shows no other chrome in the card. */
+  .topbar { margin-bottom: 16px; }
+  .logo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  /* Understated wordmark with only the mic in accent, per the render - the
+     accent is reserved for things that carry state (the mic, the switches). */
+  .logo { font-size: 18px; font-weight: 600; color: var(--onz-text); margin: 0; }
+  .logo .ti { color: var(--onz-accent); }
+  .sub  { font-size: 13px; color: var(--onz-muted3); margin: 4px 0 0; }
+  /* Pushed hard right on mobile, tucked in beside the logo from 700px up
+     (see the desktop override next to the toast rules below). */
+  .room-stats { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--onz-muted); margin-left: auto; }
+  .room-stats span { display: inline-flex; align-items: center; gap: 3px; }
 
   /* Join row */
   .join-row { display: flex; gap: 8px; margin-bottom: 10px; }
   .join-row input {
     flex: 1;
-    background: #1e1e1e;
-    border: 1px solid #3a3a3a;
-    color: #eee;
+    background: var(--onz-input-bg);
+    border: 1px solid var(--onz-border3);
+    color: var(--onz-text);
     padding: 11px 14px;
     border-radius: 10px;
     font-size: 15px;
   }
-  .join-row input:focus { outline: none; border-color: #4aa8ff; }
+  .join-row input:focus { outline: none; border-color: var(--onz-accent); }
 
   #joinBtn {
-    background: #1d6fbc;
+    background: var(--onz-accent-dim);
     border: none;
     color: #fff;
     padding: 11px 22px;
@@ -43,81 +109,172 @@
     cursor: pointer;
     transition: background .15s;
   }
-  #joinBtn:hover:not(:disabled) { background: #2585d4; }
-  #joinBtn:disabled { background: #2a2a2a; color: #555; cursor: not-allowed; }
+  #joinBtn:hover:not(:disabled) { background: var(--onz-accent-hover); }
+  #joinBtn:disabled { background: var(--onz-border); color: var(--onz-muted3); cursor: not-allowed; }
 
-  #status { font-size: 13px; color: #666; margin-bottom: 8px; min-height: 18px; }
-  #status.ok { color: #4a9; }
+  #status { font-size: 13px; color: var(--onz-muted2); margin-bottom: 8px; min-height: 18px; }
+  #status.ok { color: var(--onz-teal-dim); }
+  /* Failure states are the one moment a player is stuck with nothing to read,
+     so they get the warning colour and always carry a "do this next" sentence. */
+  #status.err { color: var(--onz-warn); }
+  #status.err strong { font-weight: 600; }
 
   .expired-msg {
     font-size: 13px;
-    color: #c84;
+    color: var(--onz-warn);
     margin-bottom: 16px;
     padding: 8px 12px;
-    background: #2a1e00;
-    border: 1px solid #5a3e00;
+    background: var(--onz-expired-bg);
+    border: 1px solid var(--onz-expired-border);
     border-radius: 8px;
   }
   .server-name {
     font-size: 13px;
     font-weight: 600;
-    color: #4aa8ff;
+    color: var(--onz-accent);
     margin-bottom: 8px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* Mic button */
+  /* Mic level meter: its own bordered "your mic" row, always visible (the
+     mockup shows it whether or not the mic is live, so the bars idle flat
+     instead of the row disappearing). */
+  .mic-row {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--onz-surface); border: 1px solid var(--onz-border);
+    border-radius: 10px; padding: 8px 10px; margin-bottom: 12px;
+  }
+  .mic-row-label { font-size: 10px; color: var(--onz-muted); white-space: nowrap; }
   #micBtn {
     display: block;
     width: 100%;
+    margin-bottom: 12px;
     padding: 16px;
     border-radius: 12px;
     border: none;
     font-size: 16px;
     font-weight: 600;
     cursor: pointer;
-    margin-bottom: 32px;
     transition: background .2s, color .2s;
   }
-  #micBtn.idle    { background: #1e1e1e; color: #555; border: 2px dashed #333; cursor: not-allowed; }
-  #micBtn.muted   { background: #1e1e1e; color: #eee; border: 2px solid #3a3a3a; }
-  #micBtn.muted:hover { border-color: #4a9; }
-  #micBtn.live    { background: #1a4a1a; color: #4c8; border: 2px solid #3a8a3a; }
-  #micBtn.live:hover  { background: #1f5a1f; }
+  #micBtn.idle    { background: var(--onz-mic-idle-bg); color: var(--onz-mic-idle-text); border: 2px dashed var(--onz-mic-idle-border); cursor: not-allowed; }
+  #micBtn.muted   { background: var(--onz-mic-muted-bg); color: var(--onz-text); border: 2px solid var(--onz-mic-muted-border); }
+  #micBtn.muted:hover { border-color: var(--onz-teal-dim); }
+  #micBtn.live    { background: var(--onz-mic-live-bg); color: var(--onz-mic-live-text); border: 2px solid var(--onz-mic-live-border); }
+  #micBtn.live:hover  { background: var(--onz-mic-live-hover); }
+
+  /* Understated on purpose: leaving is a legitimate move but never the one to
+     invite, so it must stay findable without competing with the microphone
+     button right above it. */
+  .leave-btn {
+    display: block; width: 100%; margin: -4px 0 12px; padding: 7px 10px;
+    font: inherit; font-size: 11px; color: var(--onz-muted); cursor: pointer;
+    background: transparent; border: 1px solid var(--onz-border); border-radius: 8px;
+  }
+  .leave-btn:hover { color: var(--onz-text); border-color: var(--onz-border3); }
+  /* Coming back is the only thing someone who left actually needs, so the
+     return state is the one that gets the accent colour. */
+  .leave-btn.rejoin { color: var(--onz-teal-dim); border-color: var(--onz-teal-dim); }
+
+  .mic-meter { flex: 1; display: flex; align-items: flex-end; gap: 2px; height: 12px; }
+  .mic-meter .mic-bar { flex: 1; background: var(--onz-border3); border-radius: 1px; opacity: .35; transition: opacity .1s, background .1s; }
+  .mic-meter .mic-bar.on { background: var(--onz-teal); opacity: 1; }
 
   /* Players list */
   .section-label {
     font-size: 11px;
     font-weight: 600;
-    color: #555;
+    color: var(--onz-muted3);
     text-transform: uppercase;
     letter-spacing: .06em;
     margin-bottom: 10px;
   }
-  #playerList { list-style: none; margin: 0 0 32px; padding: 0; }
-  #playerList li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 0;
-    border-bottom: 1px solid #1e1e1e;
+  #playerList { list-style: none; margin: 0 0 32px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .pl-empty { font-size: 13px; color: var(--onz-faint); font-style: italic; padding: 10px 2px; }
+  /* Dev-only surfaces (Debug panel, follow-mode offset sliders): hidden unless
+     the page is opened with ?debug=1. They're read-only diagnostics and test
+     tools, not something a player should meet. */
+  .debug-only { display: none; }
+  html.onz-debug .debug-only { display: block; }
+
+  .pl-row { display: flex; flex-direction: column; }
+  .pl-row.out { opacity: .55; }
+  .pl-card {
+    background: var(--onz-surface); border: 1px solid var(--onz-row-border); border-radius: 8px;
+    padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
   }
-  #playerList li:last-child { border-bottom: none; }
-  .pl-icon  { font-size: 16px; flex-shrink: 0; width: 22px; text-align: center; }
-  .pl-name  { flex: 1; font-size: 14px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pl-label { font-size: 12px; color: #777; flex-shrink: 0; }
-  .pl-bar   { width: 80px; height: 5px; background: #2a2a2a; border-radius: 3px; overflow: hidden; flex-shrink: 0; }
-  .pl-fill  { height: 100%; background: #4aa8ff; border-radius: 3px; transition: width .15s; }
-  .pl-empty { font-size: 13px; color: #444; font-style: italic; padding: 10px 0; }
+  .pl-top { display: flex; align-items: center; gap: 9px; }
+  .pl-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--onz-muted3); }
+  .pl-avatar {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-size: 15px;
+    background: var(--onz-surface2); transition: background .2s;
+  }
+  /* Flags are images, not glyphs: Windows ships no drawing for 🇫🇷 and renders
+     the letters "FR" instead, which is why this exists at all. 4:3 is the
+     aspect the SVGs are authored at; the hairline edge keeps the mostly-white
+     ones (Japan, Poland) from reading as a hole in the circle. */
+  .flag-img { width: 20px; height: 15px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.35); object-fit: cover; }
+
+  /* Avatar picker, in Advanced settings. Grid of flags first, palette after. */
+  .avatar-open { font-size: 11px; padding: 4px 10px; border-radius: 6px; background: transparent; color: var(--onz-muted); border: 1px solid var(--onz-border); cursor: pointer; }
+  .avatar-open:hover { color: var(--onz-text); border-color: var(--onz-border3); }
+  .avatar-current { display: flex; align-items: center; gap: 8px; }
+  .avatar-name { font-size: 12px; color: var(--onz-muted); }
+  #avatarPicker { margin-top: 10px; }
+  #avatarSearch {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 6px 8px;
+    color: var(--onz-text); background: var(--onz-surface2); border: 1px solid var(--onz-border); border-radius: 6px;
+  }
+  #avatarSearch:focus { outline: none; border-color: var(--onz-accent); }
+  /* Capped and scrollable on purpose: 270 flags unrolled would push every other
+     setting off the screen. */
+  .avatar-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+    gap: 4px; margin-top: 8px; max-height: 168px; overflow-y: auto; padding: 2px;
+    /* Load-bearing, not decoration: revealVisibleFlags() in app.js compares each
+       cell's offsetTop against this box's scrollTop, and offsetTop is measured
+       from the nearest *positioned* ancestor. Without this it would be measured
+       from the page, every cell would test as out of view, and the grid would
+       stay blank. */
+    position: relative;
+  }
+  .avatar-cell {
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+    height: 30px; font-size: 16px; line-height: 1; padding: 0;
+    background: var(--onz-surface2); border: 1px solid transparent; border-radius: 6px;
+  }
+  .avatar-cell:hover { border-color: var(--onz-border3); }
+  .avatar-cell.selected { border-color: var(--onz-accent); background: color-mix(in srgb, var(--onz-accent) 20%, transparent); }
+  .avatar-cell img { width: 22px; height: 16.5px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+  .avatar-sub { font-size: 11px; color: var(--onz-muted3); margin-top: 12px; }
+  .avatar-empty { font-size: 11px; color: var(--onz-muted3); padding: 6px 2px; }
+  .pl-name  { flex: 1; font-size: 14px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-badge {
+    display: flex; align-items: center; gap: 4px;
+    font-size: 10px; color: var(--onz-teal); margin-bottom: 6px;
+  }
+  .pl-bottom { display: flex; flex-direction: column; gap: 6px; }
+  .pl-label { font-size: 12px; color: var(--onz-muted); transition: color .2s; }
+  .pl-zonebar { position: relative; height: 5px; border-radius: 3px; background: var(--onz-border); overflow: visible; }
+  .pl-marker {
+    position: absolute; top: -2px; width: 3px; height: 9px; border-radius: 1px;
+    background: var(--onz-text); transform: translateX(-50%);
+  }
+  .onzPulse { animation: onzPulseAnim 1.4s ease-out infinite; border-radius: 50%; }
+  @keyframes onzPulseAnim {
+    0% { box-shadow: 0 0 0 0 rgba(62,207,142,.55); }
+    100% { box-shadow: 0 0 0 8px rgba(62,207,142,0); }
+  }
 
   /* Advanced toggle */
   #optToggle {
     width: 100%;
     background: none;
-    border: 1px solid #2a2a2a;
-    color: #666;
+    border: 1px solid var(--onz-border);
+    color: var(--onz-muted2);
     padding: 9px 14px;
     border-radius: 10px;
     font-size: 13px;
@@ -127,43 +284,235 @@
     align-items: center;
     transition: border-color .15s, color .15s;
   }
-  #optToggle:hover { border-color: #444; color: #999; }
+  #optToggle:hover { border-color: var(--onz-border3); color: var(--onz-text); }
 
   /* Advanced body */
-  #optBody { margin-top: 12px; padding: 14px; background: #161616; border: 1px solid #242424; border-radius: 10px; }
+  #optBody { margin-top: 12px; padding: 14px; background: var(--onz-surface2); border: 1px solid var(--onz-border2); border-radius: 10px; }
+  @media (min-width: 700px) {
+    #optBody.opt-wide { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+    #optBody.opt-wide .opt-sections { flex: 1 1 300px; display: flex; flex-direction: column; gap: 12px; min-width: 260px; }
+  }
 
-  canvas { display: block; width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; margin-bottom: 16px; }
+  /* Two-column desktop layout, like the mockup: radar + mic on the left,
+     player list + Advanced settings on the right. On mobile the columns
+     collapse via display:contents so their children become direct flex items
+     of .onz-cols — that's what lets #micBtn reorder to the very bottom, which
+     is where the mockup puts it in its mobile panel but not its desktop one. */
+  .onz-cols { display: flex; flex-direction: column; }
+  .onz-col { display: contents; }
+  #micBtn { order: 99; }
+  /* Stays glued under the mic button once display:contents has flattened the
+     columns - without an explicit order it would float up to the top. */
+  #leaveBtn { order: 100; }
+  @media (min-width: 700px) {
+    .onz-cols { display: grid; grid-template-columns: 260px 1fr; gap: 20px; align-items: start; }
+    .onz-col { display: block; }
+    #micBtn { order: 0; }
+    #leaveBtn { order: 0; }
+  }
 
-  .opt-section { background: #1e1e1e; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  /* Radar proportions come from the approved render: a wide, short letterbox on
+     mobile, near-square once there's a column to fill. The rings stay circular
+     either way (draw() derives R from the shorter side), so the mobile shape
+     simply trades unused width for vertical space. resizeCanvas() in app.js
+     matches the bitmap to these boxes so nothing is drawn upscaled. */
+  canvas { display: block; width: 100%; aspect-ratio: 264 / 130; background: var(--onz-canvas-bg); border: 1px solid var(--onz-border); border-radius: 8px; margin-bottom: 16px; max-width: 100%; }
+  @media (min-width: 700px) { canvas { aspect-ratio: 240 / 220; } }
+
+  .opt-section { background: var(--onz-surface); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
   .opt-section:last-child { margin-bottom: 0; }
-  .opt-title { font-size: 11px; font-weight: 600; color: #555; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 10px; }
+  /* Sentence case with an accent-coloured icon, per the approved render. The
+     uppercase treatment is reserved for the "Players nearby" list heading. */
+  .opt-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--onz-muted3); margin-bottom: 10px; }
+  .opt-title .ti { color: var(--onz-accent); }
 
-  .opt-check { display: flex; align-items: center; gap: 7px; font-size: 13px; color: #bbb; cursor: pointer; margin-bottom: 8px; }
+  /* Pill-style switch: label text on the left, toggle on the right.
+     A real <button role="switch" aria-checked> (not a reskinned checkbox),
+     matching the mockup's onzSwitch DOM shape. */
+  .opt-check { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--onz-text); margin-bottom: 8px; }
   .opt-check:last-child { margin-bottom: 0; }
-  .opt-check input[type=checkbox] { accent-color: #4aa8ff; width: 15px; height: 15px; flex-shrink: 0; }
+  .onz-switch {
+    appearance: none; -webkit-appearance: none; margin: 0; padding: 0; flex-shrink: 0; cursor: pointer;
+    width: 36px; height: 20px; border-radius: 10px; background: var(--onz-border3); border: none;
+    position: relative; transition: background .15s;
+  }
+  .onz-switch .onz-switch-knob {
+    position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--onz-muted2); transition: left .15s, background .15s;
+  }
+  .onz-switch[aria-checked="true"] { background: var(--onz-accent); }
+  .onz-switch[aria-checked="true"] .onz-switch-knob { left: 18px; background: #fff; }
+  .onz-switch:focus-visible { outline: 2px solid var(--onz-accent); outline-offset: 2px; }
 
-  .opt-label { display: block; font-size: 12px; color: #999; margin-bottom: 12px; }
+  .opt-label { display: block; font-size: 12px; color: var(--onz-muted); margin-bottom: 12px; }
   .opt-label:last-child { margin-bottom: 0; }
-  .opt-label input[type=range] { display: block; width: 100%; margin-top: 5px; accent-color: #4aa8ff; }
+  .opt-label input[type=range] { display: block; width: 100%; margin-top: 5px; accent-color: var(--onz-accent); }
   .opt-label input[type=text]  {
     display: block; width: 100%; margin-top: 5px;
-    background: #111; border: 1px solid #333; color: #eee;
+    background: var(--onz-input-bg); border: 1px solid var(--onz-border3); color: var(--onz-text);
     padding: 6px 10px; border-radius: 6px; font-size: 13px;
   }
-  .opt-label input[type=text]:focus { outline: none; border-color: #4aa8ff; }
-  .val { color: #4aa8ff; }
+  .opt-label input[type=text]:focus { outline: none; border-color: var(--onz-accent); }
+  .val { color: var(--onz-accent); }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .chip-row .chip-empty { font-size: 12px; color: var(--onz-faint); font-style: italic; }
+  .chip {
+    background: var(--onz-input-bg); border: 1px solid var(--onz-border3); color: var(--onz-text);
+    padding: 5px 11px; border-radius: 999px; font-size: 12.5px; cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  .chip:hover { border-color: var(--onz-accent); }
+  .chip.selected { background: var(--onz-accent-dim); border-color: var(--onz-accent-dim); color: #fff; }
+  /* Static preview of the calibration range - decorative only, the 3 sliders
+     below are what actually drive the audio. */
+  .calib-bar {
+    height: 6px; border-radius: 3px; position: relative; margin: 10px 2px 4px;
+    background: linear-gradient(90deg, var(--onz-teal) 0 20%, var(--onz-border) 20% 75%, var(--onz-canvas-bg) 75% 100%);
+  }
+  .calib-marker { position: absolute; top: -4px; width: 3px; height: 14px; background: var(--onz-text); border-radius: 2px; }
+  .calib-labels { display: flex; justify-content: space-between; font-size: 9px; color: var(--onz-muted); }
+  /* Understated on purpose: it is a way out of a bad state, not something to
+     invite anyone to press. Warning-coloured because its presence is itself
+     the signal that the sound range is not the one shipped. */
+  .calib-reset {
+    display: block; width: 100%; margin-top: 8px; padding: 5px 8px;
+    font: inherit; font-size: 11px; color: var(--onz-warn); cursor: pointer;
+    background: transparent; border: 1px solid var(--onz-border); border-radius: 6px;
+  }
+  .calib-reset:hover { border-color: var(--onz-warn); }
 
   table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
-  td, th { padding: 3px 6px; border-bottom: 1px solid #222; text-align: left; color: #888; }
-  td:first-child { color: #ccc; }
-  #meReadout { font-size: 11px; color: #444; margin-bottom: 4px; }
-  #eventLog  { font-size: 11px; color: #444; max-height: 72px; overflow-y: auto; margin-top: 8px; }
+  td, th { padding: 3px 6px; border-bottom: 1px solid var(--onz-border2); text-align: left; color: var(--onz-muted); }
+  td:first-child { color: var(--onz-text); }
+  #meReadout { font-size: 11px; color: var(--onz-faint); margin-bottom: 4px; }
+  #eventLog  { font-size: 11px; color: var(--onz-faint); max-height: 72px; overflow-y: auto; margin-top: 8px; }
+
+  /* flex-basis:100% drops the toast onto its own full-width row under the logo,
+     which is the mobile arrangement in the approved render. */
+  .onz-toast {
+    display: none; align-items: center; gap: 6px; flex-basis: 100%;
+    background: var(--onz-surface); border: 1px solid var(--onz-border); border-radius: 8px;
+    padding: 5px 10px; font-size: 11.5px; color: var(--onz-muted); white-space: nowrap;
+    opacity: .95; transition: opacity .6s ease;
+  }
+  .onz-toast.show { display: flex; }
+  .onz-toast .ti { color: var(--onz-teal); }
+  /* Desktop header, per the render: stats sit next to the logo instead of being
+     pushed right, and the toast rejoins that row hard against the far edge. */
+  @media (min-width: 700px) {
+    .room-stats { margin-left: 0; }
+    .onz-toast { flex-basis: auto; margin-left: auto; }
+  }
+
+  /* Self-hosted Tabler icon sprite (inlined <symbol> defs in <body>, no CDN) */
+  .ti { width: 1em; height: 1em; flex: none; vertical-align: -0.15em; stroke: currentColor; }
+  /* Chevron points down when collapsed, flips up when open, per the render. */
+  #optArrow { transition: transform .15s; transform: rotate(0deg); }
+  #optToggle[aria-expanded="true"] #optArrow { transform: rotate(180deg); }
 </style>
 </head>
 <body>
+<!-- Self-hosted Tabler icons (MIT, tabler.io/icons) - inlined as an SVG sprite
+     so there is no external CDN request; referenced elsewhere via
+     <svg class="ti"><use href="#ti-NAME"/></svg>. Player avatars stay emoji,
+     this sprite only covers UI chrome icons. -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <symbol id="ti-microphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M9 5a3 3 0 0 1 3 -3a3 3 0 0 1 3 3v5a3 3 0 0 1 -3 3a3 3 0 0 1 -3 -3l0 -5" />
+    <path d="M5 10a7 7 0 0 0 14 0" />
+    <path d="M8 21l8 0" />
+    <path d="M12 17l0 4" />
+  </symbol>
+  <symbol id="ti-users" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" />
+    <path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    <path d="M21 21v-2a4 4 0 0 0 -3 -3.85" />
+  </symbol>
+  <symbol id="ti-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" />
+    <path d="M12 7v5l3 3" />
+  </symbol>
+  <symbol id="ti-arrow-bar-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M20 12l-10 0" />
+    <path d="M20 12l-4 4" />
+    <path d="M20 12l-4 -4" />
+    <path d="M4 4l0 16" />
+  </symbol>
+  <symbol id="ti-adjustments" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M4 10a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+    <path d="M6 4v4" />
+    <path d="M6 12v8" />
+    <path d="M10 16a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+    <path d="M12 4v10" />
+    <path d="M12 18v2" />
+    <path d="M16 7a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+    <path d="M18 4v1" />
+    <path d="M18 9v11" />
+  </symbol>
+  <symbol id="ti-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M6 9l6 6l6 -6" />
+  </symbol>
+  <symbol id="ti-focus-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M11.5 12a.5 .5 0 1 0 1 0a.5 .5 0 1 0 -1 0" fill="currentColor" />
+    <path d="M5 12a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" />
+    <path d="M12 3l0 2" />
+    <path d="M3 12l2 0" />
+    <path d="M12 19l0 2" />
+    <path d="M19 12l2 0" />
+  </symbol>
+  <symbol id="ti-map-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M9 11a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" />
+    <path d="M17.657 16.657l-4.243 4.243a2 2 0 0 1 -2.827 0l-4.244 -4.243a8 8 0 1 1 11.314 0" />
+  </symbol>
+  <symbol id="ti-user-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0 -8 0" />
+    <path d="M6 21v-2a4 4 0 0 1 4 -4h1.5" />
+    <path d="M15 18a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" />
+    <path d="M20.2 20.2l1.8 1.8" />
+  </symbol>
+  <symbol id="ti-ruler-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M17 3l4 4l-14 14l-4 -4l14 -14" />
+    <path d="M16 7l-1.5 -1.5" />
+    <path d="M13 10l-1.5 -1.5" />
+    <path d="M10 13l-1.5 -1.5" />
+    <path d="M7 16l-1.5 -1.5" />
+  </symbol>
+  <symbol id="ti-accessible" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+    <path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" />
+    <path d="M10 16.5l2 -3l2 3m-2 -3v-2l3 -1m-6 0l3 1" />
+    <path d="M11.5 7.5a.5 .5 0 1 0 1 0a.5 .5 0 1 0 -1 0" fill="currentColor" />
+  </symbol>
+</svg>
+<div id="onzRoot">
 
-  <p class="logo">🎤 OnZVoIP</p>
-  <p class="sub">Proximity voice chat for Trackmania</p>
+  <!-- The tagline explains the page to someone who opened it by hand; the render
+       is the connected state, where it's redundant, so it goes away with the join
+       row once we're in a room. The theme control now lives in Advanced settings
+       > Accessibility, next to the other appearance preferences. -->
+  <div class="topbar">
+    <div class="logo-row">
+      <p class="logo"><svg class="ti"><use href="#ti-microphone"></use></svg> OnZVoIP</p>
+      <span id="roomStats" class="room-stats" style="display:none">
+        <span><svg class="ti"><use href="#ti-users"></use></svg> <span id="peerCount">0</span></span>
+        <span><svg class="ti"><use href="#ti-clock"></use></svg> <span id="roomTime">00:00</span></span>
+      </span>
+      <div id="toast" class="onz-toast" role="status" aria-live="polite">
+        <svg class="ti"><use href="#ti-arrow-bar-right"></use></svg><span id="toastText"></span>
+      </div>
+    </div>
+    <p id="tagline" class="sub">Proximity voice chat for Trackmania</p>
+  </div>
 
   <!-- Step 1: join (hidden when ?t= nonce is present) -->
   <div id="joinSection" class="join-row">
@@ -175,8 +524,28 @@
     This link has expired — click <strong>Copy URL</strong> again in the game
   </div>
 
-  <!-- Step 2: mic -->
+  <div class="onz-cols">
+  <div class="onz-col">
+
+  <!-- Radar: always visible (moved out of Advanced settings so it matches
+       the mockup's layout, where it's a first-level element, not a panel
+       you have to open). -->
+  <canvas id="canvas" width="300" height="300"></canvas>
+
+  <div class="mic-row">
+    <span class="mic-row-label">your mic</span>
+    <div id="micMeter" class="mic-meter" aria-hidden="true"></div>
+  </div>
   <button id="micBtn" class="idle" disabled>🎤 Enable microphone</button>
+  <!-- Not in the approved render: added after the "Quitter + Revenir" decision
+       (see the spec's Leaving the voice chat section). Before it, the only way
+       out was closing the tab, and there was no way back in without going back
+       to the game to click Copy URL. Hidden until a room is actually joined, so
+       the default screen still matches the render exactly. -->
+  <button type="button" id="leaveBtn" class="leave-btn" style="display:none">Leave voice chat</button>
+
+  </div>
+  <div class="onz-col">
 
   <!-- Players nearby -->
   <div id="serverName" class="server-name" style="display:none"></div>
@@ -186,63 +555,134 @@
   </ul>
 
   <!-- Advanced settings (collapsed) -->
-  <button id="optToggle">
-    <span>⚙ Advanced settings</span>
-    <span id="optArrow">▸</span>
+  <button id="optToggle" aria-expanded="false">
+    <span><svg class="ti"><use href="#ti-adjustments"></use></svg> Advanced settings</span>
+    <svg class="ti" id="optArrow"><use href="#ti-chevron-down"></use></svg>
   </button>
   <div id="optBody" style="display:none">
 
-    <canvas id="canvas" width="300" height="300"></canvas>
+    <div class="opt-sections">
 
+    <!-- Not in the approved render: added with the country flags (see the spec's
+         "My avatar" section). It sits in Advanced settings rather than on the
+         main screen precisely so the default screen still matches the render.
+         The player list only shows *other* players, so this preview is the one
+         place someone can see their own avatar at all. -->
     <div class="opt-section">
-      <div class="opt-title">Position source</div>
-      <label class="opt-check">
-        <input type="checkbox" id="followGame" checked />
-        Use in-game position (requires your TM login as username above)
-      </label>
+      <div class="opt-title"><svg class="ti"><use href="#ti-users"></use></svg> My avatar</div>
+      <div class="opt-check">
+        <span class="avatar-current">
+          <span class="pl-avatar" id="avatarPreview"></span>
+          <span class="avatar-name" id="avatarPreviewName"></span>
+        </span>
+        <button type="button" id="avatarToggle" class="avatar-open" aria-expanded="false">Change</button>
+      </div>
+      <div id="avatarPicker" style="display:none">
+        <input type="text" id="avatarSearch" placeholder="Search a country, or type a code (fr, de…)" />
+        <div class="avatar-grid" id="avatarFlagGrid"></div>
+        <div class="avatar-sub">Or a character — used automatically when no country is set</div>
+        <div class="avatar-grid" id="avatarEmojiGrid"></div>
+      </div>
     </div>
 
     <div class="opt-section">
-      <div class="opt-title">Follow another player — for testing without a 2nd account</div>
-      <label class="opt-check">
-        <input type="checkbox" id="relativeMode" />
-        Enable follow mode
-      </label>
-      <label class="opt-label">
+      <div class="opt-title"><svg class="ti"><use href="#ti-map-pin"></use></svg> Position source</div>
+      <div class="opt-check">
+        <span>Follow game position</span>
+        <button type="button" id="followGame" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
+      </div>
+    </div>
+
+    <!-- Follow another player: sits second, like the mockup. The switch and the
+         player chips are user-facing; only the three offset sliders below are a
+         dev tool, so they're gated on ?debug=1 with the Debug panel. -->
+    <div class="opt-section">
+      <div class="opt-title"><svg class="ti"><use href="#ti-user-search"></use></svg> Follow another player</div>
+      <div class="opt-check">
+        <span>Follow instead of free position</span>
+        <button type="button" id="relativeMode" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+      </div>
+      <div class="opt-label">
         Player to follow
-        <input type="text" id="relativeTarget" placeholder="their TM login" />
-      </label>
-      <label class="opt-label">
-        Offset range ± <span class="val" id="relativeRangeVal"></span> m
-        <input type="range" id="relativeRange" min="10" max="1000" step="10" value="200" />
-      </label>
-      <label class="opt-label">
-        X offset (side / stereo pan): <span class="val" id="relativeOffsetXVal"></span> m
-        <input type="range" id="relativeOffsetX" min="-200" max="200" step="5" value="100" />
-      </label>
-      <label class="opt-label">
-        Depth offset (front / back): <span class="val" id="relativeOffsetYVal"></span> m
-        <input type="range" id="relativeOffsetY" min="-200" max="200" step="5" value="0" />
-      </label>
+        <div id="relativeTargetChips" class="chip-row"></div>
+        <input type="hidden" id="relativeTarget" />
+      </div>
+      <div id="followOffsets" class="debug-only">
+        <label class="opt-label">
+          Offset range ± <span class="val" id="relativeRangeVal"></span> m
+          <input type="range" id="relativeRange" min="10" max="1000" step="10" value="200" />
+        </label>
+        <label class="opt-label">
+          X offset (side / stereo pan): <span class="val" id="relativeOffsetXVal"></span> m
+          <input type="range" id="relativeOffsetX" min="-200" max="200" step="5" value="100" />
+        </label>
+        <label class="opt-label">
+          Depth offset (front / back): <span class="val" id="relativeOffsetYVal"></span> m
+          <input type="range" id="relativeOffsetY" min="-200" max="200" step="5" value="0" />
+        </label>
+      </div>
     </div>
 
     <div class="opt-section">
-      <div class="opt-title">Distance calibration</div>
-      <label class="opt-label">
-        Full volume within <span class="val" id="minDistVal"></span> m
-        <input type="range" id="minDist" min="0" max="500" step="5" />
-      </label>
-      <label class="opt-label">
-        Silence beyond <span class="val" id="maxDistVal"></span> m
-        <input type="range" id="maxDist" min="20" max="2000" step="10" />
-      </label>
-      <label class="opt-label">
-        Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
-        <input type="range" id="panRange" min="10" max="1000" step="10" />
-      </label>
+      <div class="opt-title"><svg class="ti"><use href="#ti-ruler-2"></use></svg> Distance calibration</div>
+      <div class="calib-bar">
+        <div class="calib-marker" style="left:20%"></div>
+        <div class="calib-marker" style="left:75%"></div>
+      </div>
+      <div class="calib-labels">
+        <span>full · <span id="calibMinLabel"></span>m</span>
+        <span>fading</span>
+        <span>silent · <span id="calibMaxLabel"></span>m</span>
+      </div>
+      <!-- Hidden unless the stored calibration actually differs from the shipped
+           defaults. A player who never touched it sees the screen the render
+           shows; one carrying a stale value from an old session gets both the
+           warning that something is off and the way out - the sliders that
+           produced it are behind ?debug=1 and can no longer undo it. -->
+      <button type="button" id="calibReset" class="calib-reset" style="display:none">
+        Custom range in use — reset to default
+      </button>
+      <!-- The bar above is what players see; the sliders are a tuning tool and
+           only appear with ?debug=1. Their values still drive the bar's labels. -->
+      <div class="debug-only">
+        <label class="opt-label">
+          Full volume within <span class="val" id="minDistVal"></span> m
+          <input type="range" id="minDist" min="0" max="100" step="5" />
+        </label>
+        <label class="opt-label">
+          Silence beyond <span class="val" id="maxDistVal"></span> m
+          <input type="range" id="maxDist" min="20" max="500" step="10" />
+        </label>
+        <label class="opt-label">
+          Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
+          <input type="range" id="panRange" min="5" max="100" step="5" />
+        </label>
+      </div>
     </div>
 
     <div class="opt-section">
+      <div class="opt-title"><svg class="ti"><use href="#ti-accessible"></use></svg> Accessibility</div>
+      <div>
+        <div class="opt-check">
+          <span>Dark theme</span>
+          <button type="button" id="themeToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
+        </div>
+        <div class="opt-check">
+          <span>Reduce motion</span>
+          <button type="button" id="reduceMotionToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+        </div>
+        <div class="opt-check">
+          <span>High-contrast text</span>
+          <button type="button" id="highContrastToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+        </div>
+        <div class="opt-check">
+          <span>Show emoji avatars on radar</span>
+          <button type="button" id="showEmojiToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-section debug-only">
       <div class="opt-title">Debug</div>
       <div id="debugRoomInfo" class="opt-label">Current room: <span class="val" id="debugRoomVal">—</span></div>
       <div id="meReadout"></div>
@@ -253,29 +693,40 @@
       <div id="eventLog"></div>
     </div>
 
+    </div>
+
   </div>
 
-  <!-- Hide join form immediately if ?t= nonce is present, before app.js loads -->
-  <script>
-    if (new URLSearchParams(location.search).get('t')) {
-      document.getElementById('joinSection').style.display = 'none';
-      document.getElementById('status').textContent = 'Connecting…';
-    }
-  </script>
+  </div>
+  </div>
 
-  <script>
-    const optToggle = document.getElementById('optToggle');
-    const optBody   = document.getElementById('optBody');
-    const optArrow  = document.getElementById('optArrow');
-    optToggle.addEventListener('click', () => {
-      const open = optBody.style.display === 'none';
-      optBody.style.display = open ? '' : 'none';
-      optArrow.textContent  = open ? '▾' : '▸';
-    });
-  </script>
-  <script src="https://unpkg.com/livekit-client@2.21.0/dist/livekit-client.umd.js"
-          integrity="sha384-gDU80RlmAnHKgj4uOWIhnTIb6vAUef/+NqGPuIEfbEQYGfqzyeJDwC2XElesqctC"
-          crossorigin="anonymous"></script>
-  <script type="module" src="app.js"></script>
+</div>
+
+<!-- Hide join form immediately if ?t= nonce is present, before app.js loads -->
+<script>
+  const onzParams = new URLSearchParams(location.search);
+  if (onzParams.get('t')) {
+    document.getElementById('joinSection').style.display = 'none';
+    document.getElementById('tagline').style.display = 'none';
+    document.getElementById('status').textContent = 'Connecting…';
+  }
+  // ?debug=1 reveals the Debug panel and the follow-mode offset sliders.
+  if (onzParams.get('debug') === '1') document.documentElement.classList.add('onz-debug');
+</script>
+
+<script>
+  const optToggle = document.getElementById('optToggle');
+  const optBody   = document.getElementById('optBody');
+  optToggle.addEventListener('click', () => {
+    const open = optBody.style.display === 'none';
+    optBody.style.display = open ? '' : 'none';
+    optBody.classList.toggle('opt-wide', open);
+    optToggle.setAttribute('aria-expanded', String(open));
+  });
+</script>
+<script src="https://unpkg.com/livekit-client@2.21.0/dist/livekit-client.umd.js"
+        integrity="sha384-gDU80RlmAnHKgj4uOWIhnTIb6vAUef/+NqGPuIEfbEQYGfqzyeJDwC2XElesqctC"
+        crossorigin="anonymous"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

@@ -253,7 +253,18 @@ export function createRelay({
         ? (roomNameFor(entry.server, entry.serverName) ?? roomName)
         : roomName;
       const at = new AccessToken(apiKey, apiSecret, { identity: entry.login });
-      at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false });
+      // canPublishData is what lets a browser announce its own avatar to the
+      // room (topic 'avatar'). It used to be false because positions came from
+      // the relay alone and nothing in a browser had anything to say.
+      //
+      // Granting it means a participant can now put ANY packet on the room's
+      // data channel, including one claiming to be a position update - and
+      // positions drive the audio gain, so a forged one is a way to be heard
+      // from across the map. What keeps that shut is on the receiving side:
+      // the relay speaks through the server API, so its packets arrive with no
+      // participant attached, and the client drops any 'position' packet that
+      // HAS one. See the DataReceived handler in public/app.js.
+      at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: true });
       const token = await at.toJwt();
       // Return login + human-readable server name so the browser can skip the
       // identity form and show which server you're on.
@@ -283,7 +294,9 @@ export function createRelay({
     // token for an arbitrary community's room.
     const room = roomName;
     const at = new AccessToken(apiKey, apiSecret, { identity });
-    at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: false });
+    // Same grant as the nonce path above, for the same reason (avatars), with
+    // the same receiving-side guard. See the comment there.
+    at.addGrant({ roomJoin: true, room, canPublish: true, canSubscribe: true, canPublishData: true });
     const token = await at.toJwt();
     res.json({ token, wsUrl: liveKitPublicWsUrl, room });
   });
