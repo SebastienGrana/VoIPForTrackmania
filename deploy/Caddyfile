@@ -1,7 +1,20 @@
 your.domain.example {
     # LiveKit WebSocket (signaling WebRTC): wss://…/livekit/* → localhost:7880
     handle_path /livekit* {
-        reverse_proxy localhost:7880
+        # Drop any Authorization header before it reaches LiveKit. The browser
+        # never sends a legitimate one here — its token travels in the
+        # access_token query parameter — but /admin is Basic-auth'd on this
+        # same origin, and HTTP scopes those credentials to the whole site
+        # (RFC 7617: a request to /admin protects everything from / down).
+        # So a browser that has opened /admin replays "Authorization: Basic …"
+        # onto the LiveKit socket, and LiveKit rejects a non-Bearer header
+        # before it ever looks at the valid token beside it: "invalid
+        # authorization header. Must start with Bearer". Net effect without
+        # this line: opening the admin page silently breaks voice chat in
+        # that browser, for the one person most likely to have both open.
+        reverse_proxy localhost:7880 {
+            header_up -Authorization
+        }
     }
     # Node.js relay (client page + token + ingest WS)
     handle {
