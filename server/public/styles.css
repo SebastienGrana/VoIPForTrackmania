@@ -1,0 +1,441 @@
+/* OnZVoIP client styles.
+   Lived inline in index.html until the file passed 850 lines and the markup
+   was no longer findable in it. Still render-blocking in <head>, so the
+   theme tokens land before first paint exactly as they did inline. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Theme tokens live on <html> (not #onzRoot) so body and everything else
+   actually inherits them — custom properties only cascade to descendants,
+   and body is an ancestor of #onzRoot, not a descendant. */
+html[data-onz-theme="dark"] {
+  color-scheme: dark;
+  --onz-bg:#111; --onz-surface:#1e1e1e; --onz-surface2:#161616;
+  --onz-border:#2a2a2a; --onz-border2:#242424; --onz-border3:#333;
+  --onz-text:#eee; --onz-muted:#888; --onz-muted2:#666; --onz-muted3:#555; --onz-faint:#444;
+  --onz-accent:#4aa8ff; --onz-accent-dim:#1d6fbc; --onz-accent-hover:#2585d4;
+  --onz-teal:#3ecf8e; --onz-teal-dim:#4a9; --onz-warn:#c84; --onz-danger:#a44;
+  --onz-canvas-bg:#1a1a1a; --onz-input-bg:#111; --onz-canvas-grid:#2a2a2a; --onz-sweep:rgba(74,168,255,0.18);
+  --onz-mic-idle-bg:#1e1e1e; --onz-mic-idle-text:#555; --onz-mic-idle-border:#333;
+  --onz-mic-muted-bg:#1e1e1e; --onz-mic-muted-border:#3a3a3a;
+  --onz-mic-live-bg:#1a4a1a; --onz-mic-live-text:#4c8; --onz-mic-live-border:#3a8a3a; --onz-mic-live-hover:#1f5a1f;
+  --onz-expired-bg:#2a1e00; --onz-expired-border:#5a3e00;
+  --onz-tooltip-bg:#000; --onz-tooltip-text:#fff;
+  --onz-row-border:#1e1e1e;
+}
+html[data-onz-theme="light"] {
+  color-scheme: light;
+  --onz-bg:#f3f4f6; --onz-surface:#ffffff; --onz-surface2:#f7f8f9;
+  --onz-border:#dde0e4; --onz-border2:#e7e9eb; --onz-border3:#c9cdd2;
+  --onz-text:#1a1c1f; --onz-muted:#5c6066; --onz-muted2:#787d84; --onz-muted3:#8b8f95; --onz-faint:#a1a5ab;
+  --onz-accent:#1d6fbc; --onz-accent-dim:#1d6fbc; --onz-accent-hover:#2585d4;
+  --onz-teal:#0f9d63; --onz-teal-dim:#0f9d63; --onz-warn:#a8650a; --onz-danger:#c23a3a;
+  --onz-canvas-bg:#eceef1; --onz-input-bg:#ffffff; --onz-canvas-grid:#d5d8dc; --onz-sweep:rgba(29,111,188,0.14);
+  --onz-mic-idle-bg:#f0f1f3; --onz-mic-idle-text:#9a9ea4; --onz-mic-idle-border:#d8dbdf;
+  --onz-mic-muted-bg:#ffffff; --onz-mic-muted-border:#cdd1d6;
+  --onz-mic-live-bg:#e3f7e9; --onz-mic-live-text:#0f8a4c; --onz-mic-live-border:#8fd6ab; --onz-mic-live-hover:#d3f1dd;
+  --onz-expired-bg:#fdf1d9; --onz-expired-border:#eecb85;
+  --onz-tooltip-bg:#1a1c1f; --onz-tooltip-text:#fff;
+  --onz-row-border:#eef0f2;
+}
+html[data-onz-contrast="high"] {
+  --onz-muted: var(--onz-text); --onz-muted2: var(--onz-text); --onz-muted3: var(--onz-text); --onz-faint: var(--onz-text);
+  --onz-border: var(--onz-border3);
+}
+html[data-onz-motion="reduced"] * { animation: none !important; }
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--onz-bg);
+  color: var(--onz-text);
+  margin: 0;
+  padding: 0;
+}
+#onzRoot { padding: 24px 16px 40px; max-width: 400px; margin: 0 auto; }
+@media (min-width: 700px) { #onzRoot { max-width: 720px; } }
+/* Écart assumé avec la maquette (demande utilisateur 2026-08-10, « élargir ET
+   grossir ») : le rendu approuvé dessine une colonne de 720px, ce qui est
+   minuscule sur un écran de bureau moderne. Au-delà de 1100px de fenêtre on
+   élargit la colonne ET on agrandit tout de 25 %.
+   zoom plutôt qu'un jeu de font-size : les 36 tailles de police du fichier
+   sont en px, et les marges/icônes/pastilles aussi - ne grossir que le texte
+   l'aurait tassé dans des boîtes restées petites. zoom met tout à l'échelle
+   d'un bloc, y compris le canvas (resizeCanvas() suit le nouveau rectangle).
+   La colonne du radar passe de 260 à 300 pour qu'il grandisse lui aussi.
+   Les media queries se mesurent sur la fenêtre, pas sur l'élément zoomé :
+   900 x 1.25 = 1125px réellement occupés. */
+@media (min-width: 1100px) {
+  #onzRoot { zoom: 1.25; max-width: 900px; }
+  .onz-cols { grid-template-columns: 300px 1fr; }
+}
+
+/* Header: logo, room stats and the toast, and nothing else - the approved
+   render shows no other chrome in the card. */
+.topbar { margin-bottom: 16px; }
+.logo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* Understated wordmark with only the mic in accent, per the render - the
+   accent is reserved for things that carry state (the mic, the switches). */
+.logo { font-size: 18px; font-weight: 600; color: var(--onz-text); margin: 0; }
+.logo .ti { color: var(--onz-accent); }
+.sub  { font-size: 13px; color: var(--onz-muted3); margin: 4px 0 0; }
+/* Pushed hard right on mobile, tucked in beside the logo from 700px up
+   (see the desktop override next to the toast rules below). */
+.room-stats { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--onz-muted); margin-left: auto; }
+.room-stats span { display: inline-flex; align-items: center; gap: 3px; }
+
+/* Join row */
+.join-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.join-row input {
+  flex: 1;
+  background: var(--onz-input-bg);
+  border: 1px solid var(--onz-border3);
+  color: var(--onz-text);
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+.join-row input:focus { outline: none; border-color: var(--onz-accent); }
+
+#joinBtn {
+  background: var(--onz-accent-dim);
+  border: none;
+  color: #fff;
+  padding: 11px 22px;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s;
+}
+#joinBtn:hover:not(:disabled) { background: var(--onz-accent-hover); }
+#joinBtn:disabled { background: var(--onz-border); color: var(--onz-muted3); cursor: not-allowed; }
+
+#status { font-size: 13px; color: var(--onz-muted2); margin-bottom: 8px; min-height: 18px; }
+#status.ok { color: var(--onz-teal-dim); }
+/* Failure states are the one moment a player is stuck with nothing to read,
+   so they get the warning colour and always carry a "do this next" sentence. */
+#status.err { color: var(--onz-warn); }
+#status.err strong { font-weight: 600; }
+
+/* Not in the approved render — it only ever draws the connected state. Built
+   out of the tokens the rest of the page already uses (card background,
+   card border, muted body text) so it reads as part of the same interface
+   rather than as an error. Deliberately not warn-coloured: nothing has gone
+   wrong, the visitor is simply at the wrong door. */
+.nogame {
+  padding: 20px;
+  background: var(--onz-surface);
+  border: 1px solid var(--onz-border);
+  border-radius: 12px;
+  margin-top: 8px;
+}
+.debug-room-row { display: flex; gap: 8px; margin: 8px 0 4px; }
+.debug-room-row input {
+  flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px;
+  background: var(--onz-input-bg); color: var(--onz-text);
+  border: 1px solid var(--onz-border3); border-radius: 6px;
+}
+.debug-room-row button {
+  padding: 6px 12px; font-size: 12px; cursor: pointer;
+  background: var(--onz-accent); color: #fff;
+  border: none; border-radius: 6px;
+}
+.debug-room-msg { font-size: 11px; color: var(--onz-warn); min-height: 14px; }
+
+.nogame-title { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+.nogame-body { font-size: 13px; line-height: 1.6; color: var(--onz-muted); margin: 0; }
+
+.expired-msg {
+  font-size: 13px;
+  color: var(--onz-warn);
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  background: var(--onz-expired-bg);
+  border: 1px solid var(--onz-expired-border);
+  border-radius: 8px;
+}
+.server-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--onz-accent);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Mic level meter: its own bordered "your mic" row, always visible (the
+   mockup shows it whether or not the mic is live, so the bars idle flat
+   instead of the row disappearing). */
+.mic-row {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--onz-surface); border: 1px solid var(--onz-border);
+  border-radius: 10px; padding: 8px 10px; margin-bottom: 12px;
+}
+.mic-row-label { font-size: 10px; color: var(--onz-muted); white-space: nowrap; }
+#micBtn {
+  display: block;
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  border: none;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .2s, color .2s;
+}
+#micBtn.idle    { background: var(--onz-mic-idle-bg); color: var(--onz-mic-idle-text); border: 2px dashed var(--onz-mic-idle-border); cursor: not-allowed; }
+#micBtn.muted   { background: var(--onz-mic-muted-bg); color: var(--onz-text); border: 2px solid var(--onz-mic-muted-border); }
+#micBtn.muted:hover { border-color: var(--onz-teal-dim); }
+#micBtn.live    { background: var(--onz-mic-live-bg); color: var(--onz-mic-live-text); border: 2px solid var(--onz-mic-live-border); }
+#micBtn.live:hover  { background: var(--onz-mic-live-hover); }
+
+/* Understated on purpose: leaving is a legitimate move but never the one to
+   invite, so it must stay findable without competing with the microphone
+   button right above it. */
+.leave-btn {
+  display: block; width: 100%; margin: -4px 0 12px; padding: 7px 10px;
+  font: inherit; font-size: 11px; color: var(--onz-muted); cursor: pointer;
+  background: transparent; border: 1px solid var(--onz-border); border-radius: 8px;
+}
+.leave-btn:hover { color: var(--onz-text); border-color: var(--onz-border3); }
+/* Coming back is the only thing someone who left actually needs, so the
+   return state is the one that gets the accent colour. */
+.leave-btn.rejoin { color: var(--onz-teal-dim); border-color: var(--onz-teal-dim); }
+
+.mic-meter { flex: 1; display: flex; align-items: flex-end; gap: 2px; height: 12px; }
+.mic-meter .mic-bar { flex: 1; background: var(--onz-border3); border-radius: 1px; opacity: .35; transition: opacity .1s, background .1s; }
+.mic-meter .mic-bar.on { background: var(--onz-teal); opacity: 1; }
+
+/* Players list */
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--onz-muted3);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 10px;
+}
+#playerList { list-style: none; margin: 0 0 32px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.pl-empty { font-size: 13px; color: var(--onz-faint); font-style: italic; padding: 10px 2px; }
+/* Dev-only surfaces (Debug panel, follow-mode offset sliders): hidden unless
+   the page is opened with ?debug=1. They're read-only diagnostics and test
+   tools, not something a player should meet. */
+.debug-only { display: none; }
+html.onz-debug .debug-only { display: block; }
+
+.pl-row { display: flex; flex-direction: column; }
+.pl-row.out { opacity: .55; }
+.pl-card {
+  background: var(--onz-surface); border: 1px solid var(--onz-row-border); border-radius: 8px;
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.pl-top { display: flex; align-items: center; gap: 9px; }
+.pl-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--onz-muted3); }
+.pl-avatar {
+  flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+  background: var(--onz-surface2); transition: background .2s;
+}
+/* Flags are images, not glyphs: Windows ships no drawing for 🇫🇷 and renders
+   the letters "FR" instead, which is why this exists at all. 4:3 is the
+   aspect the SVGs are authored at; the hairline edge keeps the mostly-white
+   ones (Japan, Poland) from reading as a hole in the circle. */
+.flag-img { width: 20px; height: 15px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.35); object-fit: cover; }
+
+/* Avatar picker, in Advanced settings. Grid of flags first, palette after. */
+.avatar-open { font-size: 11px; padding: 4px 10px; border-radius: 6px; background: transparent; color: var(--onz-muted); border: 1px solid var(--onz-border); cursor: pointer; }
+.avatar-open:hover { color: var(--onz-text); border-color: var(--onz-border3); }
+.avatar-current { display: flex; align-items: center; gap: 8px; }
+.avatar-name { font-size: 12px; color: var(--onz-muted); }
+#avatarPicker { margin-top: 10px; }
+#avatarSearch {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 6px 8px;
+  color: var(--onz-text); background: var(--onz-surface2); border: 1px solid var(--onz-border); border-radius: 6px;
+}
+#avatarSearch:focus { outline: none; border-color: var(--onz-accent); }
+/* Capped and scrollable on purpose: 270 flags unrolled would push every other
+   setting off the screen. */
+.avatar-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr));
+  gap: 4px; margin-top: 8px; max-height: 168px; overflow-y: auto; padding: 2px;
+  /* Load-bearing, not decoration: revealVisibleFlags() in app.js compares each
+     cell's offsetTop against this box's scrollTop, and offsetTop is measured
+     from the nearest *positioned* ancestor. Without this it would be measured
+     from the page, every cell would test as out of view, and the grid would
+     stay blank. */
+  position: relative;
+}
+.avatar-cell {
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  height: 30px; font-size: 16px; line-height: 1; padding: 0;
+  background: var(--onz-surface2); border: 1px solid transparent; border-radius: 6px;
+}
+.avatar-cell:hover { border-color: var(--onz-border3); }
+.avatar-cell.selected { border-color: var(--onz-accent); background: color-mix(in srgb, var(--onz-accent) 20%, transparent); }
+.avatar-cell img { width: 22px; height: 16.5px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+.avatar-sub { font-size: 11px; color: var(--onz-muted3); margin-top: 12px; }
+.avatar-empty { font-size: 11px; color: var(--onz-muted3); padding: 6px 2px; }
+.pl-name  { flex: 1; font-size: 14px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-badge {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 10px; color: var(--onz-teal); margin-bottom: 6px;
+}
+.pl-bottom { display: flex; flex-direction: column; gap: 6px; }
+.pl-label { font-size: 12px; color: var(--onz-muted); transition: color .2s; }
+.pl-zonebar { position: relative; height: 5px; border-radius: 3px; background: var(--onz-border); overflow: visible; }
+.pl-marker {
+  position: absolute; top: -2px; width: 3px; height: 9px; border-radius: 1px;
+  background: var(--onz-text); transform: translateX(-50%);
+}
+.onzPulse { animation: onzPulseAnim 1.4s ease-out infinite; border-radius: 50%; }
+@keyframes onzPulseAnim {
+  0% { box-shadow: 0 0 0 0 rgba(62,207,142,.55); }
+  100% { box-shadow: 0 0 0 8px rgba(62,207,142,0); }
+}
+
+/* Advanced toggle */
+#optToggle {
+  width: 100%;
+  background: none;
+  border: 1px solid var(--onz-border);
+  color: var(--onz-muted2);
+  padding: 9px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: border-color .15s, color .15s;
+}
+#optToggle:hover { border-color: var(--onz-border3); color: var(--onz-text); }
+
+/* Advanced body */
+#optBody { margin-top: 12px; padding: 14px; background: var(--onz-surface2); border: 1px solid var(--onz-border2); border-radius: 10px; }
+@media (min-width: 700px) {
+  #optBody.opt-wide { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  #optBody.opt-wide .opt-sections { flex: 1 1 300px; display: flex; flex-direction: column; gap: 12px; min-width: 260px; }
+}
+
+/* Two-column desktop layout, like the mockup: radar + mic on the left,
+   player list + Advanced settings on the right. On mobile the columns
+   collapse via display:contents so their children become direct flex items
+   of .onz-cols — that's what lets #micBtn reorder to the very bottom, which
+   is where the mockup puts it in its mobile panel but not its desktop one. */
+.onz-cols { display: flex; flex-direction: column; }
+.onz-col { display: contents; }
+#micBtn { order: 99; }
+/* Stays glued under the mic button once display:contents has flattened the
+   columns - without an explicit order it would float up to the top. */
+#leaveBtn { order: 100; }
+@media (min-width: 700px) {
+  .onz-cols { display: grid; grid-template-columns: 260px 1fr; gap: 20px; align-items: start; }
+  .onz-col { display: block; }
+  #micBtn { order: 0; }
+  #leaveBtn { order: 0; }
+}
+
+/* Radar proportions come from the approved render: a wide, short letterbox on
+   mobile, near-square once there's a column to fill. The rings stay circular
+   either way (draw() derives R from the shorter side), so the mobile shape
+   simply trades unused width for vertical space. resizeCanvas() in app.js
+   matches the bitmap to these boxes so nothing is drawn upscaled. */
+canvas { display: block; width: 100%; aspect-ratio: 264 / 130; background: var(--onz-canvas-bg); border: 1px solid var(--onz-border); border-radius: 8px; margin-bottom: 16px; max-width: 100%; }
+@media (min-width: 700px) { canvas { aspect-ratio: 240 / 220; } }
+
+.opt-section { background: var(--onz-surface); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.opt-section:last-child { margin-bottom: 0; }
+/* Sentence case with an accent-coloured icon, per the approved render. The
+   uppercase treatment is reserved for the "Players nearby" list heading. */
+.opt-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--onz-muted3); margin-bottom: 10px; }
+.opt-title .ti { color: var(--onz-accent); }
+
+/* Pill-style switch: label text on the left, toggle on the right.
+   A real <button role="switch" aria-checked> (not a reskinned checkbox),
+   matching the mockup's onzSwitch DOM shape. */
+.opt-check { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--onz-text); margin-bottom: 8px; }
+.opt-check:last-child { margin-bottom: 0; }
+.onz-switch {
+  appearance: none; -webkit-appearance: none; margin: 0; padding: 0; flex-shrink: 0; cursor: pointer;
+  width: 36px; height: 20px; border-radius: 10px; background: var(--onz-border3); border: none;
+  position: relative; transition: background .15s;
+}
+.onz-switch .onz-switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--onz-muted2); transition: left .15s, background .15s;
+}
+.onz-switch[aria-checked="true"] { background: var(--onz-accent); }
+.onz-switch[aria-checked="true"] .onz-switch-knob { left: 18px; background: #fff; }
+.onz-switch:focus-visible { outline: 2px solid var(--onz-accent); outline-offset: 2px; }
+
+.opt-label { display: block; font-size: 12px; color: var(--onz-muted); margin-bottom: 12px; }
+.opt-label:last-child { margin-bottom: 0; }
+.opt-label input[type=range] { display: block; width: 100%; margin-top: 5px; accent-color: var(--onz-accent); }
+.opt-label input[type=text]  {
+  display: block; width: 100%; margin-top: 5px;
+  background: var(--onz-input-bg); border: 1px solid var(--onz-border3); color: var(--onz-text);
+  padding: 6px 10px; border-radius: 6px; font-size: 13px;
+}
+.opt-label input[type=text]:focus { outline: none; border-color: var(--onz-accent); }
+.val { color: var(--onz-accent); }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.chip-row .chip-empty { font-size: 12px; color: var(--onz-faint); font-style: italic; }
+.chip {
+  display: inline-flex; align-items: center;
+  background: var(--onz-input-bg); border: 1px solid var(--onz-border3); color: var(--onz-text);
+  padding: 5px 11px; border-radius: 999px; font-size: 12.5px; cursor: pointer; transition: background .15s, border-color .15s;
+}
+/* A flag is an image, an emoji is a glyph: the wrapper keeps the two the same
+   height so the name next to it never jumps between the two cases. */
+.chip-avatar { display: inline-flex; align-items: center; }
+.chip-avatar .flag-img { width: 16px; height: 12px; }
+.chip:hover { border-color: var(--onz-accent); }
+.chip.selected { background: var(--onz-accent-dim); border-color: var(--onz-accent-dim); color: #fff; }
+/* Static preview of the calibration range - decorative only, the 3 sliders
+   below are what actually drive the audio. */
+.calib-bar {
+  height: 6px; border-radius: 3px; position: relative; margin: 10px 2px 4px;
+  background: linear-gradient(90deg, var(--onz-teal) 0 20%, var(--onz-border) 20% 75%, var(--onz-canvas-bg) 75% 100%);
+}
+.calib-marker { position: absolute; top: -4px; width: 3px; height: 14px; background: var(--onz-text); border-radius: 2px; }
+.calib-labels { display: flex; justify-content: space-between; font-size: 9px; color: var(--onz-muted); }
+/* Understated on purpose: it is a way out of a bad state, not something to
+   invite anyone to press. Warning-coloured because its presence is itself
+   the signal that the sound range is not the one shipped. */
+.calib-reset {
+  display: block; width: 100%; margin-top: 8px; padding: 5px 8px;
+  font: inherit; font-size: 11px; color: var(--onz-warn); cursor: pointer;
+  background: transparent; border: 1px solid var(--onz-border); border-radius: 6px;
+}
+.calib-reset:hover { border-color: var(--onz-warn); }
+
+table { border-collapse: collapse; width: 100%; font-size: 12px; margin-top: 8px; }
+td, th { padding: 3px 6px; border-bottom: 1px solid var(--onz-border2); text-align: left; color: var(--onz-muted); }
+td:first-child { color: var(--onz-text); }
+#meReadout { font-size: 11px; color: var(--onz-faint); margin-bottom: 4px; }
+#eventLog  { font-size: 11px; color: var(--onz-faint); max-height: 72px; overflow-y: auto; margin-top: 8px; }
+
+/* flex-basis:100% drops the toast onto its own full-width row under the logo,
+   which is the mobile arrangement in the approved render. */
+.onz-toast {
+  display: none; align-items: center; gap: 6px; flex-basis: 100%;
+  background: var(--onz-surface); border: 1px solid var(--onz-border); border-radius: 8px;
+  padding: 5px 10px; font-size: 11.5px; color: var(--onz-muted); white-space: nowrap;
+  opacity: .95; transition: opacity .6s ease;
+}
+.onz-toast.show { display: flex; }
+.onz-toast .ti { color: var(--onz-teal); }
+/* Desktop header, per the render: stats sit next to the logo instead of being
+   pushed right, and the toast rejoins that row hard against the far edge. */
+@media (min-width: 700px) {
+  .room-stats { margin-left: 0; }
+  .onz-toast { flex-basis: auto; margin-left: auto; }
+}
+
+/* Self-hosted Tabler icon sprite (inlined <symbol> defs in <body>, no CDN) */
+.ti { width: 1em; height: 1em; flex: none; vertical-align: -0.15em; stroke: currentColor; }
+/* Chevron points down when collapsed, flips up when open, per the render. */
+#optArrow { transition: transform .15s; transform: rotate(0deg); }
+#optToggle[aria-expanded="true"] #optArrow { transform: rotate(180deg); }
