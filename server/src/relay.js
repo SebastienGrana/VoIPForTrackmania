@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { AccessToken } from 'livekit-server-sdk';
 import { DataPacket_Kind, TrackType } from '@livekit/protocol';
-import { roomNameFor, displayNameFor } from './room-name.js';
+import { roomNameFor, displayNameFor, stripTmFormatting } from './room-name.js';
 import { nullEventLog } from './event-log.js';
 
 // One-time nonce store.
@@ -512,7 +512,10 @@ export function createRelay({
     const plugins = Array.from(tcpSocketsByLogin, ([login, e]) => ({
       login,
       room: e.room,
-      serverName: e.serverName ?? null,
+      // Stripped, like every other place a server name is shown: a live server
+      // sends it with its colour codes ("$00F$W$OLOLMAPS$FFF"), and the admin
+      // page is where you read names quickly to match a player to a report.
+      serverName: e.serverName ? (stripTmFormatting(e.serverName).trim() || null) : null,
       version: e.version ?? null,
       connectedSeconds: e.connectedAt ? Math.round((now - e.connectedAt) / 1000) : null,
       // null means "connected but has never sent a position" — the signature

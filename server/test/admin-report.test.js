@@ -250,6 +250,26 @@ describe('/admin and /report (own relay instance)', () => {
       assert.strictEqual(typeof row.connectedSeconds, 'number');
     });
 
+    test('the server name is stripped of its Trackmania colour codes', async () => {
+      const socket = await openTcp(TCP_PORT, [
+        nonce({ login: 'colours', server: 'srv-2', serverName: '$00F$W$OLOLMAPS$FFF' }),
+      ]);
+      sockets.push(socket);
+
+      const body = await (await state()).json();
+      assert.strictEqual(body.plugins.find(p => p.login === 'colours').serverName, 'LOLMAPS');
+    });
+
+    test('a name made only of codes reads as no name at all', async () => {
+      const socket = await openTcp(TCP_PORT, [
+        nonce({ login: 'codesonly', server: 'srv-3', serverName: '$00F$W$O' }),
+      ]);
+      sockets.push(socket);
+
+      const body = await (await state()).json();
+      assert.strictEqual(body.plugins.find(p => p.login === 'codesonly').serverName, null);
+    });
+
     test('a junk version is dropped rather than displayed', async () => {
       const socket = await openTcp(TCP_PORT, [
         nonce({ login: 'junkver', server: 'srv-1', version: '<script>alert(1)</script>' }),
