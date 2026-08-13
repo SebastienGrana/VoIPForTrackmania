@@ -2,7 +2,12 @@ node_modules/
 .env
 *.env.local
 *.log
+
+# Build output: OnZVoIP.op is rebuilt by tools/build-op.ps1, and the Discord
+# announcement next to it is event-specific rather than part of the project.
+dist/
 openplanet pluggin folder.txt
+openplanet plugginfolder.txt
 context.txt
 todo.txt
 

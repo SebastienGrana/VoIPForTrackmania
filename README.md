@@ -10,17 +10,19 @@ Proximity voice chat for **Trackmania² Stadium (ManiaPlanet)**. Players who are
 
 ### 1. Install the OpenPlanet plugin
 
-1. Open your ManiaPlanet `Openplanet4` folder (usually `C:\Users\<you>\Openplanet4\Plugins`)
-2. Create a subfolder named `OnZVoIP`
-3. Copy every file from [`openplanet-plugin/`](openplanet-plugin/) into it — `Main.as`, `Interface.as`, `GameState.as`, `Network.as`, `Strings.as`, `Settings.as`, and `info.toml`. OpenPlanet compiles every `.as` file in the folder as one module, so a partial copy won't compile.
-4. In-game: open the OpenPlanet overlay → Plugin Manager → **Reload plugins**
+1. Download **`OnZVoIP.op`** — one file. An `.op` is OpenPlanet's own plugin format; do **not** unzip it or rename it.
+2. Drop it into `C:\Users\<you>\Openplanet4\Plugins\`.
+3. In-game: open the OpenPlanet overlay → Plugin Manager → **Reload plugins**.
 
-The plugin window **OnZVoIP** will appear. It shows your relay connection status and your Trackmania login.
+The plugin window **OnZVoIP** appears in the overlay.
+
+> Already installed it as a *folder* named `OnZVoIP`? Delete that folder before dropping the `.op` in, or OpenPlanet loads the plugin twice.
 
 ### 2. Join the voice room
 
-While in a race, click **Copy URL** in the plugin window (or copy the URL from the field below it), paste it into your browser, and click **Join**.  
-Enable your microphone when prompted. That's it — you'll hear nearby players automatically.
+Enter a race, then click **Open in browser** in the plugin window. That link is what proves to the relay which player you are — which is why the page never asks you to type a name. Allow the microphone when the tab asks for it, and you're in: nearby players are loud, distant ones faint.
+
+If the button can't reach your browser, **Copy URL** under *Advanced* gives you the same link to paste by hand.
 
 ---
 
@@ -48,6 +50,8 @@ Volume and panning are computed **client-side** — LiveKit (an SFU) distributes
 
 Inside a room, though, there is no per-player access control: **anyone who is in it sees every participant's Trackmania login and exact in-game position**, broadcast in real time, and hears/can be heard by them. That is scoped to the people playing on the same server, but be aware of it.
 
+The web client also guesses a **country** from your browser's timezone and language (never your IP, nothing sent to a third party) and shows it as a flag next to your name; anyone in the room can see it, and you can change or remove it from Settings at any time.
+
 Two limits worth stating plainly:
 
 - **There is no verifiable Trackmania identity** to bind a connection to. Anyone who can reach the relay's TCP ingest port can claim a login and inject a position. Admins can set `TCP_SHARED_SECRET` to raise that from "anyone on the internet" to "anyone our community gave the token to" — it is access control for the community, not authentication of individual players.
@@ -65,6 +69,12 @@ docker compose up
 ```
 
 Runs a dev LiveKit server + the relay locally. `LIVEKIT_NODE_IP` (default `127.0.0.1`) is the address LiveKit advertises to WebRTC clients for media — only needed if you're joining from a device other than the one running docker compose.
+
+While working on the plugin itself, copy `openplanet-plugin/` into `Openplanet4\Plugins\OnZVoIP\` as loose files and use *Reload plugins* — an `.op` is only for distribution. To build the one players download:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-op.ps1   # -> dist/OnZVoIP.op
+```
 
 ## Self-hosting
 
@@ -87,6 +97,15 @@ npm start
 ### LiveKit + Caddy + systemd
 
 Config templates for running LiveKit and the relay as systemd services behind a Caddy HTTPS reverse proxy live in [`deploy/`](deploy/) — see [`deploy/README.md`](deploy/README.md) for install steps.
+
+### Running an event
+
+Three optional variables turn the relay into something you can watch during a session (all in `server/.env.example`):
+
+- `EVENT_LOG_FILE` — appends one JSON object per line for each connect, disconnect, room change, rejected link and problem report. Logins, rooms and timestamps only: no positions, no audio.
+- `ADMIN_USER` + `ADMIN_PASSWORD` — serve `/admin`, a live page listing who has the plugin running, on which version, who is missing their browser half, and the reports players sent. Both must be set or the page does not exist at all (404, not 401). Basic auth, so put it behind HTTPS.
+
+Players report problems from the web client itself — a **Report a problem** button at the bottom of the page sends their message with a short snapshot of their session (which they can read before sending), so a report arrives with the state that produced it instead of a "it doesn't work" in chat.
 
 ### Point the plugin at your server
 

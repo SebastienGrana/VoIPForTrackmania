@@ -179,6 +179,12 @@ void RenderInterface() {
     // a fallback for the button above or something you only read when helping
     // someone debug on Discord.
     if (UI::CollapsingHeader("Advanced")) {
+        // Short and always visible here, not just in the README: this is the
+        // one place in the plugin itself that tells a player what the room
+        // shows about them, at the moment they're actually looking at their
+        // link/relay info.
+        UI::TextWrapped("\\$888Others in this room see your login, position and a guessed country flag.");
+
         if (g_nonce != "") {
             string urlBuf = VoipUrl();
             UI::SetNextItemWidth(-1);

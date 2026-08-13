@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>OnZVoIP — admin</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f25; --line: #2b3038;
+    --fg: #e6e8ec; --dim: #8b93a1; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font-size: 13px; }
+  h1 { font-size: 15px; margin: 0 0 2px; }
+  h2 { font-size: 13px; margin: 0 0 8px; color: var(--dim); font-weight: 600;
+       text-transform: uppercase; letter-spacing: .06em; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .sub { color: var(--dim); font-size: 12px; }
+  #stale { color: var(--bad); font-weight: 700; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
+  .card b { display: block; font-size: 26px; line-height: 1.1; font-weight: 700; }
+  .card span { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .card.hl b { color: var(--ok); }
+  .card.warn b { color: var(--warn); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px; min-width: 0; }
+  .wide { grid-column: 1 / -1; }
+
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; padding: 3px 8px 6px 0; white-space: nowrap; }
+  td { padding: 3px 8px 3px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+  td.login { font-weight: 600; }
+  .empty { color: var(--dim); font-style: italic; padding: 6px 0; }
+
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); } .dim { color: var(--dim); }
+
+  #events { max-height: 340px; overflow-y: auto; font-size: 12px; line-height: 1.55; }
+  #events div { border-top: 1px solid var(--line); padding: 2px 0; }
+  #events .ev { display: inline-block; min-width: 152px; font-weight: 600; }
+
+  .report { border-top: 1px solid var(--line); padding: 8px 0; }
+  .report p { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; }
+  .banner { background: #3b1f1f; border: 1px solid var(--bad); color: #ffd7d7;
+            border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OnZVoIP — admin</h1>
+  <span class="sub" id="meta">chargement…</span>
+  <span id="stale"></span>
+</header>
+
+<div id="debugBanner" class="banner" hidden>
+  <b>DEBUG_MODE est actif.</b> N'importe qui peut obtenir un jeton pour n'importe quel salon
+  via <code>/token?identity=…&amp;room=…</code>, sans authentification. À couper avant d'ouvrir la soirée au public.
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="grid">
+  <section>
+    <h2>Plugins connectés (jeu)</h2>
+    <div class="scroll"><table id="plugins"></table></div>
+  </section>
+
+  <section>
+    <h2>Navigateurs connectés (voix)</h2>
+    <div class="scroll"><table id="browsers"></table></div>
+  </section>
+
+  <section class="wide">
+    <h2>Problèmes signalés</h2>
+    <div id="reports"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Événements (plus récent en haut)</h2>
+    <div id="events"></div>
+  </section>
+</div>
+
+<script>
+// Everything below is read-only: this page has no action that changes relay
+// state, which is why a failed poll only needs to say so, never to retry hard.
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+));
+
+// A player is only really "in" when the game half and the tab half are both
+// up, so the ages are graded rather than shown raw: green = sending, amber =
+// alive but quiet (menu, or plugin wedged), red = should have dropped by now.
+function ageClass(seconds) {
+  if (seconds === null || seconds === undefined) return 'dim';
+  if (seconds <= 5) return 'ok';
+  if (seconds <= 30) return 'warn';
+  return 'bad';
+}
+
+function fmtAge(seconds) {
+  if (seconds === null || seconds === undefined) return '—';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm' + String(seconds % 60).padStart(2, '0');
+  return Math.floor(seconds / 3600) + 'h' + String(Math.floor(seconds % 3600 / 60)).padStart(2, '0');
+}
+
+function table(el, cols, rows, render) {
+  if (!rows.length) { el.innerHTML = '<tr><td class="empty">personne</td></tr>'; return; }
+  el.innerHTML = '<tr>' + cols.map((c) => '<th>' + c + '</th>').join('') + '</tr>'
+    + rows.map(render).join('');
+}
+
+let lastOk = 0;
+
+async function poll() {
+  let data;
+  try {
+    const res = await fetch('/admin/state.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    data = await res.json();
+  } catch (err) {
+    $('stale').textContent = '⚠ relais injoignable (' + err.message + ')';
+    return;
+  }
+  $('stale').textContent = '';
+  lastOk = Date.now();
+
+  const c = data.counts;
+  $('meta').textContent = new Date(data.now).toLocaleTimeString('fr-FR')
+    + ' · relais up depuis ' + fmtAge(data.uptimeSeconds);
+  $('debugBanner').hidden = !data.debugMode;
+
+  $('cards').innerHTML = [
+    ['En voix (jeu + onglet)', c.paired, 'hl'],
+    ['Plugin sans onglet', c.pluginOnly, c.pluginOnly > 0 ? 'warn' : ''],
+    ['Onglet sans jeu', c.browserOnly, c.browserOnly > 0 ? 'warn' : ''],
+    ['Plugins', c.plugins, ''],
+    ['Navigateurs', c.browsers, ''],
+    ['Liens en attente', c.nonces, ''],
+  ].map(([label, value, cls]) =>
+    '<div class="card ' + cls + '"><b>' + value + '</b><span>' + label + '</span></div>'
+  ).join('');
+
+  table($('plugins'), ['Login', 'Version', 'Salon', 'Position', 'Connecté'], data.plugins, (p) =>
+    '<tr><td class="login">' + esc(p.login) + '</td>'
+    + '<td>' + (p.version ? esc(p.version) : '<span class="warn">?</span>') + '</td>'
+    + '<td>' + esc(p.serverName || p.room || '—') + '</td>'
+    + '<td class="' + ageClass(p.positionAgeSeconds) + '">' + fmtAge(p.positionAgeSeconds) + '</td>'
+    + '<td class="dim">' + fmtAge(p.connectedSeconds) + '</td></tr>'
+  );
+
+  table($('browsers'), ['Login', 'Salon'], data.browsers, (b) =>
+    '<tr><td class="login">' + esc(b.login) + '</td>'
+    + '<td>' + esc(b.room || '—') + '</td></tr>'
+  );
+
+  $('reports').innerHTML = data.reports.length
+    ? data.reports.map((r) =>
+        '<div class="report"><span class="dim">' + new Date(r.ts).toLocaleTimeString('fr-FR')
+        + '</span> <b>' + esc(r.login || 'anonyme') + '</b> '
+        + '<span class="dim">' + esc(r.version || 'version ?') + ' · ' + esc(r.room || 'hors salon')
+        + (r.state ? ' · ' + esc(r.state) : '') + '</span>'
+        + '<p>' + esc(r.message) + '</p></div>')
+      .join('')
+    : '<div class="empty">aucun signalement</div>';
+
+  $('events').innerHTML = data.events.map((e) => {
+    const { ts, event, ...rest } = e;
+    const cls = event.includes('Failed') || event.includes('Rejected') || event === 'admin.denied'
+      ? 'bad' : (event === 'report' ? 'warn' : '');
+    const fields = Object.entries(rest)
+      .map(([k, v]) => k + '=' + esc(v))
+      .join(' ');
+    return '<div><span class="dim">' + new Date(ts).toLocaleTimeString('fr-FR') + '</span> '
+      + '<span class="ev ' + cls + '">' + esc(event) + '</span> '
+      + '<span class="dim">' + fields + '</span></div>';
+  }).join('') || '<div class="empty">rien encore</div>';
+}
+
+poll();
+setInterval(poll, 2000);
+// A page that silently stopped refreshing is worse than one that says so:
+// during the event this is glanced at, not read.
+setInterval(() => {
+  if (lastOk && Date.now() - lastOk > 15000) {
+    $('stale').textContent = '⚠ données figées depuis ' + Math.round((Date.now() - lastOk) / 1000) + 's';
+  }
+}, 3000);
+</script>
+</body>
+</html>

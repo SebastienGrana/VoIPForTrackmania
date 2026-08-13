@@ -15,6 +15,7 @@ import { setupToast, showToast } from './toast.js';
 import { createMicMeter } from './mic-meter.js';
 import { createAvatarPicker, AVATAR_TOPIC } from './avatar-picker.js';
 import { createRadar } from './radar.js';
+import { createReporter } from './report.js';
 
 // Live-tunable from the calibration sliders (see index.html #calib) because
 // these are in *game* units now that real positions come from the OpenPlanet
@@ -1700,6 +1701,50 @@ micBtn.addEventListener('click', async () => {
   micBtn.className = micEnabled ? 'live' : 'muted';
   if (micEnabled) startMicMeter(findLocalAudioTrack());
   else stopMicMeter();
+});
+
+// --- Report a problem ------------------------------------------------------
+// The snapshot answers the questions we would otherwise have to ask back over
+// Discord one at a time — is the tab in a room, is the mic actually publishing,
+// is the plugin feeding positions — while the tester still has the problem in
+// front of them. Everything in it is read off state the page already holds.
+function reportSnapshot() {
+  const bits = [];
+  bits.push(`voice=${room ? `in ${lastRoomCredentials?.roomName ?? '?'}` : 'not connected'}`);
+  if (room && roomConnectedAt) bits.push(`for=${Math.round((Date.now() - roomConnectedAt) / 1000)}s`);
+  // micBtn's class is the same three-state the player is looking at, so a
+  // report can never disagree with the button they are describing.
+  bits.push(`mic=${micBtn.className || 'idle'}`);
+  bits.push(`peers=${peers.size}`);
+  // The two that separate "the voice half broke" from "the game half broke".
+  bits.push(`plugin=${ingestWs && ingestWs.readyState === 1 ? 'linked' : 'no'}`);
+  bits.push(`myPos=${isSwitchOn(followGameCheckbox) ? (meKnown ? 'from game' : 'waiting') : 'manual'}`);
+  bits.push(`audio=${audioCtx ? audioCtx.state : 'none'}`);
+  bits.push(`link=${new URLSearchParams(location.search).get('t') ? 'from game' : 'typed'}`);
+
+  // The last few client-side log lines, newest first — they are already
+  // timestamped and they are usually where the actual failure is named.
+  const recent = Array.from(eventLogEl.children).slice(0, 3).map((el) => el.textContent);
+  // 500 is the relay's clamp on this field; cutting here means the snapshot
+  // shown in the panel is exactly the snapshot that gets stored.
+  return `${bits.join(' ')}\n${recent.join('\n')}`.slice(0, 500);
+}
+
+createReporter({
+  toggle: document.getElementById('reportToggle'),
+  panel: document.getElementById('reportPanel'),
+  text: document.getElementById('reportText'),
+  send: document.getElementById('reportSend'),
+  cancel: document.getElementById('reportCancel'),
+  msg: document.getElementById('reportMsg'),
+  onToast: showToast,
+  getSnapshot: () => ({
+    // myIdentity is set by the manual join; the nonce path knows the login
+    // only through the credentials the relay handed back.
+    login: lastRoomCredentials?.login ?? myIdentity ?? null,
+    room: lastRoomCredentials?.roomName ?? null,
+    state: reportSnapshot(),
+  }),
 });
 
 // Auto-join: if URL contains ?t=<nonce>, skip the form and join immediately.

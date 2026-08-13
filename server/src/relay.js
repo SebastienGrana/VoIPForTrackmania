@@ -6,10 +6,13 @@ import crypto from 'crypto';
 import express from 'express';
 import http from 'http';
 import net from 'net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { AccessToken } from 'livekit-server-sdk';
 import { DataPacket_Kind, TrackType } from '@livekit/protocol';
 import { roomNameFor, displayNameFor } from './room-name.js';
+import { nullEventLog } from './event-log.js';
 
 // One-time nonce store.
 // nonce → { login, server, serverName, expiry }
@@ -18,6 +21,11 @@ import { roomNameFor, displayNameFor } from './room-name.js';
 // the right room — no identity or room param needed from the user.
 const nonces = new Map();
 const NONCE_TTL_MS = 12 * 60 * 1000;
+
+// Resolved from this module rather than cwd: systemd starts the relay with
+// WorkingDirectory=server, the tests run from the repo root, and sendFile
+// needs an absolute path either way.
+const ADMIN_HTML = path.join(path.dirname(fileURLToPath(import.meta.url)), 'admin.html');
 
 // Prune expired nonces to avoid unbounded growth if a player never opens the URL.
 setInterval(() => {
@@ -56,6 +64,19 @@ function validateLogin(raw) {
   if (typeof raw !== 'string') return null;
   const s = raw.trim();
   return (s.length > 0 && s.length <= 64) ? s : null;
+}
+
+// Plugin version string from info.toml, e.g. "0.3.1". Purely informational —
+// nothing branches on it — so the rule is only "safe to render on the admin
+// page and short enough not to be a storage trick": anything unexpected is
+// dropped rather than sanitised, which keeps "unknown" and "weird" the same
+// case for the reader.
+function validateVersion(raw) {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (s.length === 0 || s.length > 24) return null;
+  if (!/^[a-z0-9._+-]+$/i.test(s)) return null;
+  return s;
 }
 
 function validateServer(raw) {
@@ -104,6 +125,17 @@ export function createRelay({
   // configuring one.
   tcpSharedSecret = '',
   statePushIntervalMs = 5_000,
+  // Where connect/disconnect/report events go. Defaults to a sink so tests and
+  // local dev stay silent and no call site needs a null check.
+  eventLog = nullEventLog,
+  // Basic-auth credentials for /admin. Both empty (the default) means the page
+  // does not exist at all — see the route for why that is not merely "hidden".
+  adminUser = '',
+  adminPassword = '',
+  // A report is typed by a human, so five a minute per IP is already generous;
+  // the ceiling exists to stop a script, not a tester. Overridable so tests can
+  // exercise the endpoint without spending the whole allowance on setup.
+  reportRateLimit = { windowMs: 60_000, max: 5 },
 }) {
   const encoder = new TextEncoder();
   // Positions are batched instead of sent one-by-one: calling
@@ -178,7 +210,8 @@ export function createRelay({
   // the plugin over its existing TCP connection. Note the polarity of `mic`:
   // true means the microphone is OPEN. The plugin read it as "muted" once and
   // showed every player the opposite of their own state.
-  const tcpSocketsByLogin = new Map(); // login → { socket, room }
+  // login → { socket, room, version, serverName, connectedAt, lastPositionAt }
+  const tcpSocketsByLogin = new Map();
 
   async function pushStateToSocket(login, socket, room) {
     // readableEnded: the remote peer sent FIN (is closing). Writing back would
@@ -292,6 +325,10 @@ export function createRelay({
     if (t) {
       const entry = nonces.get(t);
       if (!entry || entry.expiry < Date.now()) {
+        // The single most likely thing a tester will hit: a link opened twice,
+        // or opened long after the game handed it out. Worth a line so a "it
+        // says expired" report can be matched to a moment.
+        eventLog.log('voice.linkRejected', { reason: entry ? 'expired' : 'unknown', ip: req.ip });
         res.status(401).json({ error: 'invalid or expired nonce' });
         return;
       }
@@ -326,6 +363,7 @@ export function createRelay({
       // identity form and show which server you're on.
       const serverName = displayNameFor(entry.server, entry.serverName);
       rememberBrowserRoom(entry.login, room);
+      eventLog.log('voice.join', { login: entry.login, room, serverName });
       res.json({ token, wsUrl: liveKitPublicWsUrl, room, login: entry.login, serverName });
       return;
     }
@@ -388,6 +426,139 @@ export function createRelay({
     res.json({ token });
   });
 
+  // --- Problem reports (web client "Signaler un problème") ---------------
+  // Kept in memory only, newest last. They are also written to the event log,
+  // which is the durable copy; this ring exists so the admin page can show
+  // them without reading the file.
+  const reports = [];
+  const REPORTS_MAX = 100;
+  const reportLimiter = createRateLimiter(reportRateLimit); // per IP
+
+  app.post('/report', express.json({ limit: '16kb' }), (req, res) => {
+    if (!reportLimiter.allow(req.ip)) {
+      res.status(429).json({ error: 'too many requests' });
+      return;
+    }
+    // Everything here is self-declared by the browser and none of it is
+    // trusted: a report is a human note, not a fact about the relay. Cross-read
+    // it against the plugin.* lines for the same login, which the relay wrote
+    // itself. Fields are clamped so a report cannot be used to stuff the log.
+    const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+    const report = {
+      ts: new Date().toISOString(),
+      message: str(req.body?.message, 1000),
+      login: validateLogin(req.body?.login) ?? null,
+      room: str(req.body?.room, 128) || null,
+      state: str(req.body?.state, 500) || null,
+      userAgent: str(req.headers['user-agent'], 200) || null,
+    };
+    if (!report.message) {
+      res.status(400).json({ error: 'empty report' });
+      return;
+    }
+    // The tab has no way of knowing which plugin build the player is running,
+    // so the version is read off that login's live plugin connection — a fact
+    // the relay recorded itself — rather than asked of the browser. "the
+    // version is wrong" is the single likeliest cause of a report, which makes
+    // it the one field that must not be self-declared.
+    report.version = (report.login && tcpSocketsByLogin.get(report.login)?.version) || null;
+    reports.push(report);
+    if (reports.length > REPORTS_MAX) reports.shift();
+    eventLog.log('report', report);
+    res.json({ ok: true });
+  });
+
+  // --- Admin ------------------------------------------------------------
+  // Not configured means not present: with no credentials set, both routes
+  // 404 exactly like an unknown path. The alternative people reach for — a
+  // hard-to-guess URL — is not access control, it is a password that gets
+  // copied into Discord, logged by every proxy in between, and never rotated.
+  const adminConfigured = adminUser !== '' && adminPassword !== '';
+
+  function adminAuthOk(req) {
+    const header = req.headers.authorization ?? '';
+    if (!header.startsWith('Basic ')) return false;
+    let decoded;
+    try { decoded = Buffer.from(header.slice(6), 'base64').toString('utf8'); }
+    catch { return false; }
+    const sep = decoded.indexOf(':');
+    if (sep === -1) return false;
+    // timingSafeEqual throws on a length mismatch, so both sides are hashed to
+    // a fixed width first — that also stops the comparison from leaking the
+    // credentials' length, which a plain length check would.
+    const digest = (s) => crypto.createHash('sha256').update(s).digest();
+    const okUser = crypto.timingSafeEqual(digest(decoded.slice(0, sep)), digest(adminUser));
+    const okPass = crypto.timingSafeEqual(digest(decoded.slice(sep + 1)), digest(adminPassword));
+    return okUser && okPass;
+  }
+
+  function requireAdmin(req, res) {
+    if (!adminConfigured) {
+      res.status(404).json({ error: 'not found' });
+      return false;
+    }
+    if (!adminAuthOk(req)) {
+      res.set('WWW-Authenticate', 'Basic realm="OnZVoIP admin", charset="UTF-8"');
+      eventLog.log('admin.denied', { ip: req.ip });
+      res.status(401).json({ error: 'unauthorized' });
+      return false;
+    }
+    return true;
+  }
+
+  app.get('/admin/state.json', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const now = Date.now();
+    const plugins = Array.from(tcpSocketsByLogin, ([login, e]) => ({
+      login,
+      room: e.room,
+      serverName: e.serverName ?? null,
+      version: e.version ?? null,
+      connectedSeconds: e.connectedAt ? Math.round((now - e.connectedAt) / 1000) : null,
+      // null means "connected but has never sent a position" — the signature
+      // of a player sitting in a menu, which looks identical to a working
+      // player if you only count sockets.
+      positionAgeSeconds: e.lastPositionAt ? Math.round((now - e.lastPositionAt) / 1000) : null,
+    })).sort((a, b) => a.login.localeCompare(b.login));
+
+    const browsers = Array.from(browserSockets.keys())
+      .map((login) => ({ login, room: browserRooms.get(login) ?? null }))
+      .sort((a, b) => a.login.localeCompare(b.login));
+
+    // The number that actually predicts whether voice works: a player needs
+    // BOTH halves. Plugin-only means they never clicked, browser-only means
+    // they left the game.
+    const inGame = new Set(plugins.map((p) => p.login));
+    const inTab = new Set(browsers.map((b) => b.login));
+    const paired = [...inGame].filter((l) => inTab.has(l));
+
+    res.json({
+      now: new Date().toISOString(),
+      uptimeSeconds: Math.round(process.uptime()),
+      debugMode,
+      counts: {
+        plugins: plugins.length,
+        browsers: browsers.length,
+        paired: paired.length,
+        pluginOnly: plugins.length - paired.length,
+        browserOnly: browsers.length - paired.length,
+        nonces: nonces.size,
+      },
+      plugins,
+      browsers,
+      reports: reports.slice(-20).reverse(),
+      events: eventLog.tail(120).reverse(),
+    });
+  });
+
+  app.get('/admin', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    // Deliberately NOT in public/: anything under staticDir is served to
+    // anyone, and a page whose whole job is to display logins should not be
+    // one typo away from being public even if it is useless without the JSON.
+    res.sendFile(ADMIN_HTML);
+  });
+
   const server = http.createServer(app);
 
   function broadcastPosition(msg, fallbackRoom) {
@@ -423,6 +594,13 @@ export function createRelay({
     // A zero-length pair carries no direction at all, so it is treated as
     // absent rather than forwarded for the client to puzzle over.
     const fx = Number(msg.fx), fz = Number(msg.fz);
+    // Stamped on the connection record rather than in a map of its own so it
+    // cannot grow: a pseudo nobody has an open plugin socket for simply never
+    // gets a timestamp. It is what separates "connected" from "actually
+    // sending" on the admin page — a plugin stuck on a menu keeps its socket.
+    const conn = tcpSocketsByLogin.get(pseudo);
+    if (conn) conn.lastPositionAt = Date.now();
+
     const entry = { x, y, z, ts: Date.now() };
     if (isFinite(fx) && isFinite(fz) && (fx !== 0 || fz !== 0)
         && Math.abs(fx) < 1e3 && Math.abs(fz) < 1e3) {
@@ -478,6 +656,7 @@ export function createRelay({
             if (wsLogin && browserSockets.get(wsLogin) === ws) browserSockets.delete(wsLogin);
             wsLogin = login;
             browserSockets.set(login, ws);
+            eventLog.log('browser.connect', { login, room: browserRooms.get(login) ?? null });
           }
           return;
         }
@@ -485,7 +664,12 @@ export function createRelay({
       } catch {}
     });
     ws.on('close', () => {
-      if (wsLogin && browserSockets.get(wsLogin) === ws) browserSockets.delete(wsLogin);
+      if (wsLogin && browserSockets.get(wsLogin) === ws) {
+        browserSockets.delete(wsLogin);
+        // The tab closing is the most common "it stopped working" cause and the
+        // one testers are least likely to report, so it gets its own line.
+        eventLog.log('browser.disconnect', { login: wsLogin });
+      }
     });
     ws.on('error', (err) => console.error('WS ingest: socket error:', err.message));
   });
@@ -508,7 +692,16 @@ export function createRelay({
     socket.on('close', () => {
       tcpConnectionCount--;
       if (tcpLogin && tcpSocketsByLogin.get(tcpLogin)?.socket === socket) {
+        const entry = tcpSocketsByLogin.get(tcpLogin);
         tcpSocketsByLogin.delete(tcpLogin);
+        // Sockets that never sent a valid nonce have no login and are not
+        // logged: port 8081 is open to the internet, so scanners would
+        // otherwise be most of the file.
+        eventLog.log('plugin.disconnect', {
+          login: tcpLogin,
+          room: entry.room,
+          heldSeconds: Math.round((Date.now() - entry.connectedAt) / 1000),
+        });
       }
     });
     socket.on('data', (chunk) => {
@@ -553,6 +746,7 @@ export function createRelay({
           } else {
             // Lets the plugin widget tell "wrong/missing secret" apart from a
             // generic network hiccup, instead of retrying blind forever.
+            eventLog.log('plugin.authFailed', { ip: socket.remoteAddress });
             try { socket.write('{"type":"authError"}\n'); } catch {}
             socket.destroy();
             return;
@@ -564,6 +758,11 @@ export function createRelay({
         if (msg.type === 'nonce') {
           const login = validateLogin(msg.login);
           if (login) {
+            // Read before the delete below: when the login is unchanged, that
+            // delete targets this very entry, and reading after it would make
+            // every nonce look like a brand-new connection.
+            const prev = tcpSocketsByLogin.get(login);
+            const sameSocket = prev !== undefined && prev.socket === socket;
             if (tcpLogin && tcpSocketsByLogin.get(tcpLogin)?.socket === socket) {
               tcpSocketsByLogin.delete(tcpLogin);
             }
@@ -571,7 +770,26 @@ export function createRelay({
             const sName = typeof msg.serverName === 'string' ? msg.serverName.slice(0, 256) : '';
             tcpLogin = login;
             tcpRoom = srv ? (roomNameFor(srv, sName) ?? roomName) : null;
-            tcpSocketsByLogin.set(login, { socket, room: tcpRoom });
+            // connectedAt is carried over while the same login stays on the same
+            // socket: a room change re-sends the nonce, and resetting the clock
+            // there would make every track change look like a reconnection on
+            // the admin page, hiding the drops actually worth seeing.
+            const version = validateVersion(msg.version) ?? (sameSocket ? prev.version : null);
+            tcpSocketsByLogin.set(login, {
+              socket,
+              room: tcpRoom,
+              version,
+              serverName: sName || null,
+              connectedAt: sameSocket ? prev.connectedAt : Date.now(),
+            });
+            // Two different events on purpose: "a player showed up" and "a
+            // player changed server" answer different questions after the fact,
+            // and collapsing them into one line makes the second invisible.
+            if (!sameSocket) {
+              eventLog.log('plugin.connect', { login, room: tcpRoom, version, ip: socket.remoteAddress });
+            } else if (prev.room !== tcpRoom) {
+              eventLog.log('plugin.room', { login, from: prev.room, to: tcpRoom });
+            }
             // setImmediate: defer to after the current poll phase so 'end'
             // fires first if the peer is already half-closing (tcpSend tests).
             // pushStateToSocket then sees readableEnded=true and skips the

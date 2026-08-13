@@ -1,5 +1,6 @@
 import { RoomServiceClient } from 'livekit-server-sdk';
 import { createRelay } from './relay.js';
+import { createEventLog } from './event-log.js';
 
 const {
   LIVEKIT_INTERNAL_URL,
@@ -16,6 +17,9 @@ const {
   TCP_IDLE_TIMEOUT_MS,
   POSITION_BROADCAST_INTERVAL_MS,
   STATE_PUSH_INTERVAL_MS,
+  EVENT_LOG_FILE = '',
+  ADMIN_USER = '',
+  ADMIN_PASSWORD = '',
 } = process.env;
 
 if (!LIVEKIT_INTERNAL_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_PUBLIC_WS_URL) {
@@ -23,6 +27,18 @@ if (!LIVEKIT_INTERNAL_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT
 }
 
 const roomService = new RoomServiceClient(LIVEKIT_INTERNAL_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+
+// Without EVENT_LOG_FILE the events still reach stdout (so journalctl has
+// them), they just aren't kept anywhere the relay can re-read for /admin.
+const eventLog = createEventLog({ file: EVENT_LOG_FILE || null });
+
+// Half-configured admin credentials are a trap: ADMIN_USER alone would leave
+// the page reachable with an empty password if the check were per-field, so
+// createRelay treats "both non-empty" as the only configured state. Say so
+// loudly at boot rather than letting an admin believe the page is up.
+if ((ADMIN_USER === '') !== (ADMIN_PASSWORD === '')) {
+  console.error('ADMIN_USER and ADMIN_PASSWORD must both be set (or both empty) — /admin stays disabled');
+}
 
 // Audit #41: these all had hardcoded defaults inside createRelay() with no
 // way to override them short of editing relay.js — fine while every deploy
@@ -39,6 +55,9 @@ const { server, tcpServer } = createRelay({
   enableCalibrationBot: ENABLE_CALIBRATION_BOT === 'true',
   debugMode: DEBUG_MODE === 'true',
   tcpSharedSecret: TCP_SHARED_SECRET,
+  eventLog,
+  adminUser: ADMIN_USER,
+  adminPassword: ADMIN_PASSWORD,
   ...(TCP_MAX_CONNECTIONS && { tcpMaxConnections: Number(TCP_MAX_CONNECTIONS) }),
   ...(TCP_IDLE_TIMEOUT_MS && { tcpIdleTimeoutMs: Number(TCP_IDLE_TIMEOUT_MS) }),
   ...(POSITION_BROADCAST_INTERVAL_MS && { positionBroadcastIntervalMs: Number(POSITION_BROADCAST_INTERVAL_MS) }),
@@ -51,4 +70,12 @@ tcpServer.listen(INGEST_TCP_PORT, () => {
 
 server.listen(PORT, () => {
   console.log(`onzvoip relay listening on :${PORT} (room "${ROOM_NAME}", livekit at ${LIVEKIT_INTERNAL_URL})`);
+  eventLog.log('relay.start', {
+    port: Number(PORT),
+    tcpPort: Number(INGEST_TCP_PORT),
+    room: ROOM_NAME,
+    debugMode: DEBUG_MODE === 'true',
+    admin: ADMIN_USER !== '' && ADMIN_PASSWORD !== '',
+    logFile: eventLog.file,
+  });
 });

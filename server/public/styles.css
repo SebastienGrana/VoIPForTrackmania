@@ -439,3 +439,44 @@ td:first-child { color: var(--onz-text); }
 /* Chevron points down when collapsed, flips up when open, per the render. */
 #optArrow { transition: transform .15s; transform: rotate(0deg); }
 #optToggle[aria-expanded="true"] #optArrow { transform: rotate(180deg); }
+
+/* Report a problem.
+   Quiet by default — a page footer, not a call to action — and it only grows
+   into a panel once someone actually has something to say. Same restraint as
+   .leave-btn: findable, never competing with the microphone. */
+.report-box { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--onz-border2); }
+.report-btn {
+  font: inherit; font-size: 11px; color: var(--onz-muted2); cursor: pointer;
+  background: transparent; border: none; padding: 2px 0; text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.report-btn:hover { color: var(--onz-warn); }
+.report-panel {
+  margin-top: 10px; padding: 12px; background: var(--onz-surface2);
+  border: 1px solid var(--onz-border); border-radius: 8px;
+}
+.report-panel[hidden] { display: none; }
+.report-label { display: block; font-size: 11px; color: var(--onz-muted); margin-bottom: 6px; }
+#reportText {
+  width: 100%; font: inherit; font-size: 12px; padding: 8px; resize: vertical;
+  color: var(--onz-text); background: var(--onz-input-bg);
+  border: 1px solid var(--onz-border3); border-radius: 6px;
+}
+.report-actions { display: flex; gap: 8px; margin-top: 8px; }
+.report-send, .report-cancel {
+  font: inherit; font-size: 12px; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--onz-border3); color: var(--onz-muted);
+}
+.report-send { border-color: var(--onz-accent-dim); color: var(--onz-accent); }
+.report-send:hover:not(:disabled) { background: var(--onz-accent-dim); color: #fff; }
+.report-send:disabled { opacity: .5; cursor: default; }
+.report-cancel:hover { color: var(--onz-text); }
+.report-note { font-size: 10.5px; color: var(--onz-muted3); margin: 10px 0 4px; }
+/* The snapshot is meant to be read before sending, so it wraps rather than
+   scrolling off the side where nobody would look for the rest of it. */
+.report-state {
+  display: block; font-size: 10.5px; line-height: 1.5; color: var(--onz-muted2);
+  word-break: break-word; white-space: pre-wrap;
+}
+.report-msg { font-size: 11px; color: var(--onz-muted); margin-top: 8px; }
+.report-msg.bad { color: var(--onz-danger); }

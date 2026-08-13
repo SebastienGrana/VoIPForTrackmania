@@ -364,6 +364,29 @@
   </div>
   </div>
 
+  <!-- Sits outside #appBody on purpose: the states that hide the interface
+       (no plugin, expired link) are exactly the ones worth reporting, and a
+       report button that disappears when things break reports nothing. -->
+  <div class="report-box">
+    <button type="button" id="reportToggle" class="report-btn" aria-expanded="false" aria-controls="reportPanel">
+      Report a problem
+    </button>
+    <div id="reportPanel" class="report-panel" hidden>
+      <label class="report-label" for="reportText">What went wrong?</label>
+      <textarea id="reportText" rows="3" maxlength="1000"
+                placeholder="e.g. I can hear Bob but Bob can't hear me"></textarea>
+      <div class="report-actions">
+        <button type="button" id="reportSend" class="report-send">Send</button>
+        <button type="button" id="reportCancel" class="report-cancel">Cancel</button>
+      </div>
+      <!-- Shown, not merely attached: people are entitled to read what a
+           "diagnostic" actually contains before they send it. -->
+      <p class="report-note">Sent with your login and this snapshot — no audio, nothing else:</p>
+      <code id="reportState" class="report-state"></code>
+      <div id="reportMsg" class="report-msg"></div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Sets window.ONZ_DEBUG_ALLOWED from the relay's DEBUG_MODE env var. A plain

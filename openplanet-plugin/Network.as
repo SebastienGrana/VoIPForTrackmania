@@ -7,10 +7,16 @@ void SendNonce(const string &in login, const string &in serverLogin, const strin
     g_nonce = GenerateNonce();
     g_nonceServerLogin = serverLogin;
     g_nonceSentAt = now;
+    // "version" rides along on the nonce rather than getting a message of its
+    // own: this is the one line every plugin sends on connect and re-sends on
+    // every room change, so the relay's admin view can tell at a glance who is
+    // still on an old build without adding a protocol step that an old build
+    // would not know to send anyway. Relays that predate it just ignore it.
     string line = "{\"type\":\"nonce\","
         + "\"nonce\":\"" + g_nonce + "\","
         + "\"login\":\"" + login + "\","
         + "\"server\":\"" + serverLogin + "\","
+        + "\"version\":\"" + EscapeJsonStr(PluginVersion()) + "\","
         + "\"serverName\":\"" + EscapeJsonStr(serverName) + "\"}\n";
     g_socket.WriteRaw(line);
     string target = serverLogin != "" ? "server \"" + serverLogin + "\"" : "global room";
