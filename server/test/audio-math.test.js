@@ -5,6 +5,7 @@ import {
   gainForDistanceRealistic, lowpassForDistance, LOWPASS_NEAR_HZ, LOWPASS_FAR_HZ,
   toCarFrame,
   dopplerDelayFor, DOPPLER_PRESETS, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC, SPEED_OF_SOUND,
+  DOPPLER_GLIDE_SEC,
 } from '../public/audio-math.js';
 
 describe('distance()', () => {
@@ -300,6 +301,69 @@ describe('dopplerDelayFor()', () => {
     const p = DOPPLER_PRESETS.subtle;
     const moved = dopplerDelayFor(20000, 0.1, 1, 'subtle') - 0.1;
     assert.ok(Math.abs(moved - p.maxRate) < 1e-12, `got ${moved}`);
+  });
+
+  // The glide. Positions arrive five times a second, so without it the delay
+  // would sprint at the cap for one tick and then sit still until the next
+  // packet - a pitch flicking on and off, which is heard as roughness.
+  test('a tick closes a fraction of the gap, not the whole gap', () => {
+    // Small enough a gap that the glide, not the rate cap, is what bites.
+    const target = DOPPLER_BASE_SEC + (343 / SPEED_OF_SOUND) * DOPPLER_PRESETS.subtle.scale;
+    const moved = dopplerDelayFor(343, target - 0.01, 0.05, 'subtle') - (target - 0.01);
+    assert.ok(moved > 0 && moved < 0.01, `should be part of the gap, got ${moved}`);
+    assert.ok(Math.abs(moved - 0.01 * (0.05 / DOPPLER_GLIDE_SEC)) < 1e-12, `got ${moved}`);
+  });
+
+  test('a held target is approached in shrinking steps, never overshot', () => {
+    const target = DOPPLER_BASE_SEC + (343 / SPEED_OF_SOUND) * DOPPLER_PRESETS.subtle.scale;
+    // Started inside the rate cap on purpose: from far away the cap is what
+    // governs, and equal capped steps would say nothing about the glide.
+    let prev = target - 0.004;
+    let last = Infinity;
+    for (let i = 0; i < 8; i++) {
+      const next = dopplerDelayFor(343, prev, 0.05, 'subtle');
+      const step = next - prev;
+      assert.ok(step > 0 && step < last, `step ${i} did not shrink: ${step}`);
+      assert.ok(next <= target + 1e-12, 'overshot');
+      last = step;
+      prev = next;
+    }
+  });
+
+  // The property the whole effect rests on: at a constant closing speed the
+  // delay must move at a CONSTANT rate, because a constant rate is a constant
+  // interval. If the glide left a wobble here, the pitch would wobble with it.
+  test('a constant closing speed settles into a constant rate', () => {
+    let dist = 400, prev = NaN;
+    const steps = [];
+    for (let i = 0; i < 120; i++) {
+      const next = dopplerDelayFor(dist, prev, 0.05, 'subtle');
+      if (isFinite(prev)) steps.push(next - prev);
+      prev = next;
+      dist -= 2; // 40 m/s, held steady
+    }
+    // The approach is exponential, so "settled" means settled to within a
+    // rounding error of the true rate, not exactly equal to it.
+    const settled = steps.slice(-20);
+    const expected = -(2 / SPEED_OF_SOUND) * 0.3; // one tick of travel time, dosed
+    for (const s of settled) assert.ok(Math.abs(s - expected) < 1e-6, `got ${s}, want ${expected}`);
+  });
+
+  // The staircase itself: the target only moves when a packet lands, so the
+  // regression to guard against is all the motion piling into that one tick.
+  test('a target that only moves every fourth tick still moves every tick', () => {
+    let prev = NaN, dist = 800;
+    const steps = [];
+    for (let i = 0; i < 120; i++) {
+      if (i % 4 === 0) dist -= 8; // one packet's worth of closing, 5 times a second
+      const next = dopplerDelayFor(dist, prev, 0.05, 'subtle');
+      if (isFinite(prev)) steps.push(Math.abs(next - prev));
+      prev = next;
+    }
+    const settled = steps.slice(-20);
+    const min = Math.min(...settled), max = Math.max(...settled);
+    assert.ok(min > 0, 'the delay froze between packets');
+    assert.ok(min > max * 0.4, `sprint-then-freeze is back: ${min} vs ${max}`);
   });
 
   test('an unknown preset name falls back to the gentlest one', () => {

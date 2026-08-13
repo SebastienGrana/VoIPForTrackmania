@@ -1038,20 +1038,40 @@ function drawMeMarker(cx, cy, color) {
 // The ramp has to be linear: a linear slide of the delay is a constant playback
 // rate, so a constant interval. setTargetAtTime would curve the pitch instead.
 // Feature-detected, because the test double for AudioContext has no delay node.
+//
+// The queue is built AHEAD of the audio clock in fixed segments and nothing
+// already queued is ever rewritten. Re-issuing the ramp every animation frame
+// looks equivalent and is not: frames land early (rAF jitters, and currentTime
+// only moves a render quantum at a time), so cancelling would drop a ramp
+// mid-flight and the following setValueAtTime would jerk the parameter to an
+// end value it had not reached yet. A jump in a delay line is a click, and
+// sixty of those a second is a crackle over every voice.
+const DOPPLER_SEGMENT_SEC = 0.05; // length of one queued ramp
+const DOPPLER_HORIZON_SEC = 0.1;  // how far ahead of the clock the queue may run
 function driveDoppler(nodes, dist, now) {
   const p = nodes.delay?.delayTime;
   if (!p || !p.linearRampToValueAtTime) return;
-  // Clamped: the first frame has no previous timestamp, and a tab coming back
-  // from the background hands us a dt of several seconds.
-  const dt = Math.min(1, Math.max(0.001, now - (nodes.dopplerAt ?? (now - 0.1))));
-  // With the effect off we aim at distance zero, i.e. straight back to base -
-  // but still through the rate limiter, because a jump in delay is a click.
-  const next = dopplerDelayFor(dopplerPreset ? dist : 0, nodes.dopplerSec ?? NaN, dt, dopplerPreset ?? 'subtle');
-  p.cancelScheduledValues(now);
-  p.setValueAtTime(nodes.dopplerSec ?? next, now);
-  p.linearRampToValueAtTime(next, now + dt);
+  const preset = dopplerPreset ?? 'subtle';
+  // With the effect off we aim at distance zero, i.e. back to base - but still
+  // through the glide, because dropping the delay in one step is a click too.
+  const wanted = dopplerPreset ? dist : 0;
+
+  // Re-anchor only when the clock has caught up with everything we queued: the
+  // very first frame, or a tab returning from the background. By definition the
+  // last ramp has finished by then, so the parameter is already sitting on
+  // dopplerSec and writing it again moves nothing.
+  if (!(nodes.dopplerUntil > now)) {
+    if (nodes.dopplerSec === undefined) nodes.dopplerSec = dopplerDelayFor(wanted, NaN, 0, preset);
+    p.cancelScheduledValues(now);
+    p.setValueAtTime(nodes.dopplerSec, now);
+    nodes.dopplerUntil = now;
+  }
+  if (nodes.dopplerUntil - now >= DOPPLER_HORIZON_SEC) return;
+
+  const next = dopplerDelayFor(wanted, nodes.dopplerSec, DOPPLER_SEGMENT_SEC, preset);
+  nodes.dopplerUntil += DOPPLER_SEGMENT_SEC;
+  p.linearRampToValueAtTime(next, nodes.dopplerUntil);
   nodes.dopplerSec = next;
-  nodes.dopplerAt = now;
 }
 
 function tickGains() {

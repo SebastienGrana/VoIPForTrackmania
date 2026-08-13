@@ -1277,6 +1277,62 @@ describe('driveDoppler()', () => {
     assert.ok(n.dopplerSec <= 0.01 + 0.9 + 1e-9, `got ${n.dopplerSec}`);
   });
 
+  // The crackle regression. The first version cancelled and re-issued the ramp
+  // on every animation frame; frames land early, so a ramp still in flight got
+  // dropped and the parameter was jerked to an end value it had not reached.
+  // That jump is a click, and at frame rate it is a continuous crackle. The
+  // queue must therefore only ever be appended to.
+  const drivenNode = () => {
+    const n = fakeNode();
+    const p = n.delay.delayTime;
+    p.sets = 0; p.cancels = 0;
+    p.setValueAtTime = function (v) { this.value = v; this.sets++; };
+    p.cancelScheduledValues = function () { this.cancels++; };
+    return n;
+  };
+
+  const irregularFrames = (n, dist, from, count) => {
+    // Deliberately uneven, the way requestAnimationFrame really behaves.
+    const gaps = [0.017, 0.009, 0.024, 0.016, 0.033, 0.008];
+    let t = from;
+    for (let i = 0; i < count; i++) {
+      app.driveDoppler(n, dist, t);
+      t += gaps[i % gaps.length];
+    }
+    return t;
+  };
+
+  test('a queued ramp is never cancelled or rewritten in flight', () => {
+    stub.elements.dopplerSubtle.dispatch('click');
+    const n = drivenNode();
+    irregularFrames(n, 300, 10, 120);
+    const p = n.delay.delayTime;
+    assert.strictEqual(p.sets, 1, `the parameter was jumped ${p.sets} times`);
+    assert.strictEqual(p.cancels, 1, `the queue was cancelled ${p.cancels} times`);
+    assert.ok(p.ramps.length > 10, `nothing was scheduled: ${p.ramps.length}`);
+    for (let i = 1; i < p.ramps.length; i++) {
+      assert.ok(p.ramps[i][1] > p.ramps[i - 1][1], `ramp ${i} does not follow the last one`);
+    }
+  });
+
+  test('the queue stays close to the audio clock instead of running away', () => {
+    stub.elements.dopplerSubtle.dispatch('click');
+    const n = drivenNode();
+    const end = irregularFrames(n, 300, 10, 120);
+    assert.ok(n.dopplerUntil - end < 0.16, `queued ${n.dopplerUntil - end}s ahead`);
+    assert.ok(n.dopplerUntil > end, 'the queue ran dry');
+  });
+
+  test('a stalled tab re-anchors once rather than scheduling into the past', () => {
+    stub.elements.dopplerSubtle.dispatch('click');
+    const n = drivenNode();
+    app.driveDoppler(n, 300, 10);
+    app.driveDoppler(n, 300, 400); // six minutes in the background
+    const p = n.delay.delayTime;
+    assert.strictEqual(p.sets, 2, 'should re-anchor exactly once per stall');
+    assert.ok(n.dopplerUntil > 400, `queued in the past: ${n.dopplerUntil}`);
+  });
+
   test('tickGains drives it for every peer that has a delay node', () => {
     stub.elements.dopplerSubtle.dispatch('click');
     const n = fakeNode();

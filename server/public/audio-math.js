@@ -132,6 +132,16 @@ export const DOPPLER_PRESETS = {
 // travel is 2.9 s) without allocating an absurd buffer per participant.
 export const DOPPLER_MAX_DELAY_SEC = 3.5;
 
+// Positions land five times a second, so the distance we are handed is a
+// staircase, not a slide. Running at the target at full speed and then waiting
+// for the next step gives a sprint-freeze-sprint five times a second, and since
+// the pitch IS the speed of the delay, that is a pitch flicking on and off at
+// 5 Hz - roughness, not a car going past. Easing toward the target over roughly
+// one packet period turns the staircase back into the steady slide it stands
+// for: at a constant speed the delay settles into a constant rate, which is a
+// constant interval, which is what a real Doppler sounds like.
+export const DOPPLER_GLIDE_SEC = 0.25;
+
 // Next delay-line length, in seconds. `prevDelay` is what we asked for last
 // tick (not what the node reports), so the rate cap is exact and testable;
 // pass a non-finite value the first time to snap straight to the target rather
@@ -144,6 +154,11 @@ export function dopplerDelayFor(dist, prevDelay, dtSec, preset = 'subtle') {
   // would leave our bookkeeping believing a delay the node never applied.
   const target = Math.min(DOPPLER_MAX_DELAY_SEC, DOPPLER_BASE_SEC + (d / SPEED_OF_SOUND) * p.scale);
   if (!isFinite(prevDelay)) return target;
-  const step = p.maxRate * Math.max(Number(dtSec) || 0, 0.001);
-  return clamp(target, prevDelay - step, prevDelay + step);
+  const dt = Math.max(Number(dtSec) || 0, 0.001);
+  // Two limits, in this order: close a fraction of the remaining gap (the glide,
+  // which kills the staircase), then cap the absolute speed (the rate limit,
+  // which is what keeps a teleporting peer from turning into a squeak).
+  const eased = (target - prevDelay) * Math.min(1, dt / DOPPLER_GLIDE_SEC);
+  const cap = p.maxRate * dt;
+  return prevDelay + clamp(eased, -cap, cap);
 }
