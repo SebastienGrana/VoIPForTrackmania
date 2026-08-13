@@ -385,9 +385,14 @@
   .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
   .chip-row .chip-empty { font-size: 12px; color: var(--onz-faint); font-style: italic; }
   .chip {
+    display: inline-flex; align-items: center;
     background: var(--onz-input-bg); border: 1px solid var(--onz-border3); color: var(--onz-text);
     padding: 5px 11px; border-radius: 999px; font-size: 12.5px; cursor: pointer; transition: background .15s, border-color .15s;
   }
+  /* A flag is an image, an emoji is a glyph: the wrapper keeps the two the same
+     height so the name next to it never jumps between the two cases. */
+  .chip-avatar { display: inline-flex; align-items: center; }
+  .chip-avatar .flag-img { width: 16px; height: 12px; }
   .chip:hover { border-color: var(--onz-accent); }
   .chip.selected { background: var(--onz-accent-dim); border-color: var(--onz-accent-dim); color: #fff; }
   /* Static preview of the calibration range - decorative only, the 3 sliders
@@ -672,12 +677,31 @@
 
     <div class="opt-section">
       <div class="opt-title"><svg class="ti"><use href="#ti-ruler-2"></use></svg> Distance calibration</div>
-      <!-- A/B switch, deliberately visible to players and not behind ?debug=1:
-           which curve sounds right is an ear judgement, and the people best
-           placed to make it are the ones actually driving together. -->
-      <div class="opt-check">
-        <span>Realistic distance sound</span>
-        <button type="button" id="realisticAudioToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
+      <!-- Behind ?debug=1: this is a tuning tool, not a player setting. The
+           curve it turns OFF is the old linear one, so a player who never sees
+           this switch simply gets the good curve and no way to break it. -->
+      <div class="debug-only">
+        <div class="opt-check">
+          <span>Realistic distance sound</span>
+          <button type="button" id="realisticAudioToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
+        </div>
+        <!-- Three strengths side by side rather than one switch and a slider:
+             nobody can say in advance which one sounds right, so the only
+             useful control is one you can flip between while someone drives
+             past. At most one is ever on; all three off means no Doppler at
+             all, which is the baseline you are comparing against. -->
+        <div class="opt-check">
+          <span>Doppler · subtle</span>
+          <button type="button" id="dopplerSubtleToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+        </div>
+        <div class="opt-check">
+          <span>Doppler · strong</span>
+          <button type="button" id="dopplerStrongToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+        </div>
+        <div class="opt-check">
+          <span>Doppler · physically exact</span>
+          <button type="button" id="dopplerExactToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+        </div>
       </div>
       <div class="calib-bar">
         <div class="calib-marker" style="left:20%"></div>

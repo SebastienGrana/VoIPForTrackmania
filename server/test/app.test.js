@@ -52,6 +52,13 @@ beforeEach(() => {
   if (stub.elements.rotateRadar.getAttribute('aria-checked') !== 'true') {
     stub.elements.rotateRadar.dispatch('click');
   }
+  // Same reason for the doppler group, which owns dopplerPreset: clicking the
+  // one that is on turns it off, which is the group's "no doppler" baseline.
+  for (const name of ['dopplerSubtle', 'dopplerStrong', 'dopplerExact']) {
+    if (stub.elements[name].getAttribute('aria-checked') === 'true') {
+      stub.elements[name].dispatch('click');
+    }
+  }
 
   stub.setFetch(async () => { throw new Error('fetch not mocked for this test'); });
 });
@@ -220,6 +227,40 @@ describe('renderFollowChips()', () => {
     app.peers.set('chipC', { x: 0, y: 0, z: 0, lastSeen: Date.now() });
     app.renderFollowChips();
     assert.ok(stub.elements.relativeTargetChips.children.length > before);
+  });
+
+  // The chip used to hard-code the hashed fallback emoji, so a player flying a
+  // French flag on the radar and in the list showed up as a random face in the
+  // picker - three names for the same person on one screen.
+  test('a chip shows the same avatar the radar and the list show', () => {
+    app.peers.set('chipFlag', { x: 0, y: 0, z: 0, lastSeen: Date.now() });
+    app.peerAvatars.set('chipFlag', { kind: 'flag', code: 'fr' });
+    app.renderFollowChips();
+
+    const chip = stub.elements.relativeTargetChips.children
+      .find((c) => c.renderedText.includes('chipFlag'));
+    assert.ok(chip, 'no chip for chipFlag');
+    const img = chip.children.flatMap((c) => c.children).find((c) => c.tagName === 'IMG');
+    assert.ok(img, 'the chip should carry the flag image, not a fallback glyph');
+    assert.ok(img.src.includes('fr'), `unexpected flag src: ${img.src}`);
+    assert.ok(!chip.renderedText.includes(app.emojiForPseudo('chipFlag')));
+  });
+
+  // The avatar arrives in a data message a moment after the player does. Keyed
+  // on the names alone, the cache declared "nothing changed" and the chip stayed
+  // frozen on the fallback emoji for the rest of the session.
+  test('an avatar arriving after the player repaints the chip', () => {
+    app.peers.set('chipLate', { x: 0, y: 0, z: 0, lastSeen: Date.now() });
+    app.renderFollowChips();
+    const before = stub.elements.relativeTargetChips.children
+      .find((c) => c.renderedText.includes('chipLate'));
+    assert.ok(before.renderedText.includes(app.emojiForPseudo('chipLate')));
+
+    app.peerAvatars.set('chipLate', { kind: 'flag', code: 'de' });
+    app.renderFollowChips();
+    const after = stub.elements.relativeTargetChips.children
+      .find((c) => c.renderedText.includes('chipLate'));
+    assert.ok(!after.renderedText.includes(app.emojiForPseudo('chipLate')));
   });
 });
 
@@ -1118,5 +1159,134 @@ describe('renderPlayerList() (who the list shows)', () => {
     } finally {
       app.room.remoteParticipants.delete('velp');
     }
+  });
+});
+
+describe('doppler strength switches', () => {
+  const el = (n) => stub.elements[n];
+  const checked = (n) => el(n).getAttribute('aria-checked');
+
+  test('all three start off, which is the no-doppler baseline', () => {
+    assert.strictEqual(checked('dopplerSubtle'), 'false');
+    assert.strictEqual(checked('dopplerStrong'), 'false');
+    assert.strictEqual(checked('dopplerExact'), 'false');
+    assert.strictEqual(app.dopplerPreset, null);
+  });
+
+  // Three switches, but only one effect: two of them on at once would be a
+  // question with no answer, so picking one has to release the others.
+  test('picking one releases the other two', () => {
+    el('dopplerSubtle').dispatch('click');
+    assert.strictEqual(app.dopplerPreset, 'subtle');
+    el('dopplerExact').dispatch('click');
+    assert.strictEqual(app.dopplerPreset, 'exact');
+    assert.strictEqual(checked('dopplerExact'), 'true');
+    assert.strictEqual(checked('dopplerSubtle'), 'false');
+    assert.strictEqual(checked('dopplerStrong'), 'false');
+  });
+
+  test('clicking the active one turns the effect off entirely', () => {
+    el('dopplerStrong').dispatch('click');
+    el('dopplerStrong').dispatch('click');
+    assert.strictEqual(app.dopplerPreset, null);
+    assert.strictEqual(checked('dopplerStrong'), 'false');
+  });
+
+  test('the choice survives a reload', () => {
+    el('dopplerStrong').dispatch('click');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.doppler'), 'strong');
+    el('dopplerStrong').dispatch('click');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.doppler'), '');
+  });
+});
+
+describe('driveDoppler()', () => {
+  // Records every ramp the delay line is asked for; the value at the end of the
+  // ramp is what the ear hears as a pitch, so that is what the tests look at.
+  const fakeNode = () => ({
+    delay: {
+      delayTime: {
+        value: 0,
+        ramps: [],
+        cancelScheduledValues() {},
+        setValueAtTime(v) { this.value = v; },
+        linearRampToValueAtTime(v, t) { this.value = v; this.ramps.push([v, t]); },
+      },
+    },
+  });
+
+  test('a graph with no delay node is left alone rather than crashing', () => {
+    const n = { gainNode: {}, panner: {} };
+    app.driveDoppler(n, 100, 1);
+    assert.strictEqual(n.dopplerSec, undefined);
+  });
+
+  test('with the effect off the line sits at the base headroom', () => {
+    const n = fakeNode();
+    app.driveDoppler(n, 500, 10);
+    assert.ok(Math.abs(n.dopplerSec - 0.01) < 1e-9, `got ${n.dopplerSec}`);
+  });
+
+  test('on: the first frame snaps to the real travel time, no swoop', () => {
+    stub.elements.dopplerSubtle.dispatch('click');
+    const n = fakeNode();
+    app.driveDoppler(n, 343, 10); // one second of travel, dosed to 0.3
+    assert.ok(Math.abs(n.dopplerSec - 0.31) < 1e-9, `got ${n.dopplerSec}`);
+    assert.deepStrictEqual(n.delay.delayTime.ramps.length, 1);
+  });
+
+  // Closing the gap shortens the delay: the sound arrives sooner every frame,
+  // which IS the pitch going up. Nothing in the code computes a ratio.
+  test('on: closing the gap shortens the delay, opening it lengthens it', () => {
+    stub.elements.dopplerSubtle.dispatch('click');
+    const n = fakeNode();
+    app.driveDoppler(n, 343, 10);
+    const far = n.dopplerSec;
+    app.driveDoppler(n, 0, 10.5);
+    const near = n.dopplerSec;
+    assert.ok(near < far, `expected the delay to shrink, ${far} -> ${near}`);
+    app.driveDoppler(n, 343, 11);
+    assert.ok(n.dopplerSec > near);
+  });
+
+  test('on: a teleporting peer is rate limited, not pitched into a squeak', () => {
+    stub.elements.dopplerExact.dispatch('click');
+    const n = fakeNode();
+    app.driveDoppler(n, 0, 10);
+    app.driveDoppler(n, 20000, 10.5); // half a second later, kilometres away
+    assert.ok(n.dopplerSec - 0.01 <= 0.9 * 0.5 + 1e-9, `got ${n.dopplerSec}`);
+  });
+
+  test('turning the effect off walks the delay home instead of snapping', () => {
+    stub.elements.dopplerExact.dispatch('click');
+    const n = fakeNode();
+    app.driveDoppler(n, 1000, 10);
+    const held = n.dopplerSec;
+    assert.ok(held > 2, `got ${held}`);
+    stub.elements.dopplerExact.dispatch('click');
+    app.driveDoppler(n, 1000, 10.1);
+    assert.ok(n.dopplerSec < held, 'should be heading home');
+    assert.ok(n.dopplerSec > 1, `snapped instead of walking: ${n.dopplerSec}`);
+  });
+
+  test('a frame from a backgrounded tab does not move the line for seconds', () => {
+    stub.elements.dopplerExact.dispatch('click');
+    const n = fakeNode();
+    app.driveDoppler(n, 0, 10);
+    app.driveDoppler(n, 20000, 400); // tab was hidden for six minutes
+    assert.ok(n.dopplerSec <= 0.01 + 0.9 + 1e-9, `got ${n.dopplerSec}`);
+  });
+
+  test('tickGains drives it for every peer that has a delay node', () => {
+    stub.elements.dopplerSubtle.dispatch('click');
+    const n = fakeNode();
+    n.gainNode = { gain: { value: 0, setTargetAtTime() {} } };
+    n.panner = { pan: { value: 0, setTargetAtTime() {} } };
+    n.filter = { frequency: { value: 0, setTargetAtTime() {} } };
+    app.peers.set('alice', { x: app.me.x + 100, y: 0, z: app.me.z, lastSeen: Date.now() });
+    app.audioNodes.set('alice', n);
+    app.tickGains();
+    assert.ok(n.delay.delayTime.ramps.length > 0, 'tickGains never touched the delay');
+    assert.ok(n.dopplerSec > 0.01, `100 m should be an audible travel time, got ${n.dopplerSec}`);
   });
 });

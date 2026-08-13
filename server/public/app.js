@@ -8,6 +8,7 @@
 import {
   distance, gainForDistance, gainForDistanceRealistic, panForOffset,
   lowpassForDistance, LOWPASS_NEAR_HZ, toCarFrame,
+  dopplerDelayFor, DOPPLER_PRESETS, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC,
 } from './audio-math.js';
 import {
   AVATAR_EMOJI, emojiForPseudo, guessCountry, validateAvatar, resolveAvatar,
@@ -66,10 +67,14 @@ const highContrastToggle = document.getElementById('highContrastToggle');
 const showEmojiToggle = document.getElementById('showEmojiToggle');
 const realisticAudioToggle = document.getElementById('realisticAudioToggle');
 const rotateRadarToggle = document.getElementById('rotateRadarToggle');
+const dopplerSubtleToggle = document.getElementById('dopplerSubtleToggle');
+const dopplerStrongToggle = document.getElementById('dopplerStrongToggle');
+const dopplerExactToggle = document.getElementById('dopplerExactToggle');
 
-// The 8 boolean settings (followGame, relativeMode, themeToggle,
+// The 11 boolean settings (followGame, relativeMode, themeToggle,
 // reduceMotionToggle, highContrastToggle, showEmojiToggle,
-// realisticAudioToggle, rotateRadarToggle) are <button role="switch"> elements,
+// realisticAudioToggle, rotateRadarToggle, and the three doppler
+// strengths) are <button role="switch"> elements,
 // not native checkboxes - state lives in aria-checked instead of .checked.
 function isSwitchOn(btn) { return btn.getAttribute('aria-checked') === 'true'; }
 function setSwitchOn(btn, on) { btn.setAttribute('aria-checked', on ? 'true' : 'false'); }
@@ -122,7 +127,14 @@ function renderFollowChips() {
   if (!relativeTargetChipsEl) return;
   const identities = [...peers.keys()].filter((p) => p !== myIdentity).sort();
   const selected = relativeTargetInput.value.trim();
-  const key = JSON.stringify([identities, selected]);
+  // The avatar belongs in the key too: it arrives in a data message some time
+  // after the player does, so keying on the names alone froze every chip on the
+  // hashed fallback emoji and never repainted it as the real flag.
+  const avatars = identities.map((p) => {
+    const av = avatarFor(p);
+    return `${av.kind}:${av.kind === 'flag' ? av.code : av.value}`;
+  });
+  const key = JSON.stringify([identities, avatars, selected]);
   if (key === lastChipsKey) return;
   lastChipsKey = key;
 
@@ -135,7 +147,13 @@ function renderFollowChips() {
     const chip = document.createElement('button');
     chip.type = 'button';
     chip.className = 'chip' + (pseudo === selected ? ' selected' : '');
-    chip.textContent = `${emojiForPseudo(pseudo)} ${pseudo}`;
+    // Same picture as the list row and the radar blip, via the same painter -
+    // a chip showing a different face than the blip is worse than no face.
+    const face = document.createElement('span');
+    face.className = 'chip-avatar';
+    paintAvatar(face, avatarFor(pseudo), pseudo);
+    chip.appendChild(face);
+    chip.appendChild(document.createTextNode(` ${pseudo}`));
     chip.addEventListener('click', () => {
       relativeTargetInput.value = relativeTargetInput.value.trim() === pseudo ? '' : pseudo;
       renderFollowChips();
@@ -428,6 +446,39 @@ function setupRotateRadar() {
   });
 }
 setupRotateRadar();
+
+// Doppler strength, or null for none. Three switches rather than one switch and
+// a slider: which strength sounds right cannot be decided in advance, so the
+// only control worth having is one you can flip between while someone drives
+// past you. They behave as a radio group - turning one on turns the others off,
+// turning the current one off leaves the effect disabled, which is the baseline
+// you are comparing against and therefore the default.
+let dopplerPreset = null;
+const dopplerToggles = [
+  ['subtle', dopplerSubtleToggle],
+  ['strong', dopplerStrongToggle],
+  ['exact', dopplerExactToggle],
+];
+function paintDopplerToggles() {
+  for (const [name, el] of dopplerToggles) {
+    if (el) setSwitchOn(el, dopplerPreset === name);
+  }
+}
+function setupDoppler() {
+  const saved = localStorage.getItem('onzvoip.v2.doppler');
+  dopplerPreset = DOPPLER_PRESETS[saved] ? saved : null;
+  paintDopplerToggles();
+  for (const [name, el] of dopplerToggles) {
+    if (!el) continue;
+    el.addEventListener('click', () => {
+      dopplerPreset = isSwitchOn(el) ? null : name;
+      paintDopplerToggles();
+      localStorage.setItem('onzvoip.v2.doppler', dopplerPreset ?? '');
+      logEvent(`doppler ${dopplerPreset ?? 'off'}`);
+    });
+  }
+}
+setupDoppler();
 
 // The heading to look at the world through, or null to stay in world space.
 //
@@ -979,6 +1030,30 @@ function drawMeMarker(cx, cy, color) {
   ctx.fill();
 }
 
+// Doppler, driven one peer at a time. No pitch ratio is ever computed here:
+// the delay line holds the sound's travel time, and moving that time is what
+// bends the pitch - shorter delay means the sound arrives sooner, which is a
+// higher note, in the right direction, for both cars moving at once, for free.
+//
+// The ramp has to be linear: a linear slide of the delay is a constant playback
+// rate, so a constant interval. setTargetAtTime would curve the pitch instead.
+// Feature-detected, because the test double for AudioContext has no delay node.
+function driveDoppler(nodes, dist, now) {
+  const p = nodes.delay?.delayTime;
+  if (!p || !p.linearRampToValueAtTime) return;
+  // Clamped: the first frame has no previous timestamp, and a tab coming back
+  // from the background hands us a dt of several seconds.
+  const dt = Math.min(1, Math.max(0.001, now - (nodes.dopplerAt ?? (now - 0.1))));
+  // With the effect off we aim at distance zero, i.e. straight back to base -
+  // but still through the rate limiter, because a jump in delay is a click.
+  const next = dopplerDelayFor(dopplerPreset ? dist : 0, nodes.dopplerSec ?? NaN, dt, dopplerPreset ?? 'subtle');
+  p.cancelScheduledValues(now);
+  p.setValueAtTime(nodes.dopplerSec ?? next, now);
+  p.linearRampToValueAtTime(next, now + dt);
+  nodes.dopplerSec = next;
+  nodes.dopplerAt = now;
+}
+
 function tickGains() {
   applyRelativeMode();
   // Audit #6: while waiting for our first real in-game position, force
@@ -1002,6 +1077,7 @@ function tickGains() {
       nodes.panner.pan.setTargetAtTime(panForOffset(offsetInEarFrame(pos).right, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
       // Smoothed like the others: a cutoff jumping per frame rings the filter.
       nodes.filter.frequency.setTargetAtTime(cutoffForCurrentMode(dist), now, AUDIO_SMOOTHING_SEC);
+      driveDoppler(nodes, dist, now);
     }
 
     // Audit #31: subscribe/unsubscribe from this peer's audio based on distance.
@@ -1271,6 +1347,7 @@ function purgeAll() {
   currentSpeakers = new Set();
   for (const nodes of audioNodes.values()) {
     try { nodes.source.disconnect(); } catch {}
+    try { nodes.delay?.disconnect(); } catch {}
     try { nodes.filter.disconnect(); } catch {}
     try { nodes.panner.disconnect(); } catch {}
     try { nodes.gainNode.disconnect(); } catch {}
@@ -1431,6 +1508,7 @@ function attachRoomEvents(newRoom) {
     const nodes = audioNodes.get(p.identity);
     if (nodes) {
       try { nodes.source.disconnect(); } catch {}
+      try { nodes.delay?.disconnect(); } catch {}
       try { nodes.filter.disconnect(); } catch {}
       try { nodes.panner.disconnect(); } catch {}
       try { nodes.gainNode.disconnect(); } catch {}
@@ -1462,6 +1540,7 @@ function attachRoomEvents(newRoom) {
     const existing = audioNodes.get(participant.identity);
     if (existing) {
       try { existing.source.disconnect(); } catch {}
+      try { existing.delay?.disconnect(); } catch {}
       try { existing.filter.disconnect(); } catch {}
       try { existing.panner.disconnect(); } catch {}
       try { existing.gainNode.disconnect(); } catch {}
@@ -1495,8 +1574,20 @@ function attachRoomEvents(newRoom) {
     const panner = audioCtx.createStereoPanner();
     const gainNode = audioCtx.createGain();
     gainNode.gain.value = 0;
-    source.connect(filter).connect(panner).connect(gainNode).connect(audioCtx.destination);
-    audioNodes.set(participant.identity, { source, filter, panner, gainNode, el });
+    // Doppler: the sound's travel time, ahead of everything else because that
+    // is the order the physics happens in. Always in the graph, even with the
+    // effect off - it then just sits at DOPPLER_BASE_SEC and does nothing, which
+    // is cheaper and far less clicky than rewiring the chain mid-conversation.
+    // Feature-detected because the test double for AudioContext has no delay.
+    const delay = audioCtx.createDelay ? audioCtx.createDelay(DOPPLER_MAX_DELAY_SEC) : null;
+    if (delay) {
+      delay.delayTime.value = DOPPLER_BASE_SEC;
+      source.connect(delay).connect(filter);
+    } else {
+      source.connect(filter);
+    }
+    filter.connect(panner).connect(gainNode).connect(audioCtx.destination);
+    audioNodes.set(participant.identity, { source, delay, filter, panner, gainNode, el });
   });
 
   // LiveKit's SFU computes active speakers for every connected client
@@ -1514,6 +1605,7 @@ function attachRoomEvents(newRoom) {
     const nodes = audioNodes.get(participant.identity);
     if (!nodes) return;
     nodes.source.disconnect();
+    nodes.delay?.disconnect();
     nodes.filter.disconnect();
     nodes.panner.disconnect();
     nodes.gainNode.disconnect();
@@ -2038,6 +2130,7 @@ export {
   renderPlayerList, renderPeerTable, renderFollowChips, draw,
   projectToRadar, emojiForPseudo, setupCalibration,
   gainForCurrentMode, cutoffForCurrentMode, offsetInEarFrame, headingForView,
+  driveDoppler, dopplerPreset,
   leaveVoice, rejoinVoice,
   avatarFor, setMyAvatar, myEffectiveAvatar, announceAvatar, peerAvatars,
   me, peers, gains, audioNodes, audioPublications, subscribedPeers, room,

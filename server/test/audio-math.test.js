@@ -4,6 +4,7 @@ import {
   distance, clamp, gainForDistance, panForOffset,
   gainForDistanceRealistic, lowpassForDistance, LOWPASS_NEAR_HZ, LOWPASS_FAR_HZ,
   toCarFrame,
+  dopplerDelayFor, DOPPLER_PRESETS, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC, SPEED_OF_SOUND,
 } from '../public/audio-math.js';
 
 describe('distance()', () => {
@@ -258,6 +259,75 @@ describe('panForOffset()', () => {
     for (const dx of [-1000, -10, -5, 0, 5, 10, 1000]) {
       const pan = panForOffset(dx, PAN);
       assert.ok(pan >= -1 && pan <= 1, `pan out of [-1,1] at dx=${dx}: ${pan}`);
+    }
+  });
+});
+
+describe('dopplerDelayFor()', () => {
+  test('first call snaps to the target instead of swooping in from zero', () => {
+    const d = dopplerDelayFor(343, NaN, 0.016, 'exact');
+    assert.ok(Math.abs(d - (DOPPLER_BASE_SEC + 1)) < 1e-9, `got ${d}`);
+  });
+
+  test('the target is the travel time, dosed by the preset scale', () => {
+    for (const [name, p] of Object.entries(DOPPLER_PRESETS)) {
+      const expected = DOPPLER_BASE_SEC + (686 / SPEED_OF_SOUND) * p.scale;
+      const d = dopplerDelayFor(686, NaN, 0.016, name);
+      assert.ok(Math.abs(d - expected) < 1e-9, `${name}: got ${d}, want ${expected}`);
+    }
+  });
+
+  test('distance zero is the base headroom, never a delay of zero', () => {
+    assert.strictEqual(dopplerDelayFor(0, NaN, 0.016, 'exact'), DOPPLER_BASE_SEC);
+    assert.ok(DOPPLER_BASE_SEC > 0);
+  });
+
+  // The pitch shift IS the rate of change of the delay, so the rate cap is the
+  // only thing standing between a teleporting peer and a chipmunk.
+  test('the delay never moves faster than the preset allows', () => {
+    for (const [name, p] of Object.entries(DOPPLER_PRESETS)) {
+      const dt = 0.016;
+      const up = dopplerDelayFor(20000, 0.5, dt, name);
+      assert.ok(up - 0.5 <= p.maxRate * dt + 1e-12, `${name} ran away upward: ${up}`);
+      const down = dopplerDelayFor(0, 0.5, dt, name);
+      assert.ok(0.5 - down <= p.maxRate * dt + 1e-12, `${name} ran away downward: ${down}`);
+    }
+  });
+
+  // A tab returning from the background hands us a huge dt; the caller clamps
+  // it, but the cap must hold on its own terms too - rate times dt, no more.
+  test('a long frame is allowed a proportionally longer move, not an unbounded one', () => {
+    const p = DOPPLER_PRESETS.subtle;
+    const moved = dopplerDelayFor(20000, 0.1, 1, 'subtle') - 0.1;
+    assert.ok(Math.abs(moved - p.maxRate) < 1e-12, `got ${moved}`);
+  });
+
+  test('an unknown preset name falls back to the gentlest one', () => {
+    assert.strictEqual(
+      dopplerDelayFor(500, 0.2, 0.016, 'nonsense'),
+      dopplerDelayFor(500, 0.2, 0.016, 'subtle'),
+    );
+  });
+
+  test('never exceeds the delay buffer we allocated', () => {
+    for (const dist of [500, 5000, 1e9]) {
+      assert.ok(dopplerDelayFor(dist, NaN, 0.016, 'exact') <= DOPPLER_MAX_DELAY_SEC);
+    }
+  });
+
+  test('garbage distance is treated as zero, not as NaN', () => {
+    assert.strictEqual(dopplerDelayFor(NaN, NaN, 0.016, 'exact'), DOPPLER_BASE_SEC);
+    assert.strictEqual(dopplerDelayFor(-50, NaN, 0.016, 'exact'), DOPPLER_BASE_SEC);
+  });
+
+  // Approaching at rate r plays the sound back at 1/(1-r): the caps are chosen
+  // so the worst case stays a recognisable voice rather than a squeak.
+  test('the implied pitch stays under a factor of ten even at the exact preset', () => {
+    for (const p of Object.values(DOPPLER_PRESETS)) {
+      assert.ok(p.maxRate < 1, 'a rate of 1 would freeze the audio entirely');
+      // 0.9 is exactly a factor of ten, and 1 - 0.9 in binary floating point is
+      // a hair under 0.1, so the bound is written with room for that hair.
+      assert.ok(1 / (1 - p.maxRate) <= 10.001, `${p.maxRate} -> ${1 / (1 - p.maxRate)}`);
     }
   });
 });

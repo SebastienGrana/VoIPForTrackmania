@@ -93,3 +93,57 @@ export function lowpassForDistance(d, minDist, maxDist, nearHz = LOWPASS_NEAR_HZ
   // the first half of the distance falling through octaves nobody can hear.
   return nearHz * Math.pow(farHz / nearHz, t);
 }
+
+// ---------------------------------------------------------------------------
+// Doppler.
+//
+// Web Audio used to do this for us; the W3C removed it, so it is rebuilt by
+// hand. The trick is to never compute a pitch ratio at all: feed the voice
+// through a delay line whose length is the sound's travel time, and the pitch
+// shift falls out of the resampling for free, in the right direction, for both
+// of you moving at once. Shortening delay = arriving sooner = higher.
+//
+// The catch is that Trackmania is not a physics demo. Two cars crossing at
+// 300 km/h each give a real shift of nearly an octave at the moment they pass,
+// which is unintelligible, so the effect is dosed: `scale` is the fraction of
+// the true travel time that reaches the delay line, and since the pitch shift
+// is the *rate of change* of that delay, a scale of 0.3 is 30 % of the physics.
+export const SPEED_OF_SOUND = 343; // m/s, sea level, the one real constant here
+
+// A delay line sitting at exactly zero has no samples to interpolate between,
+// and a fast move away from it clicks. 10 ms of headroom, inaudible on voice.
+export const DOPPLER_BASE_SEC = 0.01;
+
+// The three settings offered side by side, because which one sounds right is an
+// ear judgement. `maxRate` caps how fast the delay may move, which is the same
+// thing as capping the pitch: a rate of r while approaching gives 1/(1 - r).
+export const DOPPLER_PRESETS = {
+  // ~1.3 semitones behind a car at 300 km/h, ~2.7 head-on, capped at ~3.
+  subtle: { scale: 0.3, maxRate: 0.16 },
+  // Twice the physics of `subtle`, hard to miss even at moderate speed, and
+  // starting to sound like an effect rather than like a road.
+  strong: { scale: 0.6, maxRate: 0.32 },
+  // The real formula. Honest, and close to unusable at the moment of crossing;
+  // the cap is set high enough that it only catches physically absurd speeds.
+  exact:  { scale: 1.0, maxRate: 0.90 },
+};
+
+// Long enough for the far edge of any calibration at full scale (1000 m of
+// travel is 2.9 s) without allocating an absurd buffer per participant.
+export const DOPPLER_MAX_DELAY_SEC = 3.5;
+
+// Next delay-line length, in seconds. `prevDelay` is what we asked for last
+// tick (not what the node reports), so the rate cap is exact and testable;
+// pass a non-finite value the first time to snap straight to the target rather
+// than swooping in from zero, which would pitch a newcomer's first word.
+export function dopplerDelayFor(dist, prevDelay, dtSec, preset = 'subtle') {
+  const p = DOPPLER_PRESETS[preset] || DOPPLER_PRESETS.subtle;
+  const d = Math.max(0, Number(dist) || 0);
+  // Capped at the buffer we actually allocated: a peer two kilometres away is
+  // silent anyway, and letting the target run past the node's maxDelayTime
+  // would leave our bookkeeping believing a delay the node never applied.
+  const target = Math.min(DOPPLER_MAX_DELAY_SEC, DOPPLER_BASE_SEC + (d / SPEED_OF_SOUND) * p.scale);
+  if (!isFinite(prevDelay)) return target;
+  const step = p.maxRate * Math.max(Number(dtSec) || 0, 0.001);
+  return clamp(target, prevDelay - step, prevDelay + step);
+}

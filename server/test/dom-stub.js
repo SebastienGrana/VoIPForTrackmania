@@ -53,6 +53,12 @@ class FakeElement {
   getAttribute(name) { return this._attrs?.[name] ?? null; }
   get lastChild() { return this.children[this.children.length - 1]; }
   get childElementCount() { return this.children.length; }
+  // What the user would actually read, own text plus descendants'. Needed since
+  // elements built from a mix of appendChild and text nodes (the follow chips)
+  // have an empty textContent of their own and say nothing without it.
+  get renderedText() {
+    return this.textContent + this.children.map((c) => c.renderedText ?? '').join('');
+  }
   getBoundingClientRect() { return { left: 0, top: 0 }; }
 }
 
@@ -77,6 +83,12 @@ const fakeCtx = {
 class FakeGainParam {
   constructor(v = 0) { this.value = v; }
   setTargetAtTime(v) { this.value = v; }
+  // The doppler code schedules a ramp instead of setting a value, so the
+  // double has to remember where the ramp was heading: the value at the end
+  // of the ramp is what the next frame reads back as "the current delay".
+  cancelScheduledValues() {}
+  setValueAtTime(v) { this.value = v; }
+  linearRampToValueAtTime(v, t) { this.value = v; this.rampEndsAt = t; }
 }
 class FakeAudioNode { connect(n) { return n; } disconnect() {} }
 class FakeGainNode extends FakeAudioNode { constructor() { super(); this.gain = new FakeGainParam(0); } }
@@ -84,11 +96,15 @@ class FakeStereoPannerNode extends FakeAudioNode { constructor() { super(); this
 class FakeBiquadFilterNode extends FakeAudioNode {
   constructor() { super(); this.type = ''; this.frequency = new FakeGainParam(0); }
 }
+class FakeDelayNode extends FakeAudioNode {
+  constructor(max) { super(); this.maxDelayTime = max; this.delayTime = new FakeGainParam(0); }
+}
 class FakeAudioContext {
   constructor() { this.state = 'running'; this.currentTime = 0; this.destination = new FakeAudioNode(); }
   createMediaStreamSource() { return new FakeAudioNode(); }
   createStereoPanner() { return new FakeStereoPannerNode(); }
   createBiquadFilter() { return new FakeBiquadFilterNode(); }
+  createDelay(max) { return new FakeDelayNode(max); }
   createGain() { return new FakeGainNode(); }
   async resume() { this.state = 'running'; }
 }
@@ -188,6 +204,11 @@ export function installDomStubs() {
   const showEmojiToggle = el('showEmojiToggle', 'input'); showEmojiToggle.setAttribute('aria-checked', 'true');
   const realisticAudioToggle = el('realisticAudioToggle', 'input'); realisticAudioToggle.setAttribute('aria-checked', 'true');
   const rotateRadarToggle = el('rotateRadarToggle', 'input'); rotateRadarToggle.setAttribute('aria-checked', 'true');
+  // The three doppler strengths behave as one radio group: all three start off,
+  // which is the "no doppler" baseline.
+  const dopplerSubtleToggle = el('dopplerSubtleToggle', 'input'); dopplerSubtleToggle.setAttribute('aria-checked', 'false');
+  const dopplerStrongToggle = el('dopplerStrongToggle', 'input'); dopplerStrongToggle.setAttribute('aria-checked', 'false');
+  const dopplerExactToggle = el('dopplerExactToggle', 'input'); dopplerExactToggle.setAttribute('aria-checked', 'false');
 
   el('identity', 'input');
   el('followGame', 'input');
@@ -249,6 +270,11 @@ export function installDomStubs() {
     getElementById: (id) => elementsById.get(id) ?? null,
     querySelector: (sel) => (sel === '#peers tbody' ? peersTbody : null),
     createElement: (tag) => new FakeElement(tag),
+    createTextNode: (data) => {
+      const node = new FakeElement('#text');
+      node.textContent = String(data);
+      return node;
+    },
     body,
     documentElement,
   };
@@ -293,6 +319,9 @@ export function installDomStubs() {
       canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody, window: fakeWindow,
       realisticAudio: realisticAudioToggle,
       rotateRadar: rotateRadarToggle,
+      dopplerSubtle: dopplerSubtleToggle,
+      dopplerStrong: dopplerStrongToggle,
+      dopplerExact: dopplerExactToggle,
       maxDist, minDist, panRange, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },
