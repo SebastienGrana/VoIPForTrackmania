@@ -38,12 +38,19 @@ beforeEach(() => {
   stub.elements.relativeTarget.value = '';
   stub.elements.relativeOffsetX.value = '0';
   stub.elements.relativeOffsetY.value = '0';
-  stub.elements.followGame.setAttribute('aria-checked', 'false');
-  // Owned by its click listener, like freePosChosen: writing aria-checked
-  // directly would desync the module flag from the switch. Click only if it
-  // is not already where we want it.
+  // These three own module state in their click listeners (meKnown/myHeading,
+  // realisticAudio, rotateRadar), so writing aria-checked directly would desync
+  // the flag from the switch — and for followGame it would leave a heading from
+  // a previous test rotating this one's audio. Reached through a click, and
+  // only when the state actually needs to change.
+  if (stub.elements.followGame.getAttribute('aria-checked') !== 'false') {
+    stub.elements.followGame.dispatch('click');
+  }
   if (stub.elements.realisticAudio.getAttribute('aria-checked') !== 'true') {
     stub.elements.realisticAudio.dispatch('click');
+  }
+  if (stub.elements.rotateRadar.getAttribute('aria-checked') !== 'true') {
+    stub.elements.rotateRadar.dispatch('click');
   }
 
   stub.setFetch(async () => { throw new Error('fetch not mocked for this test'); });
@@ -342,6 +349,212 @@ describe('realistic audio switch', () => {
     assert.strictEqual(localStorage.getItem('onzvoip.v2.realisticAudio'), '0');
     stub.elements.realisticAudio.dispatch('click');
     assert.strictEqual(localStorage.getItem('onzvoip.v2.realisticAudio'), '1');
+  });
+});
+
+describe('car heading (radar rotation + rotating stereo)', () => {
+  // Everything here goes through the real path: the heading only ever enters
+  // the client attached to our own position, on a relay packet, in follow-game
+  // mode. There is no setter to poke.
+  function emitOwnPosition(extra) {
+    const payload = new TextEncoder().encode(JSON.stringify([{ pseudo: 'me', x: 200, y: 0, z: 200, ...extra }]));
+    stub.lastRoom().emit('dataReceived', payload, undefined, undefined, 'position');
+  }
+  function followGameOn() {
+    stub.elements.followGame.dispatch('click');
+  }
+
+  // The suite's opening connectLiveKit() never sets myIdentity - only the two
+  // real entry points do - and without it the client cannot recognise its own
+  // position coming back from the game, which is the only packet a heading ever
+  // rides on. So join the way a player does, through a ?t= link.
+  before(async () => {
+    stub.setFetch(async () => ({
+      ok: true, status: 200,
+      json: async () => ({ token: 'tok', wsUrl: 'ws://fake', room: 'r-heading', login: 'me', serverName: null }),
+    }));
+    await app.connectViaNonce('heading-nonce');
+  });
+
+  beforeEach(() => {
+    // The peer blip is only a fillText call while emoji avatars are on, and
+    // that switch persists to localStorage - so an earlier test turning it off
+    // would otherwise change what this whole block is reading.
+    if (stub.elements.showEmojiToggle.getAttribute('aria-checked') !== 'true') {
+      stub.elements.showEmojiToggle.dispatch('click');
+    }
+  });
+
+  test('no heading until the game sends one', () => {
+    assert.strictEqual(app.headingForView(), null);
+  });
+
+  test('a position without a heading leaves us in world space', () => {
+    // Older plugin builds, and every browser publishing its own dragged dot.
+    followGameOn();
+    emitOwnPosition({});
+    assert.strictEqual(app.headingForView(), null);
+    const off = app.offsetInEarFrame({ x: app.me.x + 10, y: 0, z: app.me.z });
+    assert.strictEqual(off.right, 10);
+  });
+
+  test('a heading arrives with our own position and rotates the offset', () => {
+    followGameOn();
+    emitOwnPosition({ fx: 0, fz: 1 });
+    assert.deepStrictEqual(app.headingForView(), { fx: 0, fz: 1 });
+    // Peer 10 m ahead along +Z: dead ahead once rotated, so nothing either side.
+    const off = app.offsetInEarFrame({ x: app.me.x, y: 0, z: app.me.z + 10 });
+    assert.ok(Math.abs(off.right) < 1e-9, `expected centred, got ${off.right}`);
+    assert.ok(Math.abs(off.front - 10) < 1e-9);
+  });
+
+  test('turning the car swaps which ear a stationary peer comes from', () => {
+    followGameOn();
+    const peer = { x: app.me.x + 10, y: 0, z: app.me.z };
+    emitOwnPosition({ fx: 0, fz: 1 });
+    const before = app.offsetInEarFrame(peer).right;
+    emitOwnPosition({ fx: 0, fz: -1 }); // U-turn, peer has not moved
+    const after = app.offsetInEarFrame(peer).right;
+    assert.ok(Math.abs(before) > 1, 'the peer should be off to one side');
+    assert.ok(Math.abs(before + after) < 1e-9, `expected mirrored, got ${before} then ${after}`);
+  });
+
+  test('a heading that stops arriving is dropped, not held on to', () => {
+    // A respawn or a plugin reload can interrupt it. Steering the world by the
+    // last direction we happened to see would be worse than not steering it.
+    followGameOn();
+    emitOwnPosition({ fx: 1, fz: 0 });
+    assert.ok(app.headingForView());
+    emitOwnPosition({});
+    assert.strictEqual(app.headingForView(), null);
+  });
+
+  test('a zero-length heading carries no direction and is refused', () => {
+    followGameOn();
+    emitOwnPosition({ fx: 0, fz: 0 });
+    assert.strictEqual(app.headingForView(), null);
+  });
+
+  test('leaving follow-game mode drops the heading', () => {
+    followGameOn();
+    emitOwnPosition({ fx: 1, fz: 0 });
+    assert.ok(app.headingForView());
+    stub.elements.followGame.dispatch('click'); // back to the mouse-dragged dot
+    assert.strictEqual(app.headingForView(), null);
+  });
+
+  test('follow-a-player mode ignores the heading: "me" is not our car', () => {
+    followGameOn();
+    emitOwnPosition({ fx: 1, fz: 0 });
+    stub.elements.relativeMode.dispatch('click');
+    assert.strictEqual(app.headingForView(), null);
+  });
+
+  test('the pan tickGains pushes is the one from the car frame', () => {
+    const panCalls = [];
+    followGameOn();
+    const peer = { x: app.me.x + 5, y: 0, z: app.me.z, lastSeen: Date.now() };
+    app.peers.set('alice', peer);
+    app.audioNodes.set('alice', {
+      gainNode: { gain: { value: 0, setTargetAtTime: () => {} } },
+      panner: { pan: { value: 0, setTargetAtTime: (v) => panCalls.push(v) } },
+      filter: { frequency: { value: 0, setTargetAtTime: () => {} } },
+      source: { disconnect() {} },
+      el: null,
+    });
+
+    emitOwnPosition({ fx: 0, fz: 1 });
+    app.tickGains();
+    emitOwnPosition({ fx: 0, fz: -1 });
+    app.tickGains();
+
+    assert.strictEqual(panCalls.length, 2);
+    assert.ok(Math.abs(panCalls[0]) > 0.1, `expected an off-centre pan, got ${panCalls[0]}`);
+    assert.ok(Math.abs(panCalls[0] + panCalls[1]) < 1e-9,
+      `the U-turn should mirror the pan, got ${panCalls}`);
+  });
+
+  test('the radar switch defaults to on and survives a reload', () => {
+    assert.strictEqual(stub.elements.rotateRadar.getAttribute('aria-checked'), 'true');
+    stub.elements.rotateRadar.dispatch('click');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.rotateRadar'), '0');
+    stub.elements.rotateRadar.dispatch('click');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.rotateRadar'), '1');
+  });
+
+  test('freezing the radar does not stop the sound from turning', () => {
+    // The switch is a display preference. The stereo image is the feature.
+    followGameOn();
+    emitOwnPosition({ fx: 0, fz: 1 });
+    stub.elements.rotateRadar.dispatch('click'); // radar pinned to the map
+    const off = app.offsetInEarFrame({ x: app.me.x, y: 0, z: app.me.z + 10 });
+    assert.ok(Math.abs(off.right) < 1e-9, `still rotated for the ears, got ${off.right}`);
+  });
+
+  // Where the peer's blip lands on the canvas: with emoji avatars on (the
+  // default) that is the fillText call, whose args are (glyph, x, y).
+  function blipXY() {
+    const op = stub.canvasOps.filter((o) => o.op === 'fillText').pop();
+    return op ? { x: op.args[1], y: op.args[2] } : null;
+  }
+
+  test('draw() plots a peer somewhere else once the radar is frozen', () => {
+    // The peer sits due +X while the car faces +X too, so rotated they belong
+    // straight ahead - at the top of the radar. Pinned to the map they go to
+    // the right instead. Same peer, same position, two different pictures.
+    followGameOn();
+    app.peers.set('alice', { x: app.me.x + 20, y: 0, z: app.me.z, lastSeen: Date.now() });
+    emitOwnPosition({ fx: 1, fz: 0 });
+
+    stub.canvasOps.length = 0;
+    app.draw();
+    const rotated = blipXY();
+
+    stub.elements.rotateRadar.dispatch('click');
+    stub.canvasOps.length = 0;
+    app.draw();
+    const pinned = blipXY();
+
+    assert.ok(rotated && pinned, 'expected the peer blip to be drawn both times');
+    const cx = stub.elements.canvas.width / 2, cy = stub.elements.canvas.height / 2;
+    assert.ok(Math.abs(rotated.x - cx) < 1 && rotated.y < cy - 1,
+      `rotated blip should be straight up, got ${JSON.stringify(rotated)}`);
+    assert.ok(Math.abs(pinned.y - cy) < 1 && pinned.x > cx + 1,
+      `pinned blip should be off to the right, got ${JSON.stringify(pinned)}`);
+  });
+
+  test('our own blip is an arrow once we have a heading, a dot before', () => {
+    // An arrow pointing at a direction we do not know would be a confident lie,
+    // so the plain dot has to survive for browsers with no plugin.
+    stub.canvasOps.length = 0;
+    app.draw();
+    assert.strictEqual(stub.canvasOps.filter((o) => o.op === 'lineTo').length, 0);
+
+    followGameOn();
+    emitOwnPosition({ fx: 1, fz: 0 });
+    stub.canvasOps.length = 0;
+    app.draw();
+    assert.strictEqual(stub.canvasOps.filter((o) => o.op === 'lineTo').length, 2,
+      'expected the two back corners of the arrow');
+  });
+
+  test('the arrow points up while the radar turns, and along the car once frozen', () => {
+    followGameOn();
+    emitOwnPosition({ fx: 1, fz: 0 }); // driving along +X, i.e. to the right of the map
+    const cx = stub.elements.canvas.width / 2, cy = stub.elements.canvas.height / 2;
+
+    stub.canvasOps.length = 0;
+    app.draw();
+    let nose = stub.canvasOps.filter((o) => o.op === 'moveTo').pop();
+    assert.ok(Math.abs(nose.args[0] - cx) < 1e-9 && nose.args[1] < cy,
+      `rotating: the nose is the top of the radar, got ${JSON.stringify(nose.args)}`);
+
+    stub.elements.rotateRadar.dispatch('click');
+    stub.canvasOps.length = 0;
+    app.draw();
+    nose = stub.canvasOps.filter((o) => o.op === 'moveTo').pop();
+    assert.ok(nose.args[0] > cx && Math.abs(nose.args[1] - cy) < 1e-9,
+      `pinned: the nose follows the car, got ${JSON.stringify(nose.args)}`);
   });
 });
 

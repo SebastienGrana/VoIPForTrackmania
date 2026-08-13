@@ -7,7 +7,7 @@
 
 import {
   distance, gainForDistance, gainForDistanceRealistic, panForOffset,
-  lowpassForDistance, LOWPASS_NEAR_HZ,
+  lowpassForDistance, LOWPASS_NEAR_HZ, toCarFrame,
 } from './audio-math.js';
 import {
   AVATAR_EMOJI, emojiForPseudo, guessCountry, validateAvatar, resolveAvatar,
@@ -65,10 +65,11 @@ const reduceMotionToggle = document.getElementById('reduceMotionToggle');
 const highContrastToggle = document.getElementById('highContrastToggle');
 const showEmojiToggle = document.getElementById('showEmojiToggle');
 const realisticAudioToggle = document.getElementById('realisticAudioToggle');
+const rotateRadarToggle = document.getElementById('rotateRadarToggle');
 
-// The 7 boolean settings (followGame, relativeMode, themeToggle,
+// The 8 boolean settings (followGame, relativeMode, themeToggle,
 // reduceMotionToggle, highContrastToggle, showEmojiToggle,
-// realisticAudioToggle) are <button role="switch"> elements,
+// realisticAudioToggle, rotateRadarToggle) are <button role="switch"> elements,
 // not native checkboxes - state lives in aria-checked instead of .checked.
 function isSwitchOn(btn) { return btn.getAttribute('aria-checked') === 'true'; }
 function setSwitchOn(btn, on) { btn.setAttribute('aria-checked', on ? 'true' : 'false'); }
@@ -228,10 +229,20 @@ let wsPositionInterval = null;
 // fantasy distances to real peers and could make someone briefly audible who
 // shouldn't be.
 let meKnown = false;
+// Which way our car points, as { fx, fz } — the horizontal part of the game's
+// own direction vector, never an angle we reconstructed. null means "we have no
+// idea", which is the honest state for a browser with no plugin, for a car that
+// has not spawned, and for the moment right after the switch flips.
+let myHeading = null;
 followGameCheckbox.addEventListener('click', () => {
   const on = !isSwitchOn(followGameCheckbox);
   setSwitchOn(followGameCheckbox, on);
   if (on) meKnown = false;
+  // Dropped in both directions. Turning the switch on, we have not received a
+  // heading yet; turning it off, we are back to a dot dragged with the mouse,
+  // which does not point anywhere. Keeping the last one would silently rotate
+  // everything around a direction the player is no longer facing.
+  myHeading = null;
 });
 
 // A <button role="switch"> does not toggle itself the way a checkbox did: the
@@ -392,6 +403,52 @@ function setupRealisticAudio() {
   });
 }
 setupRealisticAudio();
+
+// Whether the radar turns with the car (top of the radar = the bonnet) or stays
+// pinned to the map. The *sound* always turns - that is the whole point of
+// having a heading - so this only decides whether the picture agrees with the
+// ears or whether the player would rather read a stable map and reconstruct it
+// themselves. Sitting in Accessibility rather than next to the radar is
+// deliberate: a decor that swings every time you steer is a motion-sickness
+// question before it is a display preference. Not wired to "Reduce motion"
+// automatically, though - somebody who dislikes an animated sweep does not
+// necessarily want a north-up radar, and guessing that for them would take away
+// the choice this switch exists to give.
+let rotateRadar = true;
+function setupRotateRadar() {
+  if (!rotateRadarToggle) return;
+  const saved = localStorage.getItem('onzvoip.v2.rotateRadar');
+  rotateRadar = saved === null ? true : saved === '1';
+  setSwitchOn(rotateRadarToggle, rotateRadar);
+  rotateRadarToggle.addEventListener('click', () => {
+    rotateRadar = !isSwitchOn(rotateRadarToggle);
+    setSwitchOn(rotateRadarToggle, rotateRadar);
+    localStorage.setItem('onzvoip.v2.rotateRadar', rotateRadar ? '1' : '0');
+    logEvent(`radar rotation ${rotateRadar ? 'on' : 'off'}`);
+  });
+}
+setupRotateRadar();
+
+// The heading to look at the world through, or null to stay in world space.
+//
+// Follow-a-player mode is the one case where we have a heading and must not use
+// it: "me" is then parked on somebody else's coordinates, so our own car points
+// somewhere unrelated to the vantage point being rendered. Rotating by it would
+// spin the radar around a car that is not where the view is.
+function headingForView() {
+  if (isSwitchOn(relativeModeCheckbox)) return null;
+  return myHeading;
+}
+
+// Where a peer sits as the ear hears it: how far to our right, how far ahead.
+// Falls back to raw world offsets with no heading, which is exactly what
+// shipped before - so a player without the plugin loses nothing.
+function offsetInEarFrame(pos) {
+  const dx = pos.x - me.x, dz = pos.z - me.z;
+  const h = headingForView();
+  if (!h) return { right: dx, front: dz };
+  return toCarFrame(dx, dz, h.fx, h.fz);
+}
 
 // The two knobs the switch above actually moves, kept together so they can
 // never drift apart: gain law and low-pass cutoff always come from the same
@@ -820,7 +877,15 @@ function draw() {
   let activePeer = null; // hovered/tapped dot, drawn last so its tooltip sits on top
   for (const [pseudo, pos] of peers) {
     const gain = gains.get(pseudo)?.current ?? 0;
-    const proj = projectToRadar(pos.x - me.x, pos.z - me.z, R, k);
+    // With rotation on, the radar is drawn in the car's frame: right of the car
+    // goes right on screen, ahead of the car goes up - hence the minus, screen Y
+    // growing downward. With it off, or with no heading to rotate by, the world
+    // axes are plotted exactly as they always were.
+    const off = offsetInEarFrame(pos);
+    const turned = rotateRadar && headingForView();
+    const proj = turned
+      ? projectToRadar(off.right, -off.front, R, k)
+      : projectToRadar(pos.x - me.x, pos.z - me.z, R, k);
     const px = cx + proj.x_display;
     const py = cy + proj.y_display;
     const size = Math.min(MAX_EMOJI_PX, Math.max(MIN_EMOJI_PX, 20 * proj.scale));
@@ -881,8 +946,37 @@ function draw() {
     ctx.fillText(label, tx + 7, ty + 14);
   }
 
-  ctx.fillStyle = meColor;
-  ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+  drawMeMarker(cx, cy, meColor);
+}
+
+// Our own blip. An arrow whenever the game tells us which way the car points,
+// so "why do I hear him on my right" is answerable at a glance in both modes:
+// with the radar turned it always points up (the confirmation that up *is* the
+// bonnet), and with it pinned to the map it points wherever we are driving.
+// Falls back to the plain dot when there is no heading - an arrow aimed at a
+// direction we do not know would be a lie, and a confident-looking one.
+function drawMeMarker(cx, cy, color) {
+  const h = headingForView();
+  ctx.fillStyle = color;
+  if (!h) {
+    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
+  // Screen direction of the car: the same (x across, z down) mapping the peers
+  // are plotted with, so the arrow and the dots cannot disagree. Rotating the
+  // radar puts the car's forward straight up by construction.
+  const len = Math.hypot(h.fx, h.fz);
+  const ux = rotateRadar ? 0 : h.fx / len;
+  const uy = rotateRadar ? -1 : h.fz / len;
+  // Perpendicular on screen, for the two back corners.
+  const px = -uy, py = ux;
+  const NOSE = 8, TAIL = 5, HALF = 4.5;
+  ctx.beginPath();
+  ctx.moveTo(cx + ux * NOSE, cy + uy * NOSE);
+  ctx.lineTo(cx - ux * TAIL + px * HALF, cy - uy * TAIL + py * HALF);
+  ctx.lineTo(cx - ux * TAIL - px * HALF, cy - uy * TAIL - py * HALF);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function tickGains() {
@@ -903,7 +997,9 @@ function tickGains() {
     if (nodes && audioCtx) {
       const now = audioCtx.currentTime;
       nodes.gainNode.gain.setTargetAtTime(target, now, AUDIO_SMOOTHING_SEC);
-      nodes.panner.pan.setTargetAtTime(panForOffset(pos.x - me.x, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
+      // Right of the *car*, not right of the map: turning the wheel moves the
+      // voices, which is the difference between a stereo image and a compass.
+      nodes.panner.pan.setTargetAtTime(panForOffset(offsetInEarFrame(pos).right, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
       // Smoothed like the others: a cutoff jumping per frame rings the filter.
       nodes.filter.frequency.setTargetAtTime(cutoffForCurrentMode(dist), now, AUDIO_SMOOTHING_SEC);
     }
@@ -1094,7 +1190,7 @@ function renderPeerTable() {
   for (const [pseudo, pos] of peers) {
     const d = distance(me, pos);
     const g = gains.get(pseudo)?.current ?? 0;
-    const pan = panForOffset(pos.x - me.x, PAN_RANGE);
+    const pan = panForOffset(offsetInEarFrame(pos).right, PAN_RANGE);
     const hasAudio = audioNodes.has(pseudo);
     const tr = document.createElement('tr');
     for (const [i, val] of [pseudo, d.toFixed(0), g.toFixed(2), pan.toFixed(2), hasAudio ? 'OK' : 'no track'].entries()) {
@@ -1281,6 +1377,14 @@ function attachRoomEvents(newRoom) {
             me.x = x; me.y = y; me.z = z;
             meKnown = true;
           }
+          // Heading rides along with our own position and is validated
+          // separately: a plugin too old to send one, or a car between
+          // respawns, still gives a perfectly good position. Keeping the
+          // previous heading in that case would be worse than having none —
+          // it would rotate the world around a direction we stopped facing.
+          const fx = Number(msg.fx), fz = Number(msg.fz);
+          myHeading = (isFinite(fx) && isFinite(fz) && (fx !== 0 || fz !== 0))
+            ? { fx, fz } : null;
         }
         continue;
       }
@@ -1933,7 +2037,7 @@ export {
   connectViaNonce, join,
   renderPlayerList, renderPeerTable, renderFollowChips, draw,
   projectToRadar, emojiForPseudo, setupCalibration,
-  gainForCurrentMode, cutoffForCurrentMode,
+  gainForCurrentMode, cutoffForCurrentMode, offsetInEarFrame, headingForView,
   leaveVoice, rejoinVoice,
   avatarFor, setMyAvatar, myEffectiveAvatar, announceAvatar, peerAvatars,
   me, peers, gains, audioNodes, audioPublications, subscribedPeers, room,

@@ -62,7 +62,15 @@ bool TryGetServerInfo(string &out login, string &out name, string &out failReaso
 //
 // (TM2020 is built on the ShootMania script API, hence the CSm* names for a
 // Trackmania car. CTrackManiaPlayer simply does not exist there.)
-bool TryGetLocalPlayerPosition(vec3 &out pos, string &out login, string &out failReason) {
+//
+// aimDir/hasAim carry which way the car is pointing, used to rotate the stereo
+// image and the radar so they turn with the player. It is deliberately optional:
+// it comes from a different object than the position on ManiaPlanet 4, and a
+// player whose heading is momentarily unreadable should still be heard at the
+// right distance rather than vanish. Callers that get hasAim == false simply
+// fall back to the world-space behaviour that shipped before.
+bool TryGetLocalPlayerPosition(vec3 &out pos, vec3 &out aimDir, bool &out hasAim, string &out login, string &out failReason) {
+    hasAim = false;
     CGameCtnApp@ app = GetApp();
     CGameManiaPlanet@ mp = cast<CGameManiaPlanet>(app);
     if (mp is null) { failReason = "cast<CGameManiaPlanet>(GetApp()) is null"; return false; }
@@ -97,11 +105,24 @@ bool TryGetLocalPlayerPosition(vec3 &out pos, string &out login, string &out fai
     if (api is null) { failReason = "smPlayer.ScriptAPI is null (not spawned?)"; return false; }
 
     pos = api.Position;
+    aimDir = api.AimDirection;
+    hasAim = true;
 #else
     CTrackManiaPlayer@ tmPlayer = cast<CTrackManiaPlayer>(localPlayer);
     if (tmPlayer is null) { failReason = "cast<CTrackManiaPlayer>(localPlayer) is null"; return false; }
 
     pos = tmPlayer.Position;
+
+    // The heading sits one level deeper than the position here: CTrackManiaPlayer
+    // itself only exposes Position/Speed/Distance/DisplaySpeed, everything about
+    // where the car points lives on the script API - the same object the TM2020
+    // branch above already goes through. Null while the car is not spawned, which
+    // is a normal state and not a reason to drop the position we do have.
+    CTrackManiaScriptPlayer@ api = cast<CTrackManiaScriptPlayer>(tmPlayer.ScriptAPI);
+    if (api !is null) {
+        aimDir = api.AimDirection;
+        hasAim = true;
+    }
 #endif
     return true;
 }

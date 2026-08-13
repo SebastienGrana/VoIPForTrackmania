@@ -56,11 +56,22 @@ class FakeElement {
   getBoundingClientRect() { return { left: 0, top: 0 }; }
 }
 
+// Every drawing call is recorded, with its arguments. The radar's entire job is
+// putting a blip in the right place, and a context of empty functions can only
+// ever prove that draw() did not throw - not that it drew the right picture.
+// Tests clear this array themselves before the draw they care about.
+const canvasOps = [];
+const record = (op) => (...args) => { canvasOps.push({ op, args }); };
+
 const fakeCtx = {
-  clearRect() {}, beginPath() {}, arc() {}, stroke() {}, fill() {}, fillText() {},
-  moveTo() {}, closePath() {}, save() {}, restore() {}, roundRect() {},
+  clearRect: record('clearRect'), beginPath: record('beginPath'), arc: record('arc'),
+  stroke: record('stroke'), fill: record('fill'), fillText: record('fillText'),
+  moveTo: record('moveTo'), lineTo: record('lineTo'), closePath: record('closePath'),
+  save: record('save'), restore: record('restore'), roundRect: record('roundRect'),
+  drawImage: record('drawImage'), strokeRect: record('strokeRect'),
   measureText: (text) => ({ width: text.length * 6 }),
-  strokeStyle: '', fillStyle: '', font: '', lineWidth: 1,
+  strokeStyle: '', fillStyle: '', font: '', lineWidth: 1, globalAlpha: 1,
+  textAlign: 'start', textBaseline: 'alphabetic',
 };
 
 class FakeGainParam {
@@ -176,6 +187,7 @@ export function installDomStubs() {
   el('highContrastToggle', 'input');
   const showEmojiToggle = el('showEmojiToggle', 'input'); showEmojiToggle.setAttribute('aria-checked', 'true');
   const realisticAudioToggle = el('realisticAudioToggle', 'input'); realisticAudioToggle.setAttribute('aria-checked', 'true');
+  const rotateRadarToggle = el('rotateRadarToggle', 'input'); rotateRadarToggle.setAttribute('aria-checked', 'true');
 
   el('identity', 'input');
   el('followGame', 'input');
@@ -280,10 +292,12 @@ export function installDomStubs() {
     elements: {
       canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody, window: fakeWindow,
       realisticAudio: realisticAudioToggle,
+      rotateRadar: rotateRadarToggle,
       maxDist, minDist, panRange, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },
     fakeCtx,
+    canvasOps,
     FakeTrack,
     runRaf: () => rafCallback?.(),
     runInterval: () => intervalCallback?.(),

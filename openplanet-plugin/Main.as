@@ -176,9 +176,11 @@ void Main() {
         g_lastSendAt = now;
 
         vec3 pos;
+        vec3 aimDir;
+        bool hasAim;
         string login;
         string failReason;
-        if (!TryGetLocalPlayerPosition(pos, login, failReason)) {
+        if (!TryGetLocalPlayerPosition(pos, aimDir, hasAim, login, failReason)) {
             if (now - g_lastDiagAt >= DIAG_INTERVAL_MS) {
                 g_lastDiagAt = now;
                 print("OnZVoIP: not sending yet - " + failReason);
@@ -213,6 +215,18 @@ void Main() {
             SendNonce(login, "", "", now);
         }
 
+        // Which way the car points, so the browser can rotate the stereo image
+        // and the radar with it. Only the horizontal part goes out: driving up a
+        // ramp tilts AimDirection, and the tilt would otherwise shrink the
+        // left/right component for no reason. Sent as a vector rather than an
+        // angle so neither side has to agree on where zero points. Left out
+        // entirely when unavailable — the browser then keeps the world-space
+        // behaviour instead of being handed a heading of (0, 0).
+        string headingPart = "";
+        if (hasAim) {
+            headingPart = ",\"fx\":" + FormatFloat(aimDir.x) + ",\"fz\":" + FormatFloat(aimDir.z);
+        }
+
         // Include the server login (and raw name) so the relay can route
         // this position to the right room; an empty server falls back to
         // the default room for backward compatibility.
@@ -221,7 +235,7 @@ void Main() {
             + "\"serverName\":\"" + EscapeJsonStr(serverName) + "\","
             + "\"x\":" + FormatFloat(pos.x) + ","
             + "\"y\":" + FormatFloat(pos.y) + ","
-            + "\"z\":" + FormatFloat(pos.z) + "}\n";
+            + "\"z\":" + FormatFloat(pos.z) + headingPart + "}\n";
         if (!g_socket.WriteRaw(line) && now - g_lastDiagAt >= DIAG_INTERVAL_MS) {
             g_lastDiagAt = now;
             print("OnZVoIP: WriteRaw failed | IsReady=" + g_socket.IsReady()

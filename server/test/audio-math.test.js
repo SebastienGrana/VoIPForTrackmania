@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   distance, clamp, gainForDistance, panForOffset,
   gainForDistanceRealistic, lowpassForDistance, LOWPASS_NEAR_HZ, LOWPASS_FAR_HZ,
+  toCarFrame,
 } from '../public/audio-math.js';
 
 describe('distance()', () => {
@@ -164,6 +165,65 @@ describe('lowpassForDistance()', () => {
   test('stays above the speech band until well past halfway', () => {
     // Muffled must not mean unintelligible: consonants live up to ~4 kHz.
     assert.ok(f((MIN + MAX) / 2) > 4000, `got ${f((MIN + MAX) / 2)}`);
+  });
+});
+
+describe('toCarFrame()', () => {
+  // Heading pointing along +Z, which is the direction the radar draws downward.
+  const FWD = { fx: 0, fz: 1 };
+  const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
+
+  test('no heading leaves the offset in world space', () => {
+    // A browser with no plugin has no car; it must keep behaving exactly as it
+    // did before headings existed rather than collapse to the centre.
+    assert.deepStrictEqual(toCarFrame(7, -3, 0, 0), { right: 7, front: -3 });
+    assert.deepStrictEqual(toCarFrame(7, -3, NaN, 1), { right: 7, front: -3 });
+  });
+
+  test('straight ahead reads as ahead, with nothing to either side', () => {
+    const { right, front } = toCarFrame(0, 10, FWD.fx, FWD.fz);
+    assert.ok(near(right, 0));
+    assert.ok(near(front, 10));
+  });
+
+  test('turning the car around swaps left and right', () => {
+    const a = toCarFrame(10, 0, FWD.fx, FWD.fz);
+    const b = toCarFrame(10, 0, -FWD.fx, -FWD.fz);
+    assert.ok(Math.abs(a.right) > 1, 'the peer should be off to one side');
+    assert.ok(near(a.right, -b.right));
+    assert.ok(near(a.front, -b.front));
+    // The whole point of the car frame: this is the case a world-space pan gets
+    // wrong, since dx never changes when only the heading does.
+  });
+
+  test('a quarter turn moves a peer from ahead of you to beside you', () => {
+    const ahead = toCarFrame(0, 10, 0, 1);
+    const beside = toCarFrame(0, 10, 1, 0); // same peer, car now facing +X
+    assert.ok(near(ahead.front, 10));
+    assert.ok(near(beside.front, 0));
+    assert.ok(near(Math.abs(beside.right), 10));
+  });
+
+  test('the heading does not have to be a unit vector', () => {
+    // AimDirection arrives with its altitude component dropped, so the
+    // horizontal pair is shorter than 1 on any slope. Un-normalised it would
+    // quietly scale the pan with the gradient of the track.
+    const unit = toCarFrame(3, 4, 0.6, 0.8);
+    const long = toCarFrame(3, 4, 6, 8);
+    const short = toCarFrame(3, 4, 0.06, 0.08);
+    assert.ok(near(unit.right, long.right) && near(unit.front, long.front));
+    assert.ok(near(unit.right, short.right) && near(unit.front, short.front));
+  });
+
+  test('rotating never moves a peer closer or further away', () => {
+    // The frame change must be a rotation and nothing else — distance is what
+    // decides volume, and it is computed separately in 3D. If these two ever
+    // disagreed, a peer would sound near while being drawn far.
+    for (const [fx, fz] of [[0, 1], [1, 0], [-1, 0], [1, 1], [-2, 5], [0.3, -0.9]]) {
+      const { right, front } = toCarFrame(12, -5, fx, fz);
+      assert.ok(near(Math.hypot(right, front), Math.hypot(12, -5), 1e-9),
+        `length changed with heading (${fx}, ${fz})`);
+    }
   });
 });
 

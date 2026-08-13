@@ -413,7 +413,21 @@ export function createRelay({
       posMap = new Map();
       pendingPositions.set(targetRoom, posMap);
     }
-    posMap.set(pseudo, { x, y, z, ts: Date.now() });
+    // Heading, optional. Only the OpenPlanet plugin has one — a browser
+    // publishing its own dragged position has no car and sends none, and older
+    // plugin builds predate the field, so its absence is a normal state and not
+    // a reason to drop the position. Two components of a direction vector
+    // rather than an angle, so neither end has to agree on where zero points.
+    // A zero-length pair carries no direction at all, so it is treated as
+    // absent rather than forwarded for the client to puzzle over.
+    const fx = Number(msg.fx), fz = Number(msg.fz);
+    const entry = { x, y, z, ts: Date.now() };
+    if (isFinite(fx) && isFinite(fz) && (fx !== 0 || fz !== 0)
+        && Math.abs(fx) < 1e3 && Math.abs(fz) < 1e3) {
+      entry.fx = fx;
+      entry.fz = fz;
+    }
+    posMap.set(pseudo, entry);
   }
 
   function handleMessage(msg, fallbackRoom) {

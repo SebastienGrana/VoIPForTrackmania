@@ -25,6 +25,30 @@ export function panForOffset(dx, panRange) {
   return clamp(dx / panRange, -1, 1);
 }
 
+// Turns a world-space offset into "how far to my right" and "how far ahead of
+// me", given where the car is pointing. Without this the pan is computed on the
+// world X axis, so doing a U-turn leaves the player who was on your right still
+// on your right - the one thing no amount of volume shaping can fix.
+//
+// The heading arrives as a vector straight from the game (AimDirection with its
+// altitude component dropped), not as an angle, so there is nothing to agree on
+// about where "yaw = 0" points or which way angles grow.
+//
+// What "right" means is fixed by the radar rather than by a handedness rule:
+// the radar has always drawn world X across the screen and world Z down it, and
+// on that picture the car's right is its forward turned a quarter turn
+// clockwise, which in (x, z) is (-fz, fx). Deriving both the sound and the
+// display from that one statement is what makes them agree - whatever the
+// game's axes happen to be called.
+export function toCarFrame(dx, dz, fx, fz) {
+  const len = Math.hypot(fx, fz);
+  // No heading (browser-only player, or the car is not spawned yet): stay in
+  // world space, which is exactly what shipped before the car frame existed.
+  if (!len || !isFinite(len)) return { right: dx, front: dz };
+  const ux = fx / len, uz = fz / len;
+  return { right: dz * ux - dx * uz, front: dx * ux + dz * uz };
+}
+
 // How many dB the realistic curve sheds between minDist and maxDist. 40 dB is
 // the usual "present -> barely there" span; past ~60 the far half is inaudible
 // long before the radar edge, below ~20 it barely differs from linear.

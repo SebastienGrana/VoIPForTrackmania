@@ -265,6 +265,42 @@ describe('OnZVoIP relay', () => {
       assert.ok(typeof payload.ts === 'number');
     });
 
+    // The heading lets the browser rotate the stereo image and the radar with
+    // the car. It is optional on the wire: browsers publishing their own dot
+    // have no car, and a plugin older than this feature simply does not send
+    // one — neither is a reason to drop a perfectly good position.
+    async function broadcastOne(msg) {
+      const before = mockService.calls.length;
+      await tcpSend(TCP_PORT, [JSON.stringify({ type: 'position', ...msg })]);
+      await new Promise(r => setTimeout(r, 20));
+      await relay.flushPositions();
+      const call = mockService.calls[before];
+      assert.ok(call, 'sendData should have been called');
+      return JSON.parse(new TextDecoder().decode(call[1])).find(p => p.pseudo === msg.pseudo);
+    }
+
+    test('a heading is carried through to the browsers', async () => {
+      const p = await broadcastOne({ pseudo: 'heads', x: 1, y: 0, z: 2, fx: 0.6, fz: -0.8 });
+      assert.strictEqual(p.fx, 0.6);
+      assert.strictEqual(p.fz, -0.8);
+    });
+
+    test('a position without a heading keeps flowing, with no heading attached', async () => {
+      const p = await broadcastOne({ pseudo: 'nohead', x: 1, y: 0, z: 2 });
+      assert.strictEqual(p.x, 1);
+      assert.ok(!('fx' in p) && !('fz' in p), `expected no heading, got ${JSON.stringify(p)}`);
+    });
+
+    test('a heading that is not a direction is dropped, the position is not', async () => {
+      // (0, 0) points nowhere and NaN is not a number; either would leave the
+      // client rotating by nonsense rather than falling back to world space.
+      for (const bad of [{ fx: 0, fz: 0 }, { fx: 'left', fz: 1 }, { fx: 1e9, fz: 1 }]) {
+        const p = await broadcastOne({ pseudo: 'badhead', x: 5, y: 0, z: 5, ...bad });
+        assert.strictEqual(p.x, 5, `position dropped for ${JSON.stringify(bad)}`);
+        assert.ok(!('fx' in p), `heading kept for ${JSON.stringify(bad)}`);
+      }
+    });
+
     test('non-position type → ignored, no broadcast', async () => {
       const before = mockService.calls.length;
       await tcpSend(TCP_PORT, [
