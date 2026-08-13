@@ -82,7 +82,7 @@ void RenderInterface() {
     // when none is needed, which shrinks the usable width for the
     // SetNextItemWidth(-1) fields below and keeps them from reaching the
     // window's right edge.
-    UI::SetNextWindowSize(310, 0, UI::Cond::Always);
+    UI::SetNextWindowSize(380, 0, UI::Cond::Always);
     UI::SetNextWindowPos(300, 200, UI::Cond::FirstUseEver);
     // Dear ImGui note: "##" only hides text from the *display* — the ID hash
     // still includes the whole string, suffix and all. "###" makes ID hashing
