@@ -88,10 +88,13 @@ void RenderInterface() {
         if (g_stateWebConnected) {
             string pc = g_statePlayersInRoom == 1 ? "1 player" : (g_statePlayersInRoom + " players");
             UI::Text("\\$0f0Web: connected (" + pc + ")");
-            if (g_stateMicMuted) {
-                UI::Text("\\$888Mic: muted");
-            } else {
+            // Green when the microphone is OPEN. The relay sends "mic": true for
+            // open, and this pair of branches used to be the other way round, so
+            // the widget told everyone the opposite of their own state.
+            if (g_stateMicActive) {
                 UI::Text("\\$0f0Mic: active");
+            } else {
+                UI::Text("\\$888Mic: muted");
             }
         } else {
             UI::TextWrapped("\\$f80Web: not open — use Copy URL above");

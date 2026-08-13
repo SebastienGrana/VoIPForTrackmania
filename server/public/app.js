@@ -8,7 +8,7 @@
 import {
   distance, gainForDistance, gainForDistanceRealistic, panForOffset,
   lowpassForDistance, LOWPASS_NEAR_HZ, toCarFrame,
-  dopplerDelayFor, DOPPLER_PRESETS, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC,
+  dopplerDelayFor, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC,
 } from './audio-math.js';
 import {
   AVATAR_EMOJI, emojiForPseudo, guessCountry, validateAvatar, resolveAvatar,
@@ -67,14 +67,15 @@ const highContrastToggle = document.getElementById('highContrastToggle');
 const showEmojiToggle = document.getElementById('showEmojiToggle');
 const realisticAudioToggle = document.getElementById('realisticAudioToggle');
 const rotateRadarToggle = document.getElementById('rotateRadarToggle');
-const dopplerSubtleToggle = document.getElementById('dopplerSubtleToggle');
-const dopplerStrongToggle = document.getElementById('dopplerStrongToggle');
-const dopplerExactToggle = document.getElementById('dopplerExactToggle');
+const dopplerToggle = document.getElementById('dopplerToggle');
+const dopplerLevels = document.getElementById('dopplerLevels');
+const dopplerLevelSubtle = document.getElementById('dopplerLevelSubtle');
+const dopplerLevelStrong = document.getElementById('dopplerLevelStrong');
 
-// The 11 boolean settings (followGame, relativeMode, themeToggle,
+// The 9 boolean settings (followGame, relativeMode, themeToggle,
 // reduceMotionToggle, highContrastToggle, showEmojiToggle,
-// realisticAudioToggle, rotateRadarToggle, and the three doppler
-// strengths) are <button role="switch"> elements,
+// realisticAudioToggle, rotateRadarToggle and dopplerToggle) are
+// <button role="switch"> elements,
 // not native checkboxes - state lives in aria-checked instead of .checked.
 function isSwitchOn(btn) { return btn.getAttribute('aria-checked') === 'true'; }
 function setSwitchOn(btn, on) { btn.setAttribute('aria-checked', on ? 'true' : 'false'); }
@@ -324,11 +325,21 @@ const PEER_GC_MS = 60_000;
 // matching constant above, and remembers it in localStorage so a page reload
 // mid-calibration doesn't lose the setting you were converging on.
 // Audit #38: minDist and maxDist are independent sliders with overlapping
-// ranges (0-500 and 20-2000) — without a floor between them, dragging
+// ranges — without a floor between them, dragging
 // minDist past maxDist doesn't error, it just makes gainForDistance() treat
 // maxDist as unreachable and hard-cut at minDist instead of fading. MIN_GAP
 // keeps a slice of falloff always audible between the two.
 const MIN_DIST_MAX_DIST_GAP = 1;
+
+// min/max are absent under the test stub, where the sliders are bare elements;
+// an absent bound means "no bound" rather than NaN swallowing the value.
+function clampToSlider(slider, v) {
+  const lo = Number(slider.min), hi = Number(slider.max);
+  let out = v;
+  if (isFinite(lo)) out = Math.max(lo, out);
+  if (isFinite(hi)) out = Math.min(hi, out);
+  return out;
+}
 
 function setupCalibration() {
   const controls = [
@@ -363,7 +374,11 @@ function setupCalibration() {
     // calibrated against old defaults doesn't silently keep overriding new
     // ones after a code change (audit #5) — old keys are simply orphaned.
     const saved = Number(localStorage.getItem(`onzvoip.v2.${id}`));
-    if (saved > 0) set(saved);
+    // Clamped to the slider's own bounds, because a stored value can predate a
+    // change to them. Applied as it stands, a leftover 500 would drive the audio
+    // while the slider - which the browser clamps to its own max on its own -
+    // showed 200: the number on screen would stop describing what you hear.
+    if (saved > 0) set(clampToSlider(slider, saved));
 
     const sync = () => {
       label.textContent = get();
@@ -447,33 +462,54 @@ function setupRotateRadar() {
 }
 setupRotateRadar();
 
-// Doppler strength, or null for none. Three switches rather than one switch and
-// a slider: which strength sounds right cannot be decided in advance, so the
-// only control worth having is one you can flip between while someone drives
-// past you. They behave as a radio group - turning one on turns the others off,
-// turning the current one off leaves the effect disabled, which is the baseline
-// you are comparing against and therefore the default.
+// Doppler strength, or null when the effect is off. Two settings, not one: the
+// switch says whether you want the effect at all, and the strength is a
+// preference you keep even while it is off - so turning it back on restores the
+// dosage you had chosen instead of resetting you to the gentle one. Off is the
+// default because it is the baseline every strength is judged against.
+const DOPPLER_LEVELS = ['subtle', 'strong'];
 let dopplerPreset = null;
-const dopplerToggles = [
-  ['subtle', dopplerSubtleToggle],
-  ['strong', dopplerStrongToggle],
-  ['exact', dopplerExactToggle],
-];
-function paintDopplerToggles() {
-  for (const [name, el] of dopplerToggles) {
-    if (el) setSwitchOn(el, dopplerPreset === name);
-  }
+let dopplerLevel = 'subtle';
+function paintDoppler() {
+  if (dopplerToggle) setSwitchOn(dopplerToggle, dopplerPreset !== null);
+  // The strength row is hidden while the effect is off: a player who only wants
+  // "on" should not have to form an opinion about what "subtle" means.
+  if (dopplerLevels) dopplerLevels.style.display = dopplerPreset ? '' : 'none';
+  if (dopplerLevelSubtle) dopplerLevelSubtle.className = 'chip' + (dopplerLevel === 'subtle' ? ' selected' : '');
+  if (dopplerLevelStrong) dopplerLevelStrong.className = 'chip' + (dopplerLevel === 'strong' ? ' selected' : '');
 }
 function setupDoppler() {
+  // 'exact' was a third strength, kept only for the comparison that chose
+  // between them. A browser still holding it lands on the strongest one that
+  // survives, rather than having the effect silently switched off.
   const saved = localStorage.getItem('onzvoip.v2.doppler');
-  dopplerPreset = DOPPLER_PRESETS[saved] ? saved : null;
-  paintDopplerToggles();
-  for (const [name, el] of dopplerToggles) {
+  const savedLevel = localStorage.getItem('onzvoip.v2.dopplerLevel') ?? saved;
+  const asLevel = (v) => (v === 'exact' ? 'strong' : (DOPPLER_LEVELS.includes(v) ? v : null));
+  dopplerLevel = asLevel(savedLevel) ?? 'subtle';
+  dopplerPreset = asLevel(saved) ? dopplerLevel : null;
+  paintDoppler();
+
+  const store = () => {
+    localStorage.setItem('onzvoip.v2.doppler', dopplerPreset ?? '');
+    localStorage.setItem('onzvoip.v2.dopplerLevel', dopplerLevel);
+  };
+  if (dopplerToggle) {
+    dopplerToggle.addEventListener('click', () => {
+      dopplerPreset = isSwitchOn(dopplerToggle) ? null : dopplerLevel;
+      paintDoppler();
+      store();
+      logEvent(`doppler ${dopplerPreset ?? 'off'}`);
+    });
+  }
+  for (const [level, el] of [['subtle', dopplerLevelSubtle], ['strong', dopplerLevelStrong]]) {
     if (!el) continue;
     el.addEventListener('click', () => {
-      dopplerPreset = isSwitchOn(el) ? null : name;
-      paintDopplerToggles();
-      localStorage.setItem('onzvoip.v2.doppler', dopplerPreset ?? '');
+      dopplerLevel = level;
+      // The row is only reachable while the effect is on, so picking a strength
+      // is a change of dosage and never a way of turning it on.
+      if (dopplerPreset) dopplerPreset = level;
+      paintDoppler();
+      store();
       logEvent(`doppler ${dopplerPreset ?? 'off'}`);
     });
   }

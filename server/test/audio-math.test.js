@@ -266,8 +266,10 @@ describe('panForOffset()', () => {
 
 describe('dopplerDelayFor()', () => {
   test('first call snaps to the target instead of swooping in from zero', () => {
-    const d = dopplerDelayFor(343, NaN, 0.016, 'exact');
-    assert.ok(Math.abs(d - (DOPPLER_BASE_SEC + 1)) < 1e-9, `got ${d}`);
+    // 343 m is one second of travel, dosed by the preset scale.
+    const d = dopplerDelayFor(343, NaN, 0.016, 'strong');
+    const expected = DOPPLER_BASE_SEC + DOPPLER_PRESETS.strong.scale;
+    assert.ok(Math.abs(d - expected) < 1e-9, `got ${d}, want ${expected}`);
   });
 
   test('the target is the travel time, dosed by the preset scale', () => {
@@ -279,7 +281,7 @@ describe('dopplerDelayFor()', () => {
   });
 
   test('distance zero is the base headroom, never a delay of zero', () => {
-    assert.strictEqual(dopplerDelayFor(0, NaN, 0.016, 'exact'), DOPPLER_BASE_SEC);
+    assert.strictEqual(dopplerDelayFor(0, NaN, 0.016, 'strong'), DOPPLER_BASE_SEC);
     assert.ok(DOPPLER_BASE_SEC > 0);
   });
 
@@ -375,18 +377,18 @@ describe('dopplerDelayFor()', () => {
 
   test('never exceeds the delay buffer we allocated', () => {
     for (const dist of [500, 5000, 1e9]) {
-      assert.ok(dopplerDelayFor(dist, NaN, 0.016, 'exact') <= DOPPLER_MAX_DELAY_SEC);
+      assert.ok(dopplerDelayFor(dist, NaN, 0.016, 'strong') <= DOPPLER_MAX_DELAY_SEC);
     }
   });
 
   test('garbage distance is treated as zero, not as NaN', () => {
-    assert.strictEqual(dopplerDelayFor(NaN, NaN, 0.016, 'exact'), DOPPLER_BASE_SEC);
-    assert.strictEqual(dopplerDelayFor(-50, NaN, 0.016, 'exact'), DOPPLER_BASE_SEC);
+    assert.strictEqual(dopplerDelayFor(NaN, NaN, 0.016, 'strong'), DOPPLER_BASE_SEC);
+    assert.strictEqual(dopplerDelayFor(-50, NaN, 0.016, 'strong'), DOPPLER_BASE_SEC);
   });
 
   // Approaching at rate r plays the sound back at 1/(1-r): the caps are chosen
   // so the worst case stays a recognisable voice rather than a squeak.
-  test('the implied pitch stays under a factor of ten even at the exact preset', () => {
+  test('the implied pitch stays under a factor of ten even at the strongest preset', () => {
     for (const p of Object.values(DOPPLER_PRESETS)) {
       assert.ok(p.maxRate < 1, 'a rate of 1 would freeze the audio entirely');
       // 0.9 is exactly a factor of ten, and 1 - 0.9 in binary floating point is

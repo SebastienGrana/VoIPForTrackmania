@@ -765,7 +765,8 @@ describe('TCP state push (own relay instance)', () => {
       const state = JSON.parse(stateLine);
       assert.strictEqual(state.players, 2, 'players should count all participants');
       assert.strictEqual(state.web, true, 'web should be true when player is in LiveKit');
-      assert.strictEqual(state.mic, true, 'mic should reflect the player\'s own track muted state');
+      // muted: false on the player's own track, so mic is true: OPEN, not muted.
+      assert.strictEqual(state.mic, true, 'mic should be true when the player\'s own track is unmuted');
     } finally {
       statePushService.listParticipants = original;
     }

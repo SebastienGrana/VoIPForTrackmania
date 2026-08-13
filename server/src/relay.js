@@ -174,8 +174,10 @@ export function createRelay({
       browserRooms.delete(oldest);
     }
   }
-  // Pushes relay state (player count, web connected, mic muted) back to
-  // the plugin over its existing TCP connection.
+  // Pushes relay state (player count, web connected, mic open) back to
+  // the plugin over its existing TCP connection. Note the polarity of `mic`:
+  // true means the microphone is OPEN. The plugin read it as "muted" once and
+  // showed every player the opposite of their own state.
   const tcpSocketsByLogin = new Map(); // login → { socket, room }
 
   async function pushStateToSocket(login, socket, room) {

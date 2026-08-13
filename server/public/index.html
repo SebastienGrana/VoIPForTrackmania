@@ -685,23 +685,21 @@
           <span>Realistic distance sound</span>
           <button type="button" id="realisticAudioToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
         </div>
-        <!-- Three strengths side by side rather than one switch and a slider:
-             nobody can say in advance which one sounds right, so the only
-             useful control is one you can flip between while someone drives
-             past. At most one is ever on; all three off means no Doppler at
-             all, which is the baseline you are comparing against. -->
-        <div class="opt-check">
-          <span>Doppler · subtle</span>
-          <button type="button" id="dopplerSubtleToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
-        </div>
-        <div class="opt-check">
-          <span>Doppler · strong</span>
-          <button type="button" id="dopplerStrongToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
-        </div>
-        <div class="opt-check">
-          <span>Doppler · physically exact</span>
-          <button type="button" id="dopplerExactToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
-        </div>
+      </div>
+      <!-- Player-facing, unlike everything else in this section: the effect was
+           validated by ear, so it belongs to whoever wants it and not to
+           ?debug=1. One switch and not two, because a player choosing "on"
+           should not also have to know what "subtle" means - the strength row
+           only unfolds once the effect is on, and defaults to the gentle one.
+           The third strength ("physically exact") is gone: it was there to be
+           compared against, that comparison is over. -->
+      <div class="opt-check">
+        <span>Doppler effect (cars driving past)</span>
+        <button type="button" id="dopplerToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+      </div>
+      <div id="dopplerLevels" class="chip-row" style="display:none">
+        <button type="button" id="dopplerLevelSubtle" class="chip">Subtle</button>
+        <button type="button" id="dopplerLevelStrong" class="chip">Strong</button>
       </div>
       <div class="calib-bar">
         <div class="calib-marker" style="left:20%"></div>
@@ -722,18 +720,22 @@
       </button>
       <!-- The bar above is what players see; the sliders are a tuning tool and
            only appear with ?debug=1. Their values still drive the bar's labels. -->
+      <!-- Bounds sized to the distances that are actually useful on a track, not
+           to what the audio code could survive. A range ten times wider than the
+           values anyone picks squeezes every real setting into the first
+           centimetre of the slider and makes a 1 m adjustment impossible. -->
       <div class="debug-only">
         <label class="opt-label">
           Full volume within <span class="val" id="minDistVal"></span> m
-          <input type="range" id="minDist" min="0" max="100" step="5" />
+          <input type="range" id="minDist" min="0" max="20" step="1" />
         </label>
         <label class="opt-label">
           Silence beyond <span class="val" id="maxDistVal"></span> m
-          <input type="range" id="maxDist" min="20" max="500" step="10" />
+          <input type="range" id="maxDist" min="20" max="200" step="5" />
         </label>
         <label class="opt-label">
           Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
-          <input type="range" id="panRange" min="5" max="100" step="5" />
+          <input type="range" id="panRange" min="2" max="30" step="1" />
         </label>
       </div>
     </div>

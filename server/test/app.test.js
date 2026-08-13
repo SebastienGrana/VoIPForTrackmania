@@ -12,6 +12,7 @@
 import { describe, test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { installDomStubs } from './dom-stub.js';
+import { DOPPLER_PRESETS } from '../public/audio-math.js';
 
 const stub = installDomStubs();
 const app = await import('../public/app.js');
@@ -52,12 +53,11 @@ beforeEach(() => {
   if (stub.elements.rotateRadar.getAttribute('aria-checked') !== 'true') {
     stub.elements.rotateRadar.dispatch('click');
   }
-  // Same reason for the doppler group, which owns dopplerPreset: clicking the
-  // one that is on turns it off, which is the group's "no doppler" baseline.
-  for (const name of ['dopplerSubtle', 'dopplerStrong', 'dopplerExact']) {
-    if (stub.elements[name].getAttribute('aria-checked') === 'true') {
-      stub.elements[name].dispatch('click');
-    }
+  // Same reason for doppler, which owns dopplerPreset: off is the baseline
+  // every strength is judged against. The strength itself is left alone - it
+  // survives being switched off on purpose.
+  if (stub.elements.doppler.getAttribute('aria-checked') === 'true') {
+    stub.elements.doppler.dispatch('click');
   }
 
   stub.setFetch(async () => { throw new Error('fetch not mocked for this test'); });
@@ -1105,6 +1105,29 @@ describe('calibration reset', () => {
     assert.strictEqual(localStorage.getItem('onzvoip.v2.minDist'), null);
     assert.strictEqual(stub.elements.calibReset.style.display, 'none');
   });
+
+  // The sliders were given tighter bounds once it was clear nobody ever picked
+  // the far end. A value stored under the old ones is still in localStorage, and
+  // a browser silently clamps the slider to its own max - so applied as it
+  // stands, the audio would run at 500 while the slider showed 200 and the
+  // number on screen would stop describing what you hear.
+  test('a stored value from wider sliders is pulled back inside the bounds', () => {
+    localStorage.clear();
+    const slider = stub.elements.maxDist;
+    slider.min = '20';
+    slider.max = '200';
+    try {
+      localStorage.setItem('onzvoip.v2.maxDist', '500');
+      app.setupCalibration();
+      assert.strictEqual(app.MAX_DIST, 200);
+      assert.strictEqual(Number(slider.value), 200);
+    } finally {
+      delete slider.min;
+      delete slider.max;
+      localStorage.clear();
+      app.setupCalibration();
+    }
+  });
 });
 
 describe('renderPlayerList() (who the list shows)', () => {
@@ -1162,41 +1185,46 @@ describe('renderPlayerList() (who the list shows)', () => {
   });
 });
 
-describe('doppler strength switches', () => {
+describe('doppler switch and strength', () => {
   const el = (n) => stub.elements[n];
-  const checked = (n) => el(n).getAttribute('aria-checked');
 
-  test('all three start off, which is the no-doppler baseline', () => {
-    assert.strictEqual(checked('dopplerSubtle'), 'false');
-    assert.strictEqual(checked('dopplerStrong'), 'false');
-    assert.strictEqual(checked('dopplerExact'), 'false');
+  test('off by default, with the strength row folded away', () => {
+    assert.strictEqual(el('doppler').getAttribute('aria-checked'), 'false');
+    assert.strictEqual(el('dopplerLevels').style.display, 'none');
     assert.strictEqual(app.dopplerPreset, null);
   });
 
-  // Three switches, but only one effect: two of them on at once would be a
-  // question with no answer, so picking one has to release the others.
-  test('picking one releases the other two', () => {
-    el('dopplerSubtle').dispatch('click');
+  // One switch, not two: someone who wants the effect should not have to form
+  // an opinion about what "subtle" means before hearing anything.
+  test('turning it on picks the gentle strength and unfolds the row', () => {
+    el('doppler').dispatch('click');
     assert.strictEqual(app.dopplerPreset, 'subtle');
-    el('dopplerExact').dispatch('click');
-    assert.strictEqual(app.dopplerPreset, 'exact');
-    assert.strictEqual(checked('dopplerExact'), 'true');
-    assert.strictEqual(checked('dopplerSubtle'), 'false');
-    assert.strictEqual(checked('dopplerStrong'), 'false');
+    assert.strictEqual(el('dopplerLevels').style.display, '');
+    assert.match(el('dopplerSubtle').className, /selected/);
+    assert.doesNotMatch(el('dopplerStrong').className, /selected/);
   });
 
-  test('clicking the active one turns the effect off entirely', () => {
+  test('picking a strength while it is on changes the dose', () => {
+    el('doppler').dispatch('click');
     el('dopplerStrong').dispatch('click');
+    assert.strictEqual(app.dopplerPreset, 'strong');
+    assert.match(el('dopplerStrong').className, /selected/);
+    assert.doesNotMatch(el('dopplerSubtle').className, /selected/);
+  });
+
+  // The strength is a preference, not part of the on/off state: coming back to
+  // the effect should give you the dose you chose, not reset you to the gentle
+  // one you already rejected.
+  test('the strength is remembered across an off/on round trip', () => {
+    el('doppler').dispatch('click');
     el('dopplerStrong').dispatch('click');
+    el('doppler').dispatch('click');
     assert.strictEqual(app.dopplerPreset, null);
-    assert.strictEqual(checked('dopplerStrong'), 'false');
-  });
-
-  test('the choice survives a reload', () => {
-    el('dopplerStrong').dispatch('click');
-    assert.strictEqual(localStorage.getItem('onzvoip.v2.doppler'), 'strong');
-    el('dopplerStrong').dispatch('click');
     assert.strictEqual(localStorage.getItem('onzvoip.v2.doppler'), '');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.dopplerLevel'), 'strong');
+    el('doppler').dispatch('click');
+    assert.strictEqual(app.dopplerPreset, 'strong');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.doppler'), 'strong');
   });
 });
 
@@ -1215,6 +1243,20 @@ describe('driveDoppler()', () => {
     },
   });
 
+  // The switch owns on/off and the chips own the dose, so a test that wants a
+  // named strength has to say both - and the chips are only live while it is on.
+  const dopplerOn = (level) => {
+    if (stub.elements.doppler.getAttribute('aria-checked') !== 'true') {
+      stub.elements.doppler.dispatch('click');
+    }
+    stub.elements[level].dispatch('click');
+  };
+  const dopplerOff = () => {
+    if (stub.elements.doppler.getAttribute('aria-checked') === 'true') {
+      stub.elements.doppler.dispatch('click');
+    }
+  };
+
   test('a graph with no delay node is left alone rather than crashing', () => {
     const n = { gainNode: {}, panner: {} };
     app.driveDoppler(n, 100, 1);
@@ -1228,7 +1270,7 @@ describe('driveDoppler()', () => {
   });
 
   test('on: the first frame snaps to the real travel time, no swoop', () => {
-    stub.elements.dopplerSubtle.dispatch('click');
+    dopplerOn('dopplerSubtle');
     const n = fakeNode();
     app.driveDoppler(n, 343, 10); // one second of travel, dosed to 0.3
     assert.ok(Math.abs(n.dopplerSec - 0.31) < 1e-9, `got ${n.dopplerSec}`);
@@ -1238,7 +1280,7 @@ describe('driveDoppler()', () => {
   // Closing the gap shortens the delay: the sound arrives sooner every frame,
   // which IS the pitch going up. Nothing in the code computes a ratio.
   test('on: closing the gap shortens the delay, opening it lengthens it', () => {
-    stub.elements.dopplerSubtle.dispatch('click');
+    dopplerOn('dopplerSubtle');
     const n = fakeNode();
     app.driveDoppler(n, 343, 10);
     const far = n.dopplerSec;
@@ -1250,31 +1292,36 @@ describe('driveDoppler()', () => {
   });
 
   test('on: a teleporting peer is rate limited, not pitched into a squeak', () => {
-    stub.elements.dopplerExact.dispatch('click');
+    dopplerOn('dopplerStrong');
     const n = fakeNode();
     app.driveDoppler(n, 0, 10);
     app.driveDoppler(n, 20000, 10.5); // half a second later, kilometres away
-    assert.ok(n.dopplerSec - 0.01 <= 0.9 * 0.5 + 1e-9, `got ${n.dopplerSec}`);
+    // Two frames, each capped at the preset rate over one segment.
+    const ceiling = 0.01 + 2 * DOPPLER_PRESETS.strong.maxRate * 0.05;
+    assert.ok(n.dopplerSec <= ceiling + 1e-9, `got ${n.dopplerSec}`);
   });
 
   test('turning the effect off walks the delay home instead of snapping', () => {
-    stub.elements.dopplerExact.dispatch('click');
+    dopplerOn('dopplerStrong');
     const n = fakeNode();
     app.driveDoppler(n, 1000, 10);
     const held = n.dopplerSec;
-    assert.ok(held > 2, `got ${held}`);
-    stub.elements.dopplerExact.dispatch('click');
+    // A kilometre away, dosed by the preset: seconds of delay, not milliseconds.
+    assert.ok(held > 1.5, `got ${held}`);
+    dopplerOff();
     app.driveDoppler(n, 1000, 10.1);
     assert.ok(n.dopplerSec < held, 'should be heading home');
     assert.ok(n.dopplerSec > 1, `snapped instead of walking: ${n.dopplerSec}`);
   });
 
   test('a frame from a backgrounded tab does not move the line for seconds', () => {
-    stub.elements.dopplerExact.dispatch('click');
+    dopplerOn('dopplerStrong');
     const n = fakeNode();
     app.driveDoppler(n, 0, 10);
     app.driveDoppler(n, 20000, 400); // tab was hidden for six minutes
-    assert.ok(n.dopplerSec <= 0.01 + 0.9 + 1e-9, `got ${n.dopplerSec}`);
+    // The schedule advances one segment per frame however late the frame is, so
+    // the gap between two frames can never become a leap in the delay.
+    assert.ok(n.dopplerSec <= 0.01 + DOPPLER_PRESETS.strong.maxRate * 0.05 + 1e-9, `got ${n.dopplerSec}`);
   });
 
   // The crackle regression. The first version cancelled and re-issued the ramp
@@ -1303,7 +1350,7 @@ describe('driveDoppler()', () => {
   };
 
   test('a queued ramp is never cancelled or rewritten in flight', () => {
-    stub.elements.dopplerSubtle.dispatch('click');
+    dopplerOn('dopplerSubtle');
     const n = drivenNode();
     irregularFrames(n, 300, 10, 120);
     const p = n.delay.delayTime;
@@ -1316,7 +1363,7 @@ describe('driveDoppler()', () => {
   });
 
   test('the queue stays close to the audio clock instead of running away', () => {
-    stub.elements.dopplerSubtle.dispatch('click');
+    dopplerOn('dopplerSubtle');
     const n = drivenNode();
     const end = irregularFrames(n, 300, 10, 120);
     assert.ok(n.dopplerUntil - end < 0.16, `queued ${n.dopplerUntil - end}s ahead`);
@@ -1324,7 +1371,7 @@ describe('driveDoppler()', () => {
   });
 
   test('a stalled tab re-anchors once rather than scheduling into the past', () => {
-    stub.elements.dopplerSubtle.dispatch('click');
+    dopplerOn('dopplerSubtle');
     const n = drivenNode();
     app.driveDoppler(n, 300, 10);
     app.driveDoppler(n, 300, 400); // six minutes in the background
@@ -1334,7 +1381,7 @@ describe('driveDoppler()', () => {
   });
 
   test('tickGains drives it for every peer that has a delay node', () => {
-    stub.elements.dopplerSubtle.dispatch('click');
+    dopplerOn('dopplerSubtle');
     const n = fakeNode();
     n.gainNode = { gain: { value: 0, setTargetAtTime() {} } };
     n.panner = { pan: { value: 0, setTargetAtTime() {} } };

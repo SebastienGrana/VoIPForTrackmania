@@ -204,11 +204,12 @@ export function installDomStubs() {
   const showEmojiToggle = el('showEmojiToggle', 'input'); showEmojiToggle.setAttribute('aria-checked', 'true');
   const realisticAudioToggle = el('realisticAudioToggle', 'input'); realisticAudioToggle.setAttribute('aria-checked', 'true');
   const rotateRadarToggle = el('rotateRadarToggle', 'input'); rotateRadarToggle.setAttribute('aria-checked', 'true');
-  // The three doppler strengths behave as one radio group: all three start off,
-  // which is the "no doppler" baseline.
-  const dopplerSubtleToggle = el('dopplerSubtleToggle', 'input'); dopplerSubtleToggle.setAttribute('aria-checked', 'false');
-  const dopplerStrongToggle = el('dopplerStrongToggle', 'input'); dopplerStrongToggle.setAttribute('aria-checked', 'false');
-  const dopplerExactToggle = el('dopplerExactToggle', 'input'); dopplerExactToggle.setAttribute('aria-checked', 'false');
+  // Doppler is off by default, which is the baseline every strength is judged
+  // against; the strength row is hidden with it, as in the page.
+  const dopplerToggle = el('dopplerToggle', 'input'); dopplerToggle.setAttribute('aria-checked', 'false');
+  const dopplerLevels = el('dopplerLevels', 'div'); dopplerLevels.style.display = 'none';
+  const dopplerLevelSubtle = el('dopplerLevelSubtle', 'button');
+  const dopplerLevelStrong = el('dopplerLevelStrong', 'button');
 
   el('identity', 'input');
   el('followGame', 'input');
@@ -319,9 +320,10 @@ export function installDomStubs() {
       canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody, window: fakeWindow,
       realisticAudio: realisticAudioToggle,
       rotateRadar: rotateRadarToggle,
-      dopplerSubtle: dopplerSubtleToggle,
-      dopplerStrong: dopplerStrongToggle,
-      dopplerExact: dopplerExactToggle,
+      doppler: dopplerToggle,
+      dopplerLevels,
+      dopplerSubtle: dopplerLevelSubtle,
+      dopplerStrong: dopplerLevelStrong,
       maxDist, minDist, panRange, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },

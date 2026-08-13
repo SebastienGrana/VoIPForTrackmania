@@ -57,7 +57,7 @@ bool g_windowOpen = true;
 // State pushed by the relay. -1 = not yet received.
 int g_statePlayersInRoom = -1;
 bool g_stateWebConnected = false;
-bool g_stateMicMuted = false;
+bool g_stateMicActive = false;
 string g_tcpReadBuf = "";
 
 void Main() {
@@ -76,7 +76,7 @@ void Main() {
             g_tcpReadBuf = "";
             g_statePlayersInRoom = -1;
             g_stateWebConnected = false;
-            g_stateMicMuted = false;
+            g_stateMicActive = false;
             if (g_authFailed) continue; // stopped — use the Retry button in the widget
             if (now - g_lastConnectAttemptAt < RECONNECT_INTERVAL_MS) continue;
             g_lastConnectAttemptAt = now;
@@ -164,7 +164,11 @@ void Main() {
                             if (json !is null) {
                                 if (json.HasKey("players")) g_statePlayersInRoom = int(json["players"]);
                                 if (json.HasKey("web"))     g_stateWebConnected  = bool(json["web"]);
-                                if (json.HasKey("mic"))     g_stateMicMuted       = bool(json["mic"]);
+                                // "mic" is true when the microphone is OPEN,
+                                // not when it is muted. Reading it as "muted"
+                                // is what made the widget say the opposite of
+                                // the truth, so the name here says which it is.
+                                if (json.HasKey("mic"))     g_stateMicActive     = bool(json["mic"]);
                             }
                         }
                     }

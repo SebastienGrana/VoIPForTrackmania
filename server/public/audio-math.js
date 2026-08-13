@@ -123,9 +123,10 @@ export const DOPPLER_PRESETS = {
   // Twice the physics of `subtle`, hard to miss even at moderate speed, and
   // starting to sound like an effect rather than like a road.
   strong: { scale: 0.6, maxRate: 0.32 },
-  // The real formula. Honest, and close to unusable at the moment of crossing;
-  // the cap is set high enough that it only catches physically absurd speeds.
-  exact:  { scale: 1.0, maxRate: 0.90 },
+  // A third preset, `exact` (the real formula at scale 1.0), existed only for
+  // the comparison that chose between these two. It won nothing - honest and
+  // close to unusable at the moment of crossing - and comparing against it is
+  // over, so it is gone rather than left behind as a setting nobody should pick.
 };
 
 // Long enough for the far edge of any calibration at full scale (1000 m of
