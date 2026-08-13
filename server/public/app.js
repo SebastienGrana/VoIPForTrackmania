@@ -6,7 +6,7 @@
 // See ../../context.txt "ARCHITECTURE AUDIO" for why this lives client-side.
 
 import {
-  distance, gainForDistance, gainForDistanceRealistic, panForOffset,
+  distance, gainForDistance, gainForDistanceRealistic, panForDirection,
   lowpassForDistance, LOWPASS_NEAR_HZ, toCarFrame,
   dopplerDelayFor, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC,
 } from './audio-math.js';
@@ -22,7 +22,10 @@ import {
 // once good values are found in game they should be pasted back here.
 let MIN_DIST = 1;    // full volume within this radius
 let MAX_DIST = 150;  // silence beyond this radius
-let PAN_RANGE = 10;  // horizontal offset for fully-panned left/right
+// How wide the stereo image is, 0 (mono) to 1 (a voice abeam sits entirely in
+// one ear). Not a distance: the pan follows the direction a voice comes from,
+// so there is no number of metres to agree on - see panForDirection().
+let PAN_STRENGTH = 0.9;
 
 const SEND_INTERVAL_MS = 200;
 const LERP_FACTOR = 0.15; // per animation-frame smoothing towards target gain (canvas/debug table)
@@ -253,17 +256,6 @@ let meKnown = false;
 // idea", which is the honest state for a browser with no plugin, for a car that
 // has not spawned, and for the moment right after the switch flips.
 let myHeading = null;
-followGameCheckbox.addEventListener('click', () => {
-  const on = !isSwitchOn(followGameCheckbox);
-  setSwitchOn(followGameCheckbox, on);
-  if (on) meKnown = false;
-  // Dropped in both directions. Turning the switch on, we have not received a
-  // heading yet; turning it off, we are back to a dot dragged with the mouse,
-  // which does not point anywhere. Keeping the last one would silently rotate
-  // everything around a direction the player is no longer facing.
-  myHeading = null;
-});
-
 // A <button role="switch"> does not toggle itself the way a checkbox did: the
 // migration away from native checkboxes has to hand every switch its own
 // listener, and this one was left without. Nothing read the switch as broken -
@@ -274,11 +266,34 @@ followGameCheckbox.addEventListener('click', () => {
 // So turning the switch off drops us back to "no position yet" for everyone
 // until we actually drag our own dot (see the canvas mousemove handler).
 let freePosChosen = true;
-relativeModeCheckbox.addEventListener('click', () => {
-  const on = !isSwitchOn(relativeModeCheckbox);
+
+// The two position sources are mutually exclusive: you cannot be driving and
+// shadowing someone else at the same time. The code already knew it - every
+// reader below puts follow-game first and only then looks at follow-a-player -
+// but the switches let both sit on, and then the panel claimed something the
+// ear was not doing. Whichever one was just turned on wins; the other goes
+// down through its own path, so its side effects (a stale heading, a position
+// we never chose) are dropped exactly as they are when it is clicked off.
+function setFollowGame(on) {
+  setSwitchOn(followGameCheckbox, on);
+  if (on) meKnown = false;
+  // Dropped in both directions. Turning the switch on, we have not received a
+  // heading yet; turning it off, we are back to a dot dragged with the mouse,
+  // which does not point anywhere. Keeping the last one would silently rotate
+  // everything around a direction the player is no longer facing.
+  myHeading = null;
+  if (on && isSwitchOn(relativeModeCheckbox)) setRelativeMode(false);
+}
+
+function setRelativeMode(on) {
   setSwitchOn(relativeModeCheckbox, on);
   if (!on) freePosChosen = false;
-});
+  if (on && isSwitchOn(followGameCheckbox)) setFollowGame(false);
+}
+
+// Each turns the other off, never back on, so the pair settles in one hop.
+followGameCheckbox.addEventListener('click', () => setFollowGame(!isSwitchOn(followGameCheckbox)));
+relativeModeCheckbox.addEventListener('click', () => setRelativeMode(!isSwitchOn(relativeModeCheckbox)));
 
 // Whether our own position is worth putting on the wire. In follow-game mode
 // the OpenPlanet plugin already publishes this identity's position - sending
@@ -341,13 +356,31 @@ function clampToSlider(slider, v) {
   return out;
 }
 
+// v2: bumped from the unversioned `onzvoip.${id}` key so a browser that
+// calibrated against old defaults doesn't silently keep overriding new ones
+// after a code change (audit #5) - old keys are simply orphaned.
+//
+// Returns null for "nothing stored", which is NOT the same as a stored 0. Zero
+// is a legitimate setting on two of the three sliders - no full-volume bubble,
+// no stereo at all - and treating it as absent used to hand the default back on
+// the next reload, silently undoing a choice the player had made.
+function storedCalibration(id) {
+  const raw = localStorage.getItem(`onzvoip.v2.${id}`);
+  if (raw === null || raw === '') return null;
+  const v = Number(raw);
+  return isFinite(v) ? v : null;
+}
+
 function setupCalibration() {
   const controls = [
     // maxDist first: on load, saved values are applied in this order, and
     // minDist's clamp below reads the (by-then-current) MAX_DIST.
     { id: 'maxDist', get: () => MAX_DIST, set: (v) => { MAX_DIST = Math.max(v, MIN_DIST + MIN_DIST_MAX_DIST_GAP); } },
     { id: 'minDist', get: () => MIN_DIST, set: (v) => { MIN_DIST = Math.min(v, MAX_DIST - MIN_DIST_MAX_DIST_GAP); } },
-    { id: 'panRange', get: () => PAN_RANGE, set: (v) => { PAN_RANGE = v; } },
+    // Stored and shown as a percentage, kept as a 0-1 factor: the slider says
+    // "how much left/right", which is a taste, not "how many metres", which was
+    // a question with no honest answer.
+    { id: 'panStrength', get: () => Math.round(PAN_STRENGTH * 100), set: (v) => { PAN_STRENGTH = Math.min(100, Math.max(0, v)) / 100; } },
   ];
 
   // Captured before any stored value is applied, so "back to default" means the
@@ -363,22 +396,19 @@ function setupCalibration() {
   // appearance the signal that the sound range is not the stock one.
   const refreshResetBtn = () => {
     if (!resetBtn) return;
-    const custom = controls.some(({ id }) => Number(localStorage.getItem(`onzvoip.v2.${id}`)) > 0);
+    const custom = controls.some(({ id }) => storedCalibration(id) !== null);
     resetBtn.style.display = custom ? '' : 'none';
   };
 
   for (const { id, get, set } of controls) {
     const slider = document.getElementById(id);
     const label = document.getElementById(`${id}Val`);
-    // v2: bumped from the unversioned `onzvoip.${id}` key so a browser that
-    // calibrated against old defaults doesn't silently keep overriding new
-    // ones after a code change (audit #5) — old keys are simply orphaned.
-    const saved = Number(localStorage.getItem(`onzvoip.v2.${id}`));
+    const saved = storedCalibration(id);
     // Clamped to the slider's own bounds, because a stored value can predate a
     // change to them. Applied as it stands, a leftover 500 would drive the audio
     // while the slider - which the browser clamps to its own max on its own -
     // showed 200: the number on screen would stop describing what you hear.
-    if (saved > 0) set(clampToSlider(slider, saved));
+    if (saved !== null) set(clampToSlider(slider, saved));
 
     const sync = () => {
       label.textContent = get();
@@ -465,11 +495,13 @@ setupRotateRadar();
 // Doppler strength, or null when the effect is off. Two settings, not one: the
 // switch says whether you want the effect at all, and the strength is a
 // preference you keep even while it is off - so turning it back on restores the
-// dosage you had chosen instead of resetting you to the gentle one. Off is the
-// default because it is the baseline every strength is judged against.
+// dosage you had chosen instead of resetting you to the gentle one. The gentle
+// one is on by default: it was compared against silence and won, so it is what
+// the room should sound like without anyone having to go and find a switch.
 const DOPPLER_LEVELS = ['subtle', 'strong'];
 let dopplerPreset = null;
 let dopplerLevel = 'subtle';
+let dopplerWired = false;
 function paintDoppler() {
   if (dopplerToggle) setSwitchOn(dopplerToggle, dopplerPreset !== null);
   // The strength row is hidden while the effect is off: a player who only wants
@@ -486,8 +518,17 @@ function setupDoppler() {
   const savedLevel = localStorage.getItem('onzvoip.v2.dopplerLevel') ?? saved;
   const asLevel = (v) => (v === 'exact' ? 'strong' : (DOPPLER_LEVELS.includes(v) ? v : null));
   dopplerLevel = asLevel(savedLevel) ?? 'subtle';
-  dopplerPreset = asLevel(saved) ? dopplerLevel : null;
+  // A missing key and an empty one are NOT the same thing: nothing stored means
+  // nobody has had an opinion yet, and gets the effect on; an empty string is
+  // someone who switched it off on purpose, and that has to survive a reload.
+  dopplerPreset = saved === null ? dopplerLevel : (asLevel(saved) ? dopplerLevel : null);
   paintDoppler();
+
+  // Wired once. Everything above re-reads what is stored, which is what a reload
+  // does and what the tests replay; a second copy of the listener below would
+  // flip the effect twice per click, which is to say never.
+  if (dopplerWired) return;
+  dopplerWired = true;
 
   const store = () => {
     localStorage.setItem('onzvoip.v2.doppler', dopplerPreset ?? '');
@@ -1130,7 +1171,10 @@ function tickGains() {
       nodes.gainNode.gain.setTargetAtTime(target, now, AUDIO_SMOOTHING_SEC);
       // Right of the *car*, not right of the map: turning the wheel moves the
       // voices, which is the difference between a stereo image and a compass.
-      nodes.panner.pan.setTargetAtTime(panForOffset(offsetInEarFrame(pos).right, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
+      // Both components go in, not just the sideways one - which way a voice
+      // comes from is an angle, and an angle needs to know what is ahead.
+      const ear = offsetInEarFrame(pos);
+      nodes.panner.pan.setTargetAtTime(panForDirection(ear.right, ear.front, PAN_STRENGTH), now, AUDIO_SMOOTHING_SEC);
       // Smoothed like the others: a cutoff jumping per frame rings the filter.
       nodes.filter.frequency.setTargetAtTime(cutoffForCurrentMode(dist), now, AUDIO_SMOOTHING_SEC);
       driveDoppler(nodes, dist, now);
@@ -1322,7 +1366,8 @@ function renderPeerTable() {
   for (const [pseudo, pos] of peers) {
     const d = distance(me, pos);
     const g = gains.get(pseudo)?.current ?? 0;
-    const pan = panForOffset(offsetInEarFrame(pos).right, PAN_RANGE);
+    const ear = offsetInEarFrame(pos);
+    const pan = panForDirection(ear.right, ear.front, PAN_STRENGTH);
     const hasAudio = audioNodes.has(pseudo);
     const tr = document.createElement('tr');
     for (const [i, val] of [pseudo, d.toFixed(0), g.toFixed(2), pan.toFixed(2), hasAudio ? 'OK' : 'no track'].entries()) {
@@ -2186,9 +2231,9 @@ export {
   renderPlayerList, renderPeerTable, renderFollowChips, draw,
   projectToRadar, emojiForPseudo, setupCalibration,
   gainForCurrentMode, cutoffForCurrentMode, offsetInEarFrame, headingForView,
-  driveDoppler, dopplerPreset,
+  driveDoppler, dopplerPreset, setupDoppler,
   leaveVoice, rejoinVoice,
   avatarFor, setMyAvatar, myEffectiveAvatar, announceAvatar, peerAvatars,
   me, peers, gains, audioNodes, audioPublications, subscribedPeers, room,
-  MIN_DIST, MAX_DIST, PAN_RANGE, PEER_GC_MS,
+  MIN_DIST, MAX_DIST, PAN_STRENGTH, PEER_GC_MS,
 };

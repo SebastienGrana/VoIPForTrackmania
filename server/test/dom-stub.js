@@ -204,10 +204,11 @@ export function installDomStubs() {
   const showEmojiToggle = el('showEmojiToggle', 'input'); showEmojiToggle.setAttribute('aria-checked', 'true');
   const realisticAudioToggle = el('realisticAudioToggle', 'input'); realisticAudioToggle.setAttribute('aria-checked', 'true');
   const rotateRadarToggle = el('rotateRadarToggle', 'input'); rotateRadarToggle.setAttribute('aria-checked', 'true');
-  // Doppler is off by default, which is the baseline every strength is judged
-  // against; the strength row is hidden with it, as in the page.
-  const dopplerToggle = el('dopplerToggle', 'input'); dopplerToggle.setAttribute('aria-checked', 'false');
-  const dopplerLevels = el('dopplerLevels', 'div'); dopplerLevels.style.display = 'none';
+  // Doppler ships on at the gentle strength, so the markup starts on and the
+  // strength row starts unfolded - same as the page, which must not flash the
+  // wrong state before the script paints it.
+  const dopplerToggle = el('dopplerToggle', 'input'); dopplerToggle.setAttribute('aria-checked', 'true');
+  const dopplerLevels = el('dopplerLevels', 'div'); dopplerLevels.style.display = '';
   const dopplerLevelSubtle = el('dopplerLevelSubtle', 'button');
   const dopplerLevelStrong = el('dopplerLevelStrong', 'button');
 
@@ -256,8 +257,8 @@ export function installDomStubs() {
   const minDist = el('minDist', 'input'); minDist.value = '1';
   el('minDistVal', 'span');
   el('calibMinLabel', 'span');
-  const panRange = el('panRange', 'input'); panRange.value = '10';
-  el('panRangeVal', 'span');
+  const panStrength = el('panStrength', 'input'); panStrength.value = '90';
+  el('panStrengthVal', 'span');
   el('calibReset', 'button');
 
   const peersTable = new FakeElement('table');
@@ -324,7 +325,7 @@ export function installDomStubs() {
       dopplerLevels,
       dopplerSubtle: dopplerLevelSubtle,
       dopplerStrong: dopplerLevelStrong,
-      maxDist, minDist, panRange, peersTbody, body, documentElement,
+      maxDist, minDist, panStrength, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },
     fakeCtx,

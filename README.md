@@ -129,6 +129,6 @@ reports no login there, everyone on it falls back to the default room.
 |-----------|-------|---------|
 | `MIN_DIST` | 1 m | Full volume within this range |
 | `MAX_DIST` | 150 m | Silent beyond this range |
-| `PAN_RANGE` | 10 m | Full stereo pan at this side offset |
+| `PAN_STRENGTH` | 90 % | Width of the stereo image (the pan follows the direction a voice comes from, not a number of metres) |
 
 Adjust in the web client's calibration section.

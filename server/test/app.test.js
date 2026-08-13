@@ -30,10 +30,10 @@ beforeEach(() => {
   app.me.x = 200; app.me.y = 0; app.me.z = 200;
 
   // Reset calibration back through the app's own slider-clamp path (MIN_DIST/
-  // MAX_DIST/PAN_RANGE are live-bound exports, read-only from here).
+  // MAX_DIST/PAN_STRENGTH are live-bound exports, read-only from here).
   stub.elements.maxDist.value = '150'; stub.elements.maxDist.dispatch('input');
   stub.elements.minDist.value = '1'; stub.elements.minDist.dispatch('input');
-  stub.elements.panRange.value = '10'; stub.elements.panRange.dispatch('input');
+  stub.elements.panStrength.value = '90'; stub.elements.panStrength.dispatch('input');
 
   stub.elements.relativeMode.setAttribute('aria-checked', 'false');
   stub.elements.relativeTarget.value = '';
@@ -152,6 +152,36 @@ describe('switch wiring', () => {
     app.peers.set('bob', { x: 50, y: 5, z: 60, lastSeen: Date.now() });
     app.applyRelativeMode();
     assert.strictEqual(app.me.x, 53);
+  });
+
+  // You cannot be driving and shadowing someone else at the same time. Every
+  // reader has always put follow-game first, so with both switches on it was
+  // the panel that lied, not the audio.
+  test('turning follow-game on drops follow-a-player', () => {
+    stub.elements.relativeMode.dispatch('click');
+    assert.strictEqual(stub.elements.relativeMode.getAttribute('aria-checked'), 'true');
+    stub.elements.followGame.dispatch('click');
+    assert.strictEqual(stub.elements.followGame.getAttribute('aria-checked'), 'true');
+    assert.strictEqual(stub.elements.relativeMode.getAttribute('aria-checked'), 'false');
+  });
+
+  test('turning follow-a-player on drops follow-game', () => {
+    stub.elements.followGame.dispatch('click');
+    assert.strictEqual(stub.elements.followGame.getAttribute('aria-checked'), 'true');
+    stub.elements.relativeMode.dispatch('click');
+    assert.strictEqual(stub.elements.relativeMode.getAttribute('aria-checked'), 'true');
+    assert.strictEqual(stub.elements.followGame.getAttribute('aria-checked'), 'false');
+  });
+
+  // The switch that gets dropped has to go down the same path a click takes.
+  // Leaving follow-a-player strands "me" on the followed player's coordinates,
+  // and only that path knows to stop broadcasting them - flipping aria-checked
+  // alone would keep sending a position we never chose.
+  test('the dropped switch still runs its own off path', () => {
+    stub.elements.relativeMode.dispatch('click');   // shadowing someone
+    stub.elements.followGame.dispatch('click');     // back in the car, drops it
+    stub.elements.followGame.dispatch('click');     // and back out to free position
+    assert.strictEqual(app.shouldSendOwnPosition(), false);
   });
 });
 
@@ -1087,7 +1117,7 @@ describe('calibration reset', () => {
   test('a stored value reveals the button and clicking it restores the defaults', () => {
     localStorage.clear();
     app.setupCalibration();
-    const defMin = app.MIN_DIST, defMax = app.MAX_DIST, defPan = app.PAN_RANGE;
+    const defMin = app.MIN_DIST, defMax = app.MAX_DIST, defPan = app.PAN_STRENGTH;
 
     // A stale minDist LARGER than the default maxDist: the setters clamp
     // against each other, so a single-pass reset would leave maxDist stranded
@@ -1101,7 +1131,7 @@ describe('calibration reset', () => {
     stub.elements.calibReset.dispatch('click');
     assert.strictEqual(app.MIN_DIST, defMin);
     assert.strictEqual(app.MAX_DIST, defMax);
-    assert.strictEqual(app.PAN_RANGE, defPan);
+    assert.strictEqual(app.PAN_STRENGTH, defPan);
     assert.strictEqual(localStorage.getItem('onzvoip.v2.minDist'), null);
     assert.strictEqual(stub.elements.calibReset.style.display, 'none');
   });
@@ -1124,6 +1154,26 @@ describe('calibration reset', () => {
     } finally {
       delete slider.min;
       delete slider.max;
+      localStorage.clear();
+      app.setupCalibration();
+    }
+  });
+
+  // Zero is a real answer on two of these sliders - no full-volume bubble, no
+  // stereo at all - and it used to be indistinguishable from "nothing stored",
+  // so the default came back on the next reload and quietly undid the choice.
+  test('a stored zero is a choice, not an empty slot', () => {
+    localStorage.clear();
+    try {
+      localStorage.setItem('onzvoip.v2.panStrength', '0');
+      app.setupCalibration();
+      assert.strictEqual(app.PAN_STRENGTH, 0);
+      assert.strictEqual(stub.elements.calibReset.style.display, '');
+    } finally {
+      // Back to the shipped value BEFORE re-running setup, which reads whatever
+      // is live as its idea of "default".
+      stub.elements.panStrength.value = '90';
+      stub.elements.panStrength.dispatch('input');
       localStorage.clear();
       app.setupCalibration();
     }
@@ -1188,10 +1238,42 @@ describe('renderPlayerList() (who the list shows)', () => {
 describe('doppler switch and strength', () => {
   const el = (n) => stub.elements[n];
 
-  test('off by default, with the strength row folded away', () => {
-    assert.strictEqual(el('doppler').getAttribute('aria-checked'), 'false');
-    assert.strictEqual(el('dopplerLevels').style.display, 'none');
-    assert.strictEqual(app.dopplerPreset, null);
+  // Re-runs the module's own load path against a chosen stored state, which is
+  // the only way to see what a fresh browser gets: beforeEach switches the
+  // effect off, so the import-time default cannot be read off module state.
+  const reload = () => app.setupDoppler();
+  const restore = () => { localStorage.clear(); reload(); };
+
+  test('on at the gentle strength for a browser that has never seen it', () => {
+    localStorage.clear();
+    try {
+      reload();
+      assert.strictEqual(app.dopplerPreset, 'subtle');
+      assert.strictEqual(el('doppler').getAttribute('aria-checked'), 'true');
+      assert.strictEqual(el('dopplerLevels').style.display, '');
+    } finally {
+      restore();
+    }
+  });
+
+  // Nothing stored and "stored as off" are different people: one has never had
+  // an opinion, the other has already said no. Reading both as "no value" would
+  // switch the effect back on under someone who turned it off on purpose.
+  test('switched off on purpose, it stays off across a reload', () => {
+    localStorage.clear();
+    try {
+      localStorage.setItem('onzvoip.v2.doppler', '');
+      localStorage.setItem('onzvoip.v2.dopplerLevel', 'strong');
+      reload();
+      assert.strictEqual(app.dopplerPreset, null);
+      assert.strictEqual(el('doppler').getAttribute('aria-checked'), 'false');
+      assert.strictEqual(el('dopplerLevels').style.display, 'none');
+      // ...and the strength it was left at is still the one waiting for it.
+      el('doppler').dispatch('click');
+      assert.strictEqual(app.dopplerPreset, 'strong');
+    } finally {
+      restore();
+    }
   });
 
   // One switch, not two: someone who wants the effect should not have to form

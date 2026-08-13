@@ -695,9 +695,9 @@
            compared against, that comparison is over. -->
       <div class="opt-check">
         <span>Doppler effect (cars driving past)</span>
-        <button type="button" id="dopplerToggle" class="onz-switch" role="switch" aria-checked="false"><span class="onz-switch-knob"></span></button>
+        <button type="button" id="dopplerToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
       </div>
-      <div id="dopplerLevels" class="chip-row" style="display:none">
+      <div id="dopplerLevels" class="chip-row">
         <button type="button" id="dopplerLevelSubtle" class="chip">Subtle</button>
         <button type="button" id="dopplerLevelStrong" class="chip">Strong</button>
       </div>
@@ -733,9 +733,12 @@
           Silence beyond <span class="val" id="maxDistVal"></span> m
           <input type="range" id="maxDist" min="20" max="200" step="5" />
         </label>
+        <!-- Not a distance any more. The pan follows the direction a voice
+             comes from, so "full stereo at N metres" no longer means anything:
+             what is left to choose is how wide the image is, which is a taste. -->
         <label class="opt-label">
-          Full stereo pan at <span class="val" id="panRangeVal"></span> m side offset
-          <input type="range" id="panRange" min="2" max="30" step="1" />
+          Left / right effect <span class="val" id="panStrengthVal"></span> %
+          <input type="range" id="panStrength" min="0" max="100" step="5" />
         </label>
       </div>
     </div>

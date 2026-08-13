@@ -20,9 +20,39 @@ export function gainForDistance(d, minDist, maxDist) {
   return 1 - (d - minDist) / (maxDist - minDist);
 }
 
-// Stereo pan in [-1, 1] for a horizontal offset dx in game units.
-export function panForOffset(dx, panRange) {
-  return clamp(dx / panRange, -1, 1);
+// Below this distance the pan fades back to centre. Two cars nose to tail are
+// a metre apart with positions arriving five times a second, so the angle
+// between them is mostly noise down here - without the fade a voice flips ear
+// to ear while nobody is really moving. It is also what the ear expects: a
+// sound source close enough to touch is "everywhere", not "on the right".
+export const PAN_NEARFIELD_M = 2;
+
+// Stereo pan in [-1, 1] from a DIRECTION, not from a number of metres.
+//
+// The previous version panned on the sideways offset alone, divided by a
+// configurable range: `clamp(right / panRange, -1, 1)`. That was wrong in both
+// directions at once. Racing, you spend the whole lap within a few metres of
+// each other, so the man in the next lane - the one case where the ear should
+// be certain - came out at a third of the way over and read as a bug; while a
+// car fifty metres up the road but slightly offset came out hard in one ear,
+// because the "how far ahead" half of the offset was thrown away. Distance is
+// already carried by the volume and the low-pass; the stereo image only has to
+// answer "which way".
+//
+// So: sine of the azimuth. Straight ahead or straight behind is centre, abeam
+// is fully over, and everything between slides. Front and back are the same
+// picture, which is what two speakers can say - the difference between them is
+// not ours to make audible.
+//
+// `strength` scales the whole image (1 = a voice abeam lands entirely in one
+// ear, which is correct but severe on headphones over a long session).
+export function panForDirection(right, front, strength = 1) {
+  const r = Number(right) || 0;
+  const f = Number(front) || 0;
+  const d = Math.hypot(r, f);
+  if (!d) return 0;
+  const nearFade = Math.min(1, d / PAN_NEARFIELD_M);
+  return clamp((r / d) * nearFade * clamp(Number(strength) || 0, 0, 1), -1, 1);
 }
 
 // Turns a world-space offset into "how far to my right" and "how far ahead of

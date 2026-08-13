@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  distance, clamp, gainForDistance, panForOffset,
+  distance, clamp, gainForDistance, panForDirection, PAN_NEARFIELD_M,
   gainForDistanceRealistic, lowpassForDistance, LOWPASS_NEAR_HZ, LOWPASS_FAR_HZ,
   toCarFrame,
   dopplerDelayFor, DOPPLER_PRESETS, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC, SPEED_OF_SOUND,
@@ -229,37 +229,64 @@ describe('toCarFrame()', () => {
   });
 });
 
-describe('panForOffset()', () => {
-  const PAN = 10;
+describe('panForDirection()', () => {
+  // Far enough out that the near-field fade is fully open, so these read as
+  // pure direction.
+  const FAR = PAN_NEARFIELD_M * 10;
 
-  test('center (dx=0) → 0', () => {
-    assert.strictEqual(panForOffset(0, PAN), 0);
+  test('dead ahead is centre', () => {
+    assert.strictEqual(panForDirection(0, FAR), 0);
   });
 
-  test('at panRange → +1 (full right)', () => {
-    assert.strictEqual(panForOffset(PAN, PAN), 1);
+  test('dead behind is centre too - two speakers cannot say otherwise', () => {
+    assert.strictEqual(panForDirection(0, -FAR), 0);
   });
 
-  test('at -panRange → -1 (full left)', () => {
-    assert.strictEqual(panForOffset(-PAN, PAN), -1);
+  test('abeam right is fully right', () => {
+    assert.strictEqual(panForDirection(FAR, 0), 1);
   });
 
-  test('beyond panRange → clamped to +1', () => {
-    assert.strictEqual(panForOffset(PAN * 100, PAN), 1);
+  test('abeam left is fully left', () => {
+    assert.strictEqual(panForDirection(-FAR, 0), -1);
   });
 
-  test('beyond -panRange → clamped to -1', () => {
-    assert.strictEqual(panForOffset(-PAN * 100, PAN), -1);
+  // The case the old metres-based pan got wrong, and the reason for this
+  // function: side by side in a race, the one place the ear should be sure of
+  // itself. Dividing a 3 m offset by a 10 m range used to answer 0.3.
+  test('the car in the next lane is fully over, not a third of the way', () => {
+    assert.strictEqual(panForDirection(3, 0), 1);
   });
 
-  test('half panRange → 0.5', () => {
-    assert.strictEqual(panForOffset(PAN / 2, PAN), 0.5);
+  // The same formula got the opposite case wrong in the opposite way: 10 m of
+  // offset was "full pan" even for someone half a straight away up the road.
+  test('far ahead and slightly offset is barely off centre', () => {
+    const pan = panForDirection(10, 50);
+    assert.ok(pan > 0.15 && pan < 0.25, `expected a light pan, got ${pan}`);
+  });
+
+  test('distance does not change the direction', () => {
+    assert.strictEqual(panForDirection(30, 30), panForDirection(3, 3));
+  });
+
+  test('strength scales the whole image', () => {
+    assert.strictEqual(panForDirection(FAR, 0, 0.5), 0.5);
+    assert.strictEqual(panForDirection(FAR, 0, 0), 0);
+  });
+
+  // Nose to tail, positions arriving five times a second: the angle down here is
+  // mostly noise, and without the fade a voice flips ear to ear over nothing.
+  test('the last couple of metres fade back towards centre', () => {
+    const half = panForDirection(PAN_NEARFIELD_M / 2, 0, 1);
+    assert.ok(Math.abs(half - 0.5) < 1e-9, `expected a half-faded pan, got ${half}`);
+    assert.strictEqual(panForDirection(0, 0), 0);
   });
 
   test('pan always in [-1, 1]', () => {
-    for (const dx of [-1000, -10, -5, 0, 5, 10, 1000]) {
-      const pan = panForOffset(dx, PAN);
-      assert.ok(pan >= -1 && pan <= 1, `pan out of [-1,1] at dx=${dx}: ${pan}`);
+    for (const right of [-1000, -10, -1, 0, 1, 10, 1000]) {
+      for (const front of [-1000, -1, 0, 1, 1000]) {
+        const pan = panForDirection(right, front);
+        assert.ok(pan >= -1 && pan <= 1, `out of range at (${right}, ${front}): ${pan}`);
+      }
     }
   });
 });
