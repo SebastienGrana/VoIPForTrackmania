@@ -51,6 +51,26 @@ bool TryGetServerInfo(string &out login, string &out name, string &out failReaso
     return true;
 }
 
+// How many players the game itself knows about right now, local player
+// included, so the widget can put the size of the voice room in context:
+// "3 in voice / 8 on the server" says at a glance how many people around you
+// never opened their link. Spectators count — they are on the server and can
+// talk. Returns -1 rather than 0 when there is no playground (menus, editor),
+// because "no answer" and "nobody" must not print the same thing.
+//
+// Read on demand from the render loop rather than cached by the main loop:
+// it is a buffer length, and the main loop skips its own iteration in exactly
+// the states (not spawned, spectating) where a cached value would go stale.
+int GetPlaygroundPlayerCount() {
+    CGameManiaPlanet@ mp = cast<CGameManiaPlanet>(GetApp());
+    if (mp is null) return -1;
+
+    CGamePlayground@ pg = mp.CurrentPlayground;
+    if (pg is null) return -1;
+
+    return int(pg.Players.Length);
+}
+
 // Reading the position is the one place the two games genuinely differ, and it
 // has to be resolved at compile time: OpenPlanet's AngelScript fails to compile
 // on an unknown type name, so a runtime `cast<> is null` check is not an option

@@ -57,3 +57,18 @@ string StripTmCodes(const string &in s) {
 string FormatFloat(float v) {
     return "" + v;
 }
+
+// A duration a player reads at a glance — "0.4 s", "12 s", "3 min" — for the
+// widget's Advanced diagnostics. One decimal only under ten seconds, because
+// past that the exact tenth says nothing the whole number doesn't. Built from
+// integer arithmetic rather than a float format so it carries no dependency
+// beyond the language itself.
+string FormatAgo(int64 ms) {
+    if (ms < 0) ms = 0;
+    if (ms < 10000) {
+        int64 tenths = ms / 100;
+        return "" + (tenths / 10) + "." + (tenths % 10) + " s";
+    }
+    if (ms < 60000) return "" + (ms / 1000) + " s";
+    return "" + (ms / 60000) + " min";
+}

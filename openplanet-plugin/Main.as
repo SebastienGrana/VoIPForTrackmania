@@ -60,11 +60,35 @@ bool g_stateWebConnected = false;
 bool g_stateMicActive = false;
 string g_tcpReadBuf = "";
 
+// Raised by the widget's Retry/Reconnect buttons. The main loop owns the
+// socket, so the button only asks: tearing the connection down from inside a
+// UI callback would drop it halfway through an iteration of the loop below.
+bool g_forceReconnect = false;
+
+// Diagnostics behind "Advanced" in the widget: when a position last actually
+// went out, and — while it isn't going out — why. Cleared on every successful
+// send so a stale reason can never sit there looking like a live one.
+int64 g_lastPositionOkAt = 0;
+string g_lastSendFail = "";
+
 void Main() {
     print("OnZVoIP: plugin started, Main() running");
     while (true) {
         yield();
         int64 now = Time::Now;
+
+        // The widget asked for a fresh connection. Clearing g_authFailed is
+        // what makes this useful after a corrected secret: the auth backoff
+        // below only holds while that flag is set, so the retry goes out on
+        // this very iteration instead of waiting AUTH_RETRY_BACKOFF_MS. Zeroing
+        // the attempt timestamp likewise skips RECONNECT_INTERVAL_MS, so the
+        // click feels immediate rather than up to two seconds late.
+        if (g_forceReconnect) {
+            g_forceReconnect = false;
+            g_authFailed = false;
+            g_lastConnectAttemptAt = 0;
+            @g_socket = null;
+        }
 
         // IsReady() alone misses a relay restart: the socket can report
         // ready while the peer has actually hung up. IsHungUp() catches that
@@ -185,6 +209,7 @@ void Main() {
         string login;
         string failReason;
         if (!TryGetLocalPlayerPosition(pos, aimDir, hasAim, login, failReason)) {
+            g_lastSendFail = failReason;
             if (now - g_lastDiagAt >= DIAG_INTERVAL_MS) {
                 g_lastDiagAt = now;
                 print("OnZVoIP: not sending yet - " + failReason);
@@ -240,10 +265,16 @@ void Main() {
             + "\"x\":" + FormatFloat(pos.x) + ","
             + "\"y\":" + FormatFloat(pos.y) + ","
             + "\"z\":" + FormatFloat(pos.z) + headingPart + "}\n";
-        if (!g_socket.WriteRaw(line) && now - g_lastDiagAt >= DIAG_INTERVAL_MS) {
-            g_lastDiagAt = now;
-            print("OnZVoIP: WriteRaw failed | IsReady=" + g_socket.IsReady()
-                + " IsHungUp=" + g_socket.IsHungUp());
+        if (!g_socket.WriteRaw(line)) {
+            g_lastSendFail = "socket write failed";
+            if (now - g_lastDiagAt >= DIAG_INTERVAL_MS) {
+                g_lastDiagAt = now;
+                print("OnZVoIP: WriteRaw failed | IsReady=" + g_socket.IsReady()
+                    + " IsHungUp=" + g_socket.IsHungUp());
+            }
+        } else {
+            g_lastPositionOkAt = now;
+            g_lastSendFail = "";
         }
     }
 }
