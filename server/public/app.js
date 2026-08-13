@@ -10,10 +10,11 @@ import {
   lowpassForDistance, LOWPASS_NEAR_HZ, toCarFrame,
   dopplerDelayFor, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC,
 } from './audio-math.js';
-import {
-  AVATAR_EMOJI, emojiForPseudo, guessCountry, validateAvatar, resolveAvatar,
-  flagUrl, flagName, allFlagCodes, isFlagCode,
-} from './avatar.js';
+import { validateAvatar, emojiForPseudo } from './avatar.js';
+import { setupToast, showToast } from './toast.js';
+import { createMicMeter } from './mic-meter.js';
+import { createAvatarPicker, AVATAR_TOPIC } from './avatar-picker.js';
+import { createRadar } from './radar.js';
 
 // Live-tunable from the calibration sliders (see index.html #calib) because
 // these are in *game* units now that real positions come from the OpenPlanet
@@ -225,17 +226,7 @@ function setupAppearance() {
 }
 setupAppearance();
 
-let toastTimer = null;
-function showToast(msg) {
-  if (!toastEl) return;
-  if (toastTextEl) toastTextEl.textContent = msg;
-  toastEl.className = 'onz-toast show';
-  toastEl.style.opacity = '.95';
-  clearTimeout(toastTimer);
-  // Matches the mockup: only fades via opacity, stays in the header's flex
-  // flow afterwards instead of being removed - see onzvoip_ui_mockup_spec.md §2.
-  toastTimer = setTimeout(() => { toastEl.style.opacity = '0'; }, 3200);
-}
+setupToast(toastEl, toastTextEl);
 
 let room = null;
 let roomConnectedAt = null;
@@ -621,309 +612,18 @@ function projectToRadar(x, y, R, k) {
   return { x_display: Math.cos(theta) * dRadar, y_display: Math.sin(theta) * dRadar, scale };
 }
 
-const MIN_EMOJI_PX = 11;
-const MAX_EMOJI_PX = 18;
 // The palette, the country guess and the validation of a chosen avatar live in
-// ./avatar.js, which is DOM-free so the tests can hit it directly. What stays
-// here is everything that needs the page: what this player picked, what the
-// others announced, and the images the canvas draws from.
-
-// pseudo -> avatar, as announced by that player. Populated only from LiveKit
-// data packets, and keyed on the *sender identity LiveKit signs into the token* -
-// never on a pseudo read out of the payload, which any participant could set to
-// someone else's and repaint a stranger's blip.
-const peerAvatars = new Map();
-
-// This player's own pick. null is not a third kind of avatar, it is the absence
-// of a pick: "Auto", resolved below to the guessed country and failing that to
-// the hashed emoji.
-let myAvatar = null;
-const AVATAR_STORAGE_KEY = 'onzvoip.avatar';
-
-// Guessed once at startup rather than per draw: it reads the time zone and the
-// language list, neither of which changes mid-session, and both are things the
-// browser had already computed for itself - no geolocation service is contacted,
-// so no player's address leaves the machine to decide which flag to draw.
-const guessedCountry = guessCountry();
-
-// What we actually announce. The guess is resolved here rather than left for
-// other clients to redo, so everyone draws the same thing even though the guess
-// only makes sense on the machine that made it. Staying null is fine and cheap:
-// every client can derive the hashed emoji from the pseudo on its own.
-function myEffectiveAvatar() {
-  if (myAvatar) return myAvatar;
-  if (guessedCountry) return { kind: 'flag', code: guessedCountry };
-  return null;
-}
-
-// The avatar travels player-to-player over the room's data channel, not through
-// the relay: the relay only ever forwards what the game plugin tells it, and the
-// plugin knows nothing about a picture chosen in a browser. This also means the
-// feature needs no server change and no plugin change to work.
-const AVATAR_TOPIC = 'avatar';
-
-// `to` narrows the announcement to one participant - used when somebody joins,
-// so a newcomer learns everyone's avatar without the whole room re-broadcasting
-// to everyone else at the same time.
-async function announceAvatar(to) {
-  if (!room || !room.localParticipant || !room.localParticipant.publishData) return;
-  try {
-    // An empty object where an avatar would be is how "I went back to Auto and
-    // have nothing to announce" is said: it fails validation on the other side,
-    // which deletes the entry and falls back to the hashed emoji.
-    const body = new TextEncoder().encode(JSON.stringify(myEffectiveAvatar() ?? {}));
-    // Reliable, unlike positions: this is sent a handful of times per session and
-    // a lost packet would leave a wrong picture up until the next join.
-    const opts = { reliable: true, topic: AVATAR_TOPIC };
-    if (to) opts.destinationIdentities = [to];
-    await room.localParticipant.publishData(body, opts);
-  } catch { /* a failed announcement costs a flag, not a connection */ }
-}
-
-function loadStoredAvatar() {
-  try {
-    const raw = globalThis.localStorage?.getItem(AVATAR_STORAGE_KEY);
-    // A cosmetic preference, so localStorage is the right home - unlike the
-    // room credentials, which are deliberately kept in memory only (see the
-    // note above lastRoomCredentials). Nothing here grants access to anything.
-    myAvatar = raw ? validateAvatar(JSON.parse(raw)) : null;
-  } catch { myAvatar = null; }
-}
-
-function storeAvatar() {
-  try {
-    if (myAvatar) globalThis.localStorage?.setItem(AVATAR_STORAGE_KEY, JSON.stringify(myAvatar));
-    else globalThis.localStorage?.removeItem(AVATAR_STORAGE_KEY);
-  } catch { /* private mode, or storage full: the choice just won't survive a reload */ }
-}
-loadStoredAvatar();
-
-// Decoded SVGs, kept across draws because the radar redraws every frame and
-// re-decoding 8 flags 60 times a second would be absurd. The map holds the
-// element from the moment it is requested, still loading - drawImage would throw
-// on it, hence the readiness check in flagReady().
-const flagImages = new Map();
-
-function flagImage(code) {
-  let img = flagImages.get(code);
-  if (!img) {
-    if (typeof Image === 'undefined') return null;
-    img = new Image();
-    img.src = flagUrl(code);
-    flagImages.set(code, img);
-  }
-  return img;
-}
-
-function flagReady(img) {
-  return !!img && img.complete && img.naturalWidth > 0;
-}
-
-// The one answer to "what do I draw for this player". Falls back through the
-// same chain everywhere - chosen flag, chosen emoji, hashed emoji - so a blip
-// and a list row are always the same picture, and neither is ever blank.
-function avatarFor(pseudo) {
-  return resolveAvatar(pseudo, peerAvatars.get(pseudo));
-}
-
-// Fills a DOM element with an avatar, in the list and in the picker alike, so
-// the two can never drift apart. Emoji stay text (they inherit the row's font
-// size and colour); flags become an <img>, since the browser has no glyph for
-// them. Written with textContent / createElement rather than innerHTML because
-// a flag code, though whitelisted, still originates from another player.
-function paintAvatar(el, av, pseudo) {
-  el.textContent = '';
-  if (av.kind === 'flag') {
-    const img = document.createElement('img');
-    img.className = 'flag-img';
-    img.src = flagUrl(av.code);
-    img.alt = flagName(av.code);
-    // Belt and braces: if the file ever fails to load, the row falls back to the
-    // picture that needs no network at all rather than showing a broken icon.
-    img.addEventListener('error', () => { el.textContent = emojiForPseudo(pseudo); }, { once: true });
-    el.appendChild(img);
-    return;
-  }
-  el.textContent = av.value;
-}
-
-// --- The picker: Advanced settings > My avatar ---
-//
-// It lives there rather than on the main screen so the default view still
-// matches the approved render, and it is also the only place a player can see
-// their own avatar at all - the player list deliberately shows everyone else.
-const avatarPreview     = document.getElementById('avatarPreview');
-const avatarPreviewName = document.getElementById('avatarPreviewName');
-const avatarToggleBtn   = document.getElementById('avatarToggle');
-const avatarPicker      = document.getElementById('avatarPicker');
-const avatarSearch      = document.getElementById('avatarSearch');
-const avatarFlagGrid    = document.getElementById('avatarFlagGrid');
-const avatarEmojiGrid   = document.getElementById('avatarEmojiGrid');
-
-function avatarLabel() {
-  if (myAvatar && myAvatar.kind === 'flag') return flagName(myAvatar.code);
-  if (myAvatar) return 'Character';
-  // Saying *where* the guess came from matters: a player handed the wrong flag
-  // needs to understand it was inferred, not assigned, or the picker below looks
-  // like a bug report rather than the fix.
-  if (guessedCountry) return `Auto — ${flagName(guessedCountry)}, from your browser`;
-  return 'Auto — from your name';
-}
-
-function renderAvatarPreview() {
-  if (!avatarPreview) return;
-  // Before a room is joined there is no login yet; '' still hashes to a stable
-  // emoji, and the preview is refreshed on connect so it settles on the real one.
-  const who = myIdentity || '';
-  paintAvatar(avatarPreview, resolveAvatar(who, myEffectiveAvatar()), who);
-  if (avatarPreviewName) avatarPreviewName.textContent = avatarLabel();
-}
-
-function markAvatarSelection() {
-  const key = !myAvatar ? 'auto'
-    : myAvatar.kind === 'flag' ? `flag:${myAvatar.code}` : `emoji:${myAvatar.value}`;
-  for (const grid of [avatarFlagGrid, avatarEmojiGrid]) {
-    if (!grid) continue;
-    for (const cell of grid.children) cell.classList.toggle('selected', cell.dataset.key === key);
-  }
-}
-
-function setMyAvatar(next) {
-  myAvatar = next; // null means Auto
-  storeAvatar();
-  renderAvatarPreview();
-  markAvatarSelection();
-  announceAvatar();
-}
-
-function avatarCell(key, title, fill) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = 'avatar-cell';
-  b.dataset.key = key;
-  b.title = title;
-  fill(b);
-  return b;
-}
-
-// Fetches the flags currently scrolled into view, one screen ahead in each
-// direction so scrolling never outruns the loading. Fetching all 270 up front
-// would be 2.3 MB the moment somebody opens the panel, most of it for countries
-// they will never scroll past.
-function revealVisibleFlags() {
-  if (!avatarFlagGrid) return;
-  // The `|| 168` matters: on the very first call the grid has just been
-  // un-hidden and can still measure 0 tall, and a zero-height window reveals
-  // nothing - which is exactly the blank grid this function exists to avoid.
-  // 168 is the max-height the stylesheet gives it.
-  const h = avatarFlagGrid.clientHeight || 168;
-  const top = avatarFlagGrid.scrollTop - h;
-  const bottom = avatarFlagGrid.scrollTop + h * 2;
-  for (const cell of avatarFlagGrid.children) {
-    if (cell.style.display === 'none') continue;
-    const img = cell.firstChild;
-    if (!img || !img.dataset || !img.dataset.src) continue;
-    if (cell.offsetTop < top || cell.offsetTop > bottom) continue;
-    img.src = img.dataset.src;
-    delete img.dataset.src;
-  }
-}
-
-function buildAvatarPicker() {
-  if (!avatarFlagGrid || !avatarEmojiGrid) return;
-  ensureAvatarNoMatch();
-
-  // Auto sits first and inside the grid rather than off to the side, because
-  // going back to it is a choice like any other and should be in the same place
-  // as the choices that replaced it.
-  avatarFlagGrid.appendChild(avatarCell('auto', 'Automatic', (b) => { b.textContent = '✨'; }));
-  for (const code of allFlagCodes()) {
-    avatarFlagGrid.appendChild(avatarCell(`flag:${code}`, `${flagName(code)} (${code})`, (b) => {
-      const img = document.createElement('img');
-      // The src is parked in data-src and moved over by revealVisibleFlags().
-      // loading="lazy" was tried first and left the grid blank: it is driven by
-      // the rendering lifecycle, which a scrollable box the browser has decided
-      // not to paint does not run. Reading offsetTop instead depends only on
-      // layout, which always happens - so the pictures are there whether or not
-      // the browser felt like compositing that frame.
-      img.dataset.src = flagUrl(code);
-      img.alt = flagName(code);
-      b.appendChild(img);
-    }));
-  }
-  for (const value of AVATAR_EMOJI) {
-    avatarEmojiGrid.appendChild(avatarCell(`emoji:${value}`, 'Character', (b) => { b.textContent = value; }));
-  }
-
-  avatarFlagGrid.addEventListener('scroll', revealVisibleFlags);
-  revealVisibleFlags();
-
-  for (const grid of [avatarFlagGrid, avatarEmojiGrid]) {
-    grid.addEventListener('click', (e) => {
-      const cell = e.target.closest ? e.target.closest('.avatar-cell') : null;
-      if (!cell) return;
-      const key = cell.dataset.key;
-      if (key === 'auto') return setMyAvatar(null);
-      const [kind, rest] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
-      setMyAvatar(kind === 'flag' ? { kind: 'flag', code: rest } : { kind: 'emoji', value: rest });
-    });
-  }
-
-  if (avatarSearch) {
-    avatarSearch.addEventListener('input', () => {
-      const q = avatarSearch.value.trim().toLowerCase();
-      let shown = 0;
-      for (const cell of avatarFlagGrid.children) {
-        // Auto always stays reachable: filtering the way back out of a search is
-        // how someone ends up stuck with a flag they picked by accident.
-        const hit = cell.dataset.key === 'auto' || !q || cell.title.toLowerCase().includes(q);
-        cell.style.display = hit ? '' : 'none';
-        if (hit && cell.dataset.key !== 'auto') shown++;
-      }
-      if (avatarNoMatch) avatarNoMatch.style.display = (q && shown === 0) ? '' : 'none';
-      // Filtering moves everything up: what was three screens down is now the
-      // first row, and it has no picture yet.
-      revealVisibleFlags();
-    });
-  }
-
-  markAvatarSelection();
-}
-
-// Sits under the flag grid rather than inside it, so an empty search reads as a
-// message and not as a cell you could click. Created next to the grid only when
-// the page actually gives it a parent to sit in.
-let avatarNoMatch = null;
-function ensureAvatarNoMatch() {
-  if (avatarNoMatch || !avatarFlagGrid || !avatarFlagGrid.parentNode) return;
-  avatarNoMatch = document.createElement('div');
-  avatarNoMatch.className = 'avatar-empty';
-  avatarNoMatch.textContent = 'No country matches that.';
-  avatarNoMatch.style.display = 'none';
-  avatarFlagGrid.parentNode.insertBefore(avatarNoMatch, avatarFlagGrid.nextSibling);
-}
-
-if (avatarToggleBtn && avatarPicker) {
-  avatarToggleBtn.addEventListener('click', () => {
-    const open = avatarPicker.style.display === 'none';
-    avatarPicker.style.display = open ? '' : 'none';
-    avatarToggleBtn.setAttribute('aria-expanded', String(open));
-    avatarToggleBtn.textContent = open ? 'Done' : 'Change';
-    // Built on first open, not at load: 270 <button><img> is real work, and most
-    // sessions never open this panel at all.
-    if (open && !avatarFlagGrid.children.length) buildAvatarPicker();
-  });
-}
-renderAvatarPreview();
-
-function cssVar(name, fallback) {
-  try {
-    const v = getComputedStyle(onzRoot).getPropertyValue(name).trim();
-    return v || fallback;
-  } catch {
-    return fallback;
-  }
-}
+// ./avatar.js, DOM-free so the tests can hit it directly. Everything that
+// needs the page - what this player picked, what others announced, the
+// picker UI - lives in ./avatar-picker.js instead.
+const avatarPicker = createAvatarPicker({
+  getRoom: () => room,
+  getMyIdentity: () => myIdentity,
+});
+const {
+  peerAvatars, avatarFor, paintAvatar, flagImage, flagReady,
+  setMyAvatar, myEffectiveAvatar, announceAvatar, renderAvatarPreview,
+} = avatarPicker;
 
 // Audit #21: redrawing the radar/tables at the 60Hz of requestAnimationFrame
 // burned CPU on DOM work nobody could see. draw()/renderPlayerList() run from
@@ -934,178 +634,21 @@ function cssVar(name, fallback) {
 const RENDER_INTERVAL_MS = 100; // ~10Hz, plenty for a status readout
 const optBody = document.getElementById('optBody');
 
-// Hover/tap-to-reveal state for radar dots, refreshed each draw() so the
-// canvas mousemove/click handlers below can hit-test against where things
-// actually got drawn instead of duplicating the projection math.
-let hoveredPseudo = null;
-let lastDrawnPeers = []; // [{ pseudo, x, y, r }]
-
-function hitTestPeer(x, y) {
-  for (const p of lastDrawnPeers) {
-    if (Math.hypot(x - p.x, y - p.y) <= p.r) return p.pseudo;
-  }
-  return null;
-}
-
-// The canvas box is sized by CSS (a letterbox on mobile, near-square on desktop
-// — see the aspect-ratio rules in index.html). Match the bitmap to that box so
-// the radar is drawn at native resolution instead of being stretched, and so
-// draw() picks up the new proportions when the viewport crosses the breakpoint.
-function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  // Guard for the headless test stub, whose getBoundingClientRect has no size:
-  // fall back to whatever the bitmap already is rather than writing NaN.
-  const w = Math.round(rect.width) || canvas.width;
-  const h = Math.round(rect.height) || canvas.height;
-  if (canvas.width !== w) canvas.width = w;
-  if (canvas.height !== h) canvas.height = h;
-}
-
-function draw() {
-  resizeCanvas();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const cx = canvas.width / 2;
-  const cy = canvas.height / 2;
-  const R = Math.min(canvas.width, canvas.height) / 2 - 20;
-  // Chosen so MAX_DIST lands at ~70% of the radar radius (atan(2)*2/pi),
-  // leaving room for farther peers to keep compressing toward the rim
-  // instead of piling up exactly on the MAX_DIST ring.
-  const k = 2 / Math.max(MAX_DIST, 1);
-
-  const gridColor = cssVar('--onz-canvas-grid', '#2a2a2a');
-  const accentColor = cssVar('--onz-accent', '#4aa8ff');
-  const meColor = cssVar('--onz-accent', '#4aa8ff');
-  const sweepColor = cssVar('--onz-sweep', 'rgba(74,168,255,0.18)');
-  const tooltipBg = cssVar('--onz-tooltip-bg', '#000');
-  const tooltipText = cssVar('--onz-tooltip-text', '#fff');
-
-  // Fixed reference grid at 33/66/100% of the radar radius - purely visual
-  // spacing, independent of MIN_DIST/MAX_DIST (those are shown via each
-  // peer's projected distance, not a dedicated ring).
-  ctx.strokeStyle = gridColor;
-  for (const frac of [0.33, 0.66, 1]) {
-    ctx.beginPath(); ctx.arc(cx, cy, R * frac, 0, Math.PI * 2); ctx.stroke();
-  }
-
-  // Animated sweep wedge, disabled under reduced motion.
-  if (!reduceMotion) {
-    const sweepAngle = (Date.now() / 3000) % 1 * Math.PI * 2;
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, R, sweepAngle, sweepAngle + Math.PI / 6);
-    ctx.closePath();
-    ctx.fillStyle = sweepColor;
-    ctx.fill();
-    ctx.restore();
-  }
-
-  lastDrawnPeers = [];
-  let activePeer = null; // hovered/tapped dot, drawn last so its tooltip sits on top
-  for (const [pseudo, pos] of peers) {
-    const gain = gains.get(pseudo)?.current ?? 0;
-    // With rotation on, the radar is drawn in the car's frame: right of the car
-    // goes right on screen, ahead of the car goes up - hence the minus, screen Y
-    // growing downward. With it off, or with no heading to rotate by, the world
-    // axes are plotted exactly as they always were.
-    const off = offsetInEarFrame(pos);
-    const turned = rotateRadar && headingForView();
-    const proj = turned
-      ? projectToRadar(off.right, -off.front, R, k)
-      : projectToRadar(pos.x - me.x, pos.z - me.z, R, k);
-    const px = cx + proj.x_display;
-    const py = cy + proj.y_display;
-    const size = Math.min(MAX_EMOJI_PX, Math.max(MIN_EMOJI_PX, 20 * proj.scale));
-
-    if (pseudo === hoveredPseudo) {
-      ctx.beginPath(); ctx.arc(px, py, size / 2 + 4, 0, Math.PI * 2);
-      ctx.strokeStyle = accentColor; ctx.lineWidth = 1.5; ctx.stroke();
-      activePeer = { pseudo, px, py, dist: distance(me, pos) };
-    }
-
-    if (showEmoji) {
-      const av = avatarFor(pseudo);
-      // Same fade-with-distance as the emoji had: how solid a blip looks is how
-      // well you can hear that player, and a flag must not opt out of that.
-      ctx.globalAlpha = 0.35 + 0.65 * gain;
-      const img = av.kind === 'flag' ? flagImage(av.code) : null;
-      if (flagReady(img)) {
-        // 4:3, the aspect the SVGs are authored at - stretching them to a square
-        // makes Germany and Belgium look like each other's cousins.
-        const w = size, h = size * 0.75;
-        ctx.drawImage(img, px - w / 2, py - h / 2, w, h);
-        // Several flags are mostly white (Japan, Poland, Finland...), and on a
-        // dark radar they read as a hole rather than a shape. A hairline edge
-        // costs nothing and gives every flag the same silhouette.
-        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(px - w / 2 + 0.5, py - h / 2 + 0.5, w - 1, h - 1);
-      } else {
-        // Covers both "no flag chosen" and "the SVG has not decoded yet", which
-        // is at most the first frame after a player appears. Drawing the hashed
-        // emoji there beats leaving a gap where a car is.
-        ctx.font = `${size}px sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(av.kind === 'emoji' ? av.value : emojiForPseudo(pseudo), px, py);
-        ctx.textAlign = 'start';
-        ctx.textBaseline = 'alphabetic';
-      }
-      ctx.globalAlpha = 1;
-    } else {
-      ctx.fillStyle = `rgba(220,60,60,${0.25 + 0.75 * gain})`;
-      ctx.beginPath(); ctx.arc(px, py, size / 2, 0, Math.PI * 2); ctx.fill();
-    }
-
-    lastDrawnPeers.push({ pseudo, x: px, y: py, r: size / 2 + 8 });
-  }
-
-  if (activePeer) {
-    const label = `${activePeer.pseudo} · ${Math.round(activePeer.dist)} m`;
-    ctx.font = '11px sans-serif';
-    const w = ctx.measureText(label).width + 14;
-    let tx = activePeer.px + 10, ty = activePeer.py - 22;
-    if (tx + w > canvas.width) tx = activePeer.px - w - 10;
-    if (ty < 0) ty = activePeer.py + 14;
-    ctx.fillStyle = tooltipBg;
-    ctx.beginPath(); ctx.roundRect(tx, ty, w, 20, 5); ctx.fill();
-    ctx.fillStyle = tooltipText;
-    ctx.fillText(label, tx + 7, ty + 14);
-  }
-
-  drawMeMarker(cx, cy, meColor);
-}
-
-// Our own blip. An arrow whenever the game tells us which way the car points,
-// so "why do I hear him on my right" is answerable at a glance in both modes:
-// with the radar turned it always points up (the confirmation that up *is* the
-// bonnet), and with it pinned to the map it points wherever we are driving.
-// Falls back to the plain dot when there is no heading - an arrow aimed at a
-// direction we do not know would be a lie, and a confident-looking one.
-function drawMeMarker(cx, cy, color) {
-  const h = headingForView();
-  ctx.fillStyle = color;
-  if (!h) {
-    ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2); ctx.fill();
-    return;
-  }
-  // Screen direction of the car: the same (x across, z down) mapping the peers
-  // are plotted with, so the arrow and the dots cannot disagree. Rotating the
-  // radar puts the car's forward straight up by construction.
-  const len = Math.hypot(h.fx, h.fz);
-  const ux = rotateRadar ? 0 : h.fx / len;
-  const uy = rotateRadar ? -1 : h.fz / len;
-  // Perpendicular on screen, for the two back corners.
-  const px = -uy, py = ux;
-  const NOSE = 8, TAIL = 5, HALF = 4.5;
-  ctx.beginPath();
-  ctx.moveTo(cx + ux * NOSE, cy + uy * NOSE);
-  ctx.lineTo(cx - ux * TAIL + px * HALF, cy - uy * TAIL + py * HALF);
-  ctx.lineTo(cx - ux * TAIL - px * HALF, cy - uy * TAIL - py * HALF);
-  ctx.closePath();
-  ctx.fill();
-}
+const radar = createRadar({
+  canvas, ctx, onzRoot,
+  getPeers: () => peers,
+  getGains: () => gains,
+  getMe: () => me,
+  getMaxDist: () => MAX_DIST,
+  getRotateRadar: () => rotateRadar,
+  getShowEmoji: () => showEmoji,
+  getReduceMotion: () => reduceMotion,
+  offsetInEarFrame, headingForView, projectToRadar,
+  avatarFor, flagImage, flagReady, emojiForPseudo,
+});
+const draw = radar.draw;
+const resizeCanvas = radar.resizeCanvas;
+const hitTestPeer = radar.hitTestPeer;
 
 // Doppler, driven one peer at a time. No pitch ratio is ever computed here:
 // the delay line holds the sound's travel time, and moving that time is what
@@ -1408,8 +951,8 @@ canvas.addEventListener('mousemove', (e) => {
   }
 
   // Independent of dragging: hovering a radar dot reveals its name (see draw()).
-  hoveredPseudo = hitTestPeer(x, y);
-  canvas.style.cursor = hoveredPseudo
+  radar.setHovered(hitTestPeer(x, y));
+  canvas.style.cursor = radar.getHovered()
     ? 'pointer'
     : (isSwitchOn(followGameCheckbox) || isSwitchOn(relativeModeCheckbox) ? 'default' : 'grab');
 });
@@ -1418,7 +961,7 @@ canvas.addEventListener('click', (e) => {
   const r = canvas.getBoundingClientRect();
   const x = e.clientX - r.left, y = e.clientY - r.top;
   const hit = hitTestPeer(x, y);
-  hoveredPseudo = (hit && hit === hoveredPseudo) ? null : hit;
+  radar.setHovered((hit && hit === radar.getHovered()) ? null : hit);
 });
 
 function decodePosition(payload) {
@@ -1720,64 +1263,15 @@ function attachRoomEvents(newRoom) {
 // Feature-detected (createAnalyser) rather than assumed, since the test
 // double for AudioContext doesn't implement it and this must stay a no-op
 // there - the meter is a pure visual nicety, never load-bearing.
-const MIC_METER_BARS = 16;
-const micMeterBars = [];
-function setupMicMeter() {
-  if (!micMeterEl) return;
-  for (let i = 0; i < MIC_METER_BARS; i++) {
-    const bar = document.createElement('div');
-    bar.className = 'mic-bar';
-    // Arc-shaped base height (short at the edges, tall in the middle) so an
-    // idle meter reads as an EQ strip rather than a flat row of ticks.
-    bar.style.height = `${Math.round(25 + 55 * Math.sin((i + 1) / (MIC_METER_BARS + 1) * Math.PI))}%`;
-    micMeterBars.push(bar);
-    micMeterEl.appendChild(bar);
-  }
-}
-setupMicMeter();
-
-let micAnalyser = null;
-let micAnalyserData = null;
-let micMeterRAF = null;
-
-function findLocalAudioTrack() {
-  if (!room || !room.localParticipant || !room.localParticipant.trackPublications) return null;
-  for (const pub of room.localParticipant.trackPublications.values()) {
-    if (pub.kind === LivekitClient.Track.Kind.Audio && pub.track) return pub.track.mediaStreamTrack;
-  }
-  return null;
-}
-
-function tickMicMeter() {
-  if (!micAnalyser || reduceMotion) return; // reduced motion: meter stays visible but static
-  micAnalyser.getByteFrequencyData(micAnalyserData);
-  const avg = micAnalyserData.reduce((a, b) => a + b, 0) / micAnalyserData.length;
-  // Same 1.6x headroom the old 5-bar meter used (8/5), scaled to bar count,
-  // so an average speaking voice still lights most of the strip.
-  const level = Math.min(MIC_METER_BARS, Math.round((avg / 255) * MIC_METER_BARS * 1.6));
-  micMeterBars.forEach((bar, i) => { bar.className = 'mic-bar' + (i < level ? ' on' : ''); });
-  micMeterRAF = requestAnimationFrame(tickMicMeter);
-}
-
-function startMicMeter(track) {
-  stopMicMeter();
-  if (!track || !audioCtx || typeof audioCtx.createAnalyser !== 'function') return;
-  try {
-    const source = audioCtx.createMediaStreamSource(new MediaStream([track]));
-    micAnalyser = audioCtx.createAnalyser();
-    micAnalyser.fftSize = 32;
-    source.connect(micAnalyser);
-    micAnalyserData = new Uint8Array(micAnalyser.frequencyBinCount);
-    tickMicMeter();
-  } catch {}
-}
-
-function stopMicMeter() {
-  if (micMeterRAF) cancelAnimationFrame(micMeterRAF);
-  micMeterRAF = null;
-  micAnalyser = null;
-  for (const bar of micMeterBars) bar.className = 'mic-bar';
-}
+const micMeter = createMicMeter({
+  el: micMeterEl,
+  getAudioCtx: () => audioCtx,
+  getRoom: () => room,
+  getReduceMotion: () => reduceMotion,
+});
+const findLocalAudioTrack = micMeter.findLocalAudioTrack;
+const startMicMeter = micMeter.start;
+const stopMicMeter = micMeter.stop;
 
 // Every failure path ends here, and every message has to answer "what do I do
 // now?". A player who sees a raw "Connection error: NetworkError when attempting
