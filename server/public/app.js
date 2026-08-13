@@ -5,7 +5,10 @@
 // proximity-audio math: distance -> gain, applied locally per remote track.
 // See ../../context.txt "ARCHITECTURE AUDIO" for why this lives client-side.
 
-import { distance, gainForDistance, panForOffset } from './audio-math.js';
+import {
+  distance, gainForDistance, gainForDistanceRealistic, panForOffset,
+  lowpassForDistance, LOWPASS_NEAR_HZ,
+} from './audio-math.js';
 import {
   AVATAR_EMOJI, emojiForPseudo, guessCountry, validateAvatar, resolveAvatar,
   flagUrl, flagName, allFlagCodes, isFlagCode,
@@ -61,10 +64,11 @@ const micMeterEl = document.getElementById('micMeter');
 const reduceMotionToggle = document.getElementById('reduceMotionToggle');
 const highContrastToggle = document.getElementById('highContrastToggle');
 const showEmojiToggle = document.getElementById('showEmojiToggle');
+const realisticAudioToggle = document.getElementById('realisticAudioToggle');
 
-// The 6 boolean settings (followGame, relativeMode, themeToggle,
-// reduceMotionToggle, highContrastToggle, showEmojiToggle) are
-// <button role="switch"> elements,
+// The 7 boolean settings (followGame, relativeMode, themeToggle,
+// reduceMotionToggle, highContrastToggle, showEmojiToggle,
+// realisticAudioToggle) are <button role="switch"> elements,
 // not native checkboxes - state lives in aria-checked instead of .checked.
 function isSwitchOn(btn) { return btn.getAttribute('aria-checked') === 'true'; }
 function setSwitchOn(btn, on) { btn.setAttribute('aria-checked', on ? 'true' : 'false'); }
@@ -368,6 +372,39 @@ function setupCalibration() {
   refreshResetBtn();
 }
 setupCalibration();
+
+// A/B switch between the original linear falloff and the perceptual one plus
+// air absorption. Which of the two actually sounds right is settled by ear on
+// a server with someone else driving - not by a test and not by reading the
+// curve. So both stay in the build and this flips between them live, without a
+// reload, mid-conversation.
+let realisticAudio = true;
+function setupRealisticAudio() {
+  if (!realisticAudioToggle) return;
+  const saved = localStorage.getItem('onzvoip.v2.realisticAudio');
+  realisticAudio = saved === null ? true : saved === '1';
+  setSwitchOn(realisticAudioToggle, realisticAudio);
+  realisticAudioToggle.addEventListener('click', () => {
+    realisticAudio = !isSwitchOn(realisticAudioToggle);
+    setSwitchOn(realisticAudioToggle, realisticAudio);
+    localStorage.setItem('onzvoip.v2.realisticAudio', realisticAudio ? '1' : '0');
+    logEvent(`realistic audio ${realisticAudio ? 'on' : 'off'}`);
+  });
+}
+setupRealisticAudio();
+
+// The two knobs the switch above actually moves, kept together so they can
+// never drift apart: gain law and low-pass cutoff always come from the same
+// mode. LOWPASS_NEAR_HZ sits above hearing, so "off" is a genuinely
+// transparent filter rather than a bypass the graph would have to rewire.
+function gainForCurrentMode(dist) {
+  return realisticAudio
+    ? gainForDistanceRealistic(dist, MIN_DIST, MAX_DIST)
+    : gainForDistance(dist, MIN_DIST, MAX_DIST);
+}
+function cutoffForCurrentMode(dist) {
+  return realisticAudio ? lowpassForDistance(dist, MIN_DIST, MAX_DIST) : LOWPASS_NEAR_HZ;
+}
 
 // distance / clamp / gainForDistance / panForOffset used to be inlined here;
 // they now live in ./audio-math.js (imported at the top) so the tests in
@@ -856,7 +893,7 @@ function tickGains() {
   for (const [pseudo, pos] of peers) {
     const stale = Date.now() - pos.lastSeen > 3000;
     const dist = distance(me, pos);
-    const target = (!meReady || stale) ? 0 : gainForDistance(dist, MIN_DIST, MAX_DIST);
+    const target = (!meReady || stale) ? 0 : gainForCurrentMode(dist);
     const g = gains.get(pseudo) ?? { current: target, target };
     g.target = target;
     g.current += (g.target - g.current) * LERP_FACTOR; // drives the canvas dot opacity / debug table only
@@ -867,6 +904,8 @@ function tickGains() {
       const now = audioCtx.currentTime;
       nodes.gainNode.gain.setTargetAtTime(target, now, AUDIO_SMOOTHING_SEC);
       nodes.panner.pan.setTargetAtTime(panForOffset(pos.x - me.x, PAN_RANGE), now, AUDIO_SMOOTHING_SEC);
+      // Smoothed like the others: a cutoff jumping per frame rings the filter.
+      nodes.filter.frequency.setTargetAtTime(cutoffForCurrentMode(dist), now, AUDIO_SMOOTHING_SEC);
     }
 
     // Audit #31: subscribe/unsubscribe from this peer's audio based on distance.
@@ -1136,6 +1175,7 @@ function purgeAll() {
   currentSpeakers = new Set();
   for (const nodes of audioNodes.values()) {
     try { nodes.source.disconnect(); } catch {}
+    try { nodes.filter.disconnect(); } catch {}
     try { nodes.panner.disconnect(); } catch {}
     try { nodes.gainNode.disconnect(); } catch {}
     if (nodes.el) nodes.el.remove();
@@ -1287,6 +1327,7 @@ function attachRoomEvents(newRoom) {
     const nodes = audioNodes.get(p.identity);
     if (nodes) {
       try { nodes.source.disconnect(); } catch {}
+      try { nodes.filter.disconnect(); } catch {}
       try { nodes.panner.disconnect(); } catch {}
       try { nodes.gainNode.disconnect(); } catch {}
       if (nodes.el) nodes.el.remove();
@@ -1317,6 +1358,7 @@ function attachRoomEvents(newRoom) {
     const existing = audioNodes.get(participant.identity);
     if (existing) {
       try { existing.source.disconnect(); } catch {}
+      try { existing.filter.disconnect(); } catch {}
       try { existing.panner.disconnect(); } catch {}
       try { existing.gainNode.disconnect(); } catch {}
       if (existing.el) existing.el.remove();
@@ -1339,11 +1381,18 @@ function attachRoomEvents(newRoom) {
     if (!audioCtx) return; // audioCtx is created at join time, should always exist here
     const stream = new MediaStream([track.mediaStreamTrack]);
     const source = audioCtx.createMediaStreamSource(stream);
+    // Air absorption, ahead of the panner so both ears get the same colour.
+    // Starts wide open: tickGains() closes it down as the distance comes in,
+    // and a peer whose first frames arrive before their first position should
+    // not be muffled by a filter that defaulted to "far".
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = LOWPASS_NEAR_HZ;
     const panner = audioCtx.createStereoPanner();
     const gainNode = audioCtx.createGain();
     gainNode.gain.value = 0;
-    source.connect(panner).connect(gainNode).connect(audioCtx.destination);
-    audioNodes.set(participant.identity, { source, panner, gainNode, el });
+    source.connect(filter).connect(panner).connect(gainNode).connect(audioCtx.destination);
+    audioNodes.set(participant.identity, { source, filter, panner, gainNode, el });
   });
 
   // LiveKit's SFU computes active speakers for every connected client
@@ -1361,6 +1410,7 @@ function attachRoomEvents(newRoom) {
     const nodes = audioNodes.get(participant.identity);
     if (!nodes) return;
     nodes.source.disconnect();
+    nodes.filter.disconnect();
     nodes.panner.disconnect();
     nodes.gainNode.disconnect();
     audioNodes.delete(participant.identity);
@@ -1883,6 +1933,7 @@ export {
   connectViaNonce, join,
   renderPlayerList, renderPeerTable, renderFollowChips, draw,
   projectToRadar, emojiForPseudo, setupCalibration,
+  gainForCurrentMode, cutoffForCurrentMode,
   leaveVoice, rejoinVoice,
   avatarFor, setMyAvatar, myEffectiveAvatar, announceAvatar, peerAvatars,
   me, peers, gains, audioNodes, audioPublications, subscribedPeers, room,

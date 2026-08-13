@@ -1,6 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { distance, clamp, gainForDistance, panForOffset } from '../public/audio-math.js';
+import {
+  distance, clamp, gainForDistance, panForOffset,
+  gainForDistanceRealistic, lowpassForDistance, LOWPASS_NEAR_HZ, LOWPASS_FAR_HZ,
+} from '../public/audio-math.js';
 
 describe('distance()', () => {
   test('same point → 0', () => {
@@ -84,6 +87,83 @@ describe('gainForDistance()', () => {
       const g = gainForDistance(d, MIN, MAX);
       assert.ok(g >= 0 && g <= 1, `gain out of [0,1] at d=${d}: ${g}`);
     }
+  });
+});
+
+describe('gainForDistanceRealistic()', () => {
+  const MIN = 1;
+  const MAX = 150;
+  const g = (d) => gainForDistanceRealistic(d, MIN, MAX);
+
+  test('shares the endpoints with the linear curve', () => {
+    assert.strictEqual(g(0), 1);
+    assert.strictEqual(g(MIN), 1);
+    assert.strictEqual(g(MAX), 0);
+    assert.strictEqual(g(MAX + 1000), 0);
+  });
+
+  test('reaches exactly zero, not the -40 dB floor', () => {
+    // The raw dB curve bottoms out at 0.01, which would leave someone parked
+    // at the radar edge permanently, faintly audible. The renormalisation is
+    // the whole point, so assert the approach to 0 and not just the endpoint.
+    assert.ok(g(MAX - 0.5) < 0.001, `got ${g(MAX - 0.5)}`);
+  });
+
+  test('monotonically decreasing', () => {
+    let prev = 1;
+    for (let d = 0; d <= MAX + 20; d += 0.5) {
+      const cur = g(d);
+      assert.ok(cur <= prev, `rose at d=${d}: ${prev} -> ${cur}`);
+      prev = cur;
+    }
+  });
+
+  test('drops far faster than linear over the first half', () => {
+    // This is the entire complaint being fixed: linear is still at half volume
+    // halfway out, which is only -6 dB and reads as "nothing changed".
+    const mid = (MIN + MAX) / 2;
+    assert.ok(gainForDistance(mid, MIN, MAX) > 0.49);
+    assert.ok(g(mid) < 0.12, `got ${g(mid)}`);
+  });
+
+  test('a louder falloffDb makes every intermediate point quieter', () => {
+    const d = 40;
+    assert.ok(gainForDistanceRealistic(d, MIN, MAX, 60) < gainForDistanceRealistic(d, MIN, MAX, 20));
+  });
+});
+
+describe('lowpassForDistance()', () => {
+  const MIN = 1;
+  const MAX = 150;
+  const f = (d) => lowpassForDistance(d, MIN, MAX);
+
+  test('wide open up close, muffled at the edge', () => {
+    assert.strictEqual(f(0), LOWPASS_NEAR_HZ);
+    assert.strictEqual(f(MIN), LOWPASS_NEAR_HZ);
+    assert.strictEqual(f(MAX), LOWPASS_FAR_HZ);
+    assert.strictEqual(f(MAX + 500), LOWPASS_FAR_HZ);
+  });
+
+  test('monotonically decreasing', () => {
+    let prev = Infinity;
+    for (let d = 0; d <= MAX + 20; d += 0.5) {
+      const cur = f(d);
+      assert.ok(cur <= prev, `rose at d=${d}: ${prev} -> ${cur}`);
+      prev = cur;
+    }
+  });
+
+  test('interpolates geometrically, so halfway is the geometric mean', () => {
+    // Linear interpolation would sit at ~10.6 kHz halfway out — inaudibly high,
+    // i.e. no perceived change until very near the edge. Geometric spends the
+    // sweep where hearing actually lives.
+    const mid = (MIN + MAX) / 2;
+    assert.ok(Math.abs(f(mid) - Math.sqrt(LOWPASS_NEAR_HZ * LOWPASS_FAR_HZ)) < 1);
+  });
+
+  test('stays above the speech band until well past halfway', () => {
+    // Muffled must not mean unintelligible: consonants live up to ~4 kHz.
+    assert.ok(f((MIN + MAX) / 2) > 4000, `got ${f((MIN + MAX) / 2)}`);
   });
 });
 

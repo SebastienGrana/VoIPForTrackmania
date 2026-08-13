@@ -39,6 +39,12 @@ beforeEach(() => {
   stub.elements.relativeOffsetX.value = '0';
   stub.elements.relativeOffsetY.value = '0';
   stub.elements.followGame.setAttribute('aria-checked', 'false');
+  // Owned by its click listener, like freePosChosen: writing aria-checked
+  // directly would desync the module flag from the switch. Click only if it
+  // is not already where we want it.
+  if (stub.elements.realisticAudio.getAttribute('aria-checked') !== 'true') {
+    stub.elements.realisticAudio.dispatch('click');
+  }
 
   stub.setFetch(async () => { throw new Error('fetch not mocked for this test'); });
 });
@@ -258,20 +264,84 @@ describe('tickGains()', () => {
     assert.ok(!app.subscribedPeers.has('alice'));
   });
 
-  test('drives an active WebAudio node toward the target gain and pan', () => {
+  test('drives an active WebAudio node toward the target gain, pan and cutoff', () => {
     const gainCalls = [];
     const panCalls = [];
+    const cutoffCalls = [];
     app.peers.set('alice', { x: app.me.x + 5, y: 0, z: app.me.z, lastSeen: Date.now() });
     app.audioNodes.set('alice', {
       gainNode: { gain: { value: 0, setTargetAtTime: (v) => gainCalls.push(v) } },
       panner: { pan: { value: 0, setTargetAtTime: (v) => panCalls.push(v) } },
+      filter: { frequency: { value: 0, setTargetAtTime: (v) => cutoffCalls.push(v) } },
       source: { disconnect() {} },
       el: null,
     });
     app.tickGains();
     assert.strictEqual(gainCalls.length, 1);
-    assert.ok(gainCalls[0] > 0.9, `expected near-full gain close up, got ${gainCalls[0]}`);
+    assert.ok(gainCalls[0] > 0.85, `expected near-full gain close up, got ${gainCalls[0]}`);
     assert.strictEqual(panCalls.length, 1);
+    // 5 m out of 150 is essentially on top of you: barely any air to absorb.
+    assert.strictEqual(cutoffCalls.length, 1);
+    assert.ok(cutoffCalls[0] > 15000, `expected an open filter close up, got ${cutoffCalls[0]}`);
+  });
+});
+
+describe('realistic audio switch', () => {
+  const MID = 75.5; // halfway between the default MIN_DIST 1 and MAX_DIST 150
+  const off = () => stub.elements.realisticAudio.dispatch('click');
+
+  test('defaults to on', () => {
+    assert.strictEqual(stub.elements.realisticAudio.getAttribute('aria-checked'), 'true');
+  });
+
+  test('on: the perceptual curve is far quieter mid-range than linear', () => {
+    assert.ok(app.gainForCurrentMode(MID) < 0.12, `got ${app.gainForCurrentMode(MID)}`);
+  });
+
+  test('off: falls back to the original linear curve', () => {
+    off();
+    assert.ok(Math.abs(app.gainForCurrentMode(MID) - 0.5) < 0.01, `got ${app.gainForCurrentMode(MID)}`);
+  });
+
+  test('off: the filter is pinned wide open, not merely wide', () => {
+    // Above hearing, so "off" is transparent without rewiring the graph -
+    // the node stays in the chain either way.
+    off();
+    assert.strictEqual(app.cutoffForCurrentMode(MID), 20000);
+    assert.strictEqual(app.cutoffForCurrentMode(149), 20000);
+  });
+
+  test('on: the cutoff closes down with distance', () => {
+    assert.ok(app.cutoffForCurrentMode(149) < app.cutoffForCurrentMode(MID));
+    assert.ok(app.cutoffForCurrentMode(MID) < app.cutoffForCurrentMode(2));
+  });
+
+  test('flipping it changes what tickGains pushes into the audio graph', () => {
+    const gainCalls = [];
+    const cutoffCalls = [];
+    app.peers.set('alice', { x: app.me.x + MID, y: 0, z: app.me.z, lastSeen: Date.now() });
+    app.audioNodes.set('alice', {
+      gainNode: { gain: { value: 0, setTargetAtTime: (v) => gainCalls.push(v) } },
+      panner: { pan: { value: 0, setTargetAtTime: () => {} } },
+      filter: { frequency: { value: 0, setTargetAtTime: (v) => cutoffCalls.push(v) } },
+      source: { disconnect() {} },
+      el: null,
+    });
+
+    app.tickGains();
+    off();
+    app.tickGains();
+
+    assert.ok(gainCalls[0] < gainCalls[1], `expected louder once linear, got ${gainCalls}`);
+    assert.ok(cutoffCalls[0] < cutoffCalls[1], `expected the filter to open, got ${cutoffCalls}`);
+    assert.strictEqual(cutoffCalls[1], 20000);
+  });
+
+  test('the choice survives a reload', () => {
+    off();
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.realisticAudio'), '0');
+    stub.elements.realisticAudio.dispatch('click');
+    assert.strictEqual(localStorage.getItem('onzvoip.v2.realisticAudio'), '1');
   });
 });
 
@@ -284,6 +354,7 @@ describe('purgeAll()', () => {
     const disconnectCalls = [];
     app.audioNodes.set('a', {
       source: { disconnect: () => disconnectCalls.push('source') },
+      filter: { disconnect: () => disconnectCalls.push('filter') },
       panner: { disconnect: () => disconnectCalls.push('panner') },
       gainNode: { disconnect: () => disconnectCalls.push('gainNode') },
       el: { remove: () => disconnectCalls.push('el') },
@@ -296,7 +367,7 @@ describe('purgeAll()', () => {
     assert.strictEqual(app.audioNodes.size, 0);
     assert.strictEqual(app.audioPublications.size, 0);
     assert.strictEqual(app.subscribedPeers.size, 0);
-    assert.deepStrictEqual(disconnectCalls.sort(), ['el', 'gainNode', 'panner', 'source']);
+    assert.deepStrictEqual(disconnectCalls.sort(), ['el', 'filter', 'gainNode', 'panner', 'source']);
   });
 });
 

@@ -70,10 +70,14 @@ class FakeGainParam {
 class FakeAudioNode { connect(n) { return n; } disconnect() {} }
 class FakeGainNode extends FakeAudioNode { constructor() { super(); this.gain = new FakeGainParam(0); } }
 class FakeStereoPannerNode extends FakeAudioNode { constructor() { super(); this.pan = new FakeGainParam(0); } }
+class FakeBiquadFilterNode extends FakeAudioNode {
+  constructor() { super(); this.type = ''; this.frequency = new FakeGainParam(0); }
+}
 class FakeAudioContext {
   constructor() { this.state = 'running'; this.currentTime = 0; this.destination = new FakeAudioNode(); }
   createMediaStreamSource() { return new FakeAudioNode(); }
   createStereoPanner() { return new FakeStereoPannerNode(); }
+  createBiquadFilter() { return new FakeBiquadFilterNode(); }
   createGain() { return new FakeGainNode(); }
   async resume() { this.state = 'running'; }
 }
@@ -171,6 +175,7 @@ export function installDomStubs() {
   el('reduceMotionToggle', 'input');
   el('highContrastToggle', 'input');
   const showEmojiToggle = el('showEmojiToggle', 'input'); showEmojiToggle.setAttribute('aria-checked', 'true');
+  const realisticAudioToggle = el('realisticAudioToggle', 'input'); realisticAudioToggle.setAttribute('aria-checked', 'true');
 
   el('identity', 'input');
   el('followGame', 'input');
@@ -274,6 +279,7 @@ export function installDomStubs() {
   return {
     elements: {
       canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody, window: fakeWindow,
+      realisticAudio: realisticAudioToggle,
       maxDist, minDist, panRange, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },

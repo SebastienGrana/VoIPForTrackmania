@@ -672,6 +672,13 @@
 
     <div class="opt-section">
       <div class="opt-title"><svg class="ti"><use href="#ti-ruler-2"></use></svg> Distance calibration</div>
+      <!-- A/B switch, deliberately visible to players and not behind ?debug=1:
+           which curve sounds right is an ear judgement, and the people best
+           placed to make it are the ones actually driving together. -->
+      <div class="opt-check">
+        <span>Realistic distance sound</span>
+        <button type="button" id="realisticAudioToggle" class="onz-switch" role="switch" aria-checked="true"><span class="onz-switch-knob"></span></button>
+      </div>
       <div class="calib-bar">
         <div class="calib-marker" style="left:20%"></div>
         <div class="calib-marker" style="left:75%"></div>
