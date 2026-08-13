@@ -499,7 +499,14 @@ export function createRelay({
     }
     if (!adminAuthOk(req)) {
       res.set('WWW-Authenticate', 'Basic realm="OnZVoIP admin", charset="UTF-8"');
-      eventLog.log('admin.denied', { ip: req.ip });
+      // Only credentials that were sent AND wrong are worth a line. Every
+      // browser opens the page with no Authorization header, waits for the
+      // challenge and then retries — logging that would put an admin.denied
+      // next to each of the admin's own visits, and drown the one case the
+      // line exists for: somebody guessing.
+      if ((req.headers.authorization ?? '') !== '') {
+        eventLog.log('admin.denied', { ip: req.ip });
+      }
       res.status(401).json({ error: 'unauthorized' });
       return false;
     }

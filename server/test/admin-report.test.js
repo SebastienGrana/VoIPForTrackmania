@@ -226,9 +226,19 @@ describe('/admin and /report (own relay instance)', () => {
       assert.notStrictEqual(res.status, 200);
     });
 
-    test('a refused attempt is logged', async () => {
-      await state({});
+    test('a wrong password is logged', async () => {
+      await state({ authorization: basic(ADMIN_USER, 'still-wrong') });
       assert.ok(eventLog.tail(50).some(e => e.event === 'admin.denied'));
+    });
+
+    test('the challenge every browser triggers is not logged as an attempt', async () => {
+      // A browser always asks once without credentials and retries after the
+      // 401. Logging that would file an admin.denied against the admin's own
+      // visits and bury the only case worth reading: somebody guessing.
+      const before = eventLog.tail(200).filter(e => e.event === 'admin.denied').length;
+      await state({});
+      const after = eventLog.tail(200).filter(e => e.event === 'admin.denied').length;
+      assert.strictEqual(after, before);
     });
   });
 
