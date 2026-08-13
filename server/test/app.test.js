@@ -135,6 +135,55 @@ describe('switch wiring', () => {
   });
 });
 
+describe('shouldSendOwnPosition()', () => {
+  // Leaving "Follow instead of free position" strands "me" on the followed
+  // player's last coordinates. Broadcasting those would show us to everyone at
+  // a spot we never chose, so we go quiet until the dot is dragged - the other
+  // players' radars drop us back to "no position yet".
+  const drag = () => {
+    stub.elements.canvas.dispatch('mousedown', { clientX: 200, clientY: 200 });
+    stub.elements.canvas.dispatch('mousemove', { clientX: 210, clientY: 200 });
+    stub.elements.window.dispatch('mouseup', {});
+  };
+
+  beforeEach(() => {
+    // Reach a known state through the real listeners: on, then dragged.
+    if (stub.elements.relativeMode.getAttribute('aria-checked') === 'false') {
+      stub.elements.relativeMode.dispatch('click');
+    }
+    stub.elements.relativeMode.dispatch('click');
+    drag();
+  });
+
+  test('free position with a dot we placed ourselves is sent', () => {
+    assert.strictEqual(app.shouldSendOwnPosition(), true);
+  });
+
+  test('unchecking relative mode stops the broadcast', () => {
+    stub.elements.relativeMode.dispatch('click');  // on
+    stub.elements.relativeMode.dispatch('click');  // off again
+    assert.strictEqual(app.shouldSendOwnPosition(), false);
+  });
+
+  test('dragging the dot resumes it', () => {
+    stub.elements.relativeMode.dispatch('click');
+    stub.elements.relativeMode.dispatch('click');
+    assert.strictEqual(app.shouldSendOwnPosition(), false);
+    drag();
+    assert.strictEqual(app.shouldSendOwnPosition(), true);
+  });
+
+  test('relative mode itself keeps broadcasting - the position is chosen', () => {
+    stub.elements.relativeMode.dispatch('click');
+    assert.strictEqual(app.shouldSendOwnPosition(), true);
+  });
+
+  test('follow-game mode never sends: the plugin already does', () => {
+    stub.elements.followGame.setAttribute('aria-checked', 'true');
+    assert.strictEqual(app.shouldSendOwnPosition(), false);
+  });
+});
+
 describe('renderFollowChips()', () => {
   // The chips are redrawn from the 10Hz render tick. Rebuilding them destroys
   // the <button> the mouse is on: it flickers, and a click never completes

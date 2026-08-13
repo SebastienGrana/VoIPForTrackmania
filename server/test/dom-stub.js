@@ -235,7 +235,11 @@ export function installDomStubs() {
     body,
     documentElement,
   };
-  global.window = { addEventListener() {}, removeEventListener() {} };
+  // A real listener registry, not a no-op pair: the radar's drag ends on
+  // window's 'mouseup' (the mouse often leaves the canvas first), so a window
+  // that swallowed its listeners left every simulated drag stuck down.
+  const fakeWindow = new FakeElement('window');
+  global.window = fakeWindow;
 
   const store = new Map();
   global.localStorage = {
@@ -269,7 +273,7 @@ export function installDomStubs() {
 
   return {
     elements: {
-      canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody,
+      canvas, relativeRange, relativeOffsetX, relativeOffsetY, optBody, window: fakeWindow,
       maxDist, minDist, panRange, peersTbody, body, documentElement,
       ...Object.fromEntries(elementsById),
     },

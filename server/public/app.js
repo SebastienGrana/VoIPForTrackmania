@@ -234,9 +234,26 @@ followGameCheckbox.addEventListener('click', () => {
 // migration away from native checkboxes has to hand every switch its own
 // listener, and this one was left without. Nothing read the switch as broken -
 // isSwitchOn() simply kept answering false forever.
+// Free-position mode broadcasts whatever "me" happens to hold. Right after
+// leaving follow-a-player mode that is the followed player's last position -
+// a coordinate we never chose, which other players would keep seeing as ours.
+// So turning the switch off drops us back to "no position yet" for everyone
+// until we actually drag our own dot (see the canvas mousemove handler).
+let freePosChosen = true;
 relativeModeCheckbox.addEventListener('click', () => {
-  setSwitchOn(relativeModeCheckbox, !isSwitchOn(relativeModeCheckbox));
+  const on = !isSwitchOn(relativeModeCheckbox);
+  setSwitchOn(relativeModeCheckbox, on);
+  if (!on) freePosChosen = false;
 });
+
+// Whether our own position is worth putting on the wire. In follow-game mode
+// the OpenPlanet plugin already publishes this identity's position - sending
+// ours too would fight with it.
+function shouldSendOwnPosition() {
+  if (isSwitchOn(followGameCheckbox)) return false;
+  if (isSwitchOn(relativeModeCheckbox)) return true;
+  return freePosChosen;
+}
 
 const me = { x: canvas.width / 2, y: 0, z: canvas.height / 2 };
 // pseudo -> { x, y, lastSeen }
@@ -1075,6 +1092,7 @@ canvas.addEventListener('mousemove', (e) => {
     me.x += (x - lastMouse.x) / scale;
     me.z += (y - lastMouse.y) / scale; // screen-Y drives depth (Z), matching worldToScreen
     lastMouse = { x, y };
+    freePosChosen = true; // this dot is now where we put it, worth broadcasting
   }
 
   // Independent of dragging: hovering a radar dot reveals its name (see draw()).
@@ -1632,9 +1650,7 @@ function startPositionSend() {
   if (wsPositionInterval) return;
   wsPositionInterval = setInterval(() => {
     if (!ingestWs || ingestWs.readyState !== WebSocket.OPEN) return;
-    // In follow mode the OpenPlanet plugin is already publishing this
-    // identity's position - sending ours too would fight with it.
-    if (isSwitchOn(followGameCheckbox)) return;
+    if (!shouldSendOwnPosition()) return;
     ingestWs.send(JSON.stringify({ type: 'position', pseudo: myIdentity, x: me.x, y: me.y, z: me.z }));
   }, SEND_INTERVAL_MS);
 }
@@ -1863,7 +1879,8 @@ if (urlNonce) {
 export {
   tickGains, applyRelativeMode, gainLabel, decodePosition, worldToScreen,
   purgeAll, disconnectLiveKit, attachRoomEvents, connectLiveKit,
-  startIngestWs, startPositionSend, handleRoomPush, connectViaNonce, join,
+  startIngestWs, startPositionSend, shouldSendOwnPosition, handleRoomPush,
+  connectViaNonce, join,
   renderPlayerList, renderPeerTable, renderFollowChips, draw,
   projectToRadar, emojiForPseudo, setupCalibration,
   leaveVoice, rejoinVoice,
