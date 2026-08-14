@@ -17,3 +17,12 @@ todo.html
 
 # Maquette de référence et sa spec : décision 2026-08-10, restent en local.
 design/
+
+# Archives de travail et notes locales balayées par erreur dans 83d4d7f
+# (logadmin.txt contenait les identifiants /admin en clair — mot de passe
+# rotaté le 2026-08-14). Rien de tout ceci n'appartient au dépôt.
+OnZVoIP.rar
+OnZVoIP.zip
+OnZVoIPv3.zip
+logadmin.txt
+.claudeignore
