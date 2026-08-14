@@ -26,3 +26,6 @@ OnZVoIP.zip
 OnZVoIPv3.zip
 logadmin.txt
 .claudeignore
+
+# Config IntelliJ : machine-locale (workspace.xml contient des chemins perso).
+.idea/
