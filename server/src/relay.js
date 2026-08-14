@@ -1141,8 +1141,10 @@ export function createRelay({
             noteReconnect('browser', login);
             eventLog.log('browser.connect', { login, room: browserRooms.get(login) ?? null });
             // Current teams straight away: a browser that joins mid-event would
-            // otherwise draw grey dots until the next admin change.
-            try { ws.send(JSON.stringify(teamsPayload())); } catch {}
+            // otherwise draw grey dots until the next admin change. Skipped when
+            // there are none, so an evening without teams puts no message on the
+            // socket at all.
+            if (teams.size) { try { ws.send(JSON.stringify(teamsPayload())); } catch {} }
           }
           return;
         }

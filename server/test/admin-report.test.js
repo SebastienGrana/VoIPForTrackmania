@@ -502,7 +502,10 @@ describe('/admin/actions/teams (own relay instance)', () => {
 
   test('an unknown op is refused rather than silently ignored', async () => {
     assert.strictEqual((await teams({ op: 'nope' })).status, 400);
-    assert.strictEqual((await teams({ op: 'assign', login: 'no one!' })).status, 400);
+    // Blank rather than exotic: validateLogin() only rejects empty and
+    // over-long strings, so a login full of odd characters is a *valid* login
+    // that simply nobody has - not the malformed input this asserts on.
+    assert.strictEqual((await teams({ op: 'assign', login: '   ' })).status, 400);
     assert.strictEqual((await teams({ op: 'auto', count: 99 })).status, 400);
   });
 
