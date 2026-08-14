@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr" data-onz-theme="dark">
+<html lang="en" data-onz-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OnZVoIP — vérification</title>
+<title>OnZVoIP — check</title>
 <link rel="stylesheet" href="styles.css" />
 <style>
 /* Deliberately standalone: this page has to work when the main client is the
@@ -13,8 +13,12 @@
 body { margin:0; background:var(--onz-bg); color:var(--onz-text);
   font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
 .wrap { max-width:640px; margin:0 auto; padding:24px 16px 64px; }
-h1 { font-size:20px; margin:0 0 4px; }
+.head { display:flex; align-items:baseline; gap:12px; }
+h1 { font-size:20px; margin:0 0 4px; flex:1; }
 .lede { color:var(--onz-muted); margin:0 0 20px; }
+.lang { display:flex; gap:4px; }
+.lang button { padding:3px 9px; font-size:12px; }
+.lang button[aria-pressed="true"] { border-color:var(--onz-accent); color:var(--onz-accent); }
 .check { display:flex; gap:12px; padding:12px 0; border-top:1px solid var(--onz-row-border); }
 .check:first-of-type { border-top:0; }
 .dot { flex:0 0 auto; width:20px; height:20px; border-radius:50%; margin-top:2px;
@@ -36,7 +40,6 @@ button { font:inherit; cursor:pointer; padding:8px 14px; border-radius:6px;
 button:hover { border-color:var(--onz-accent); }
 button.primary { background:var(--onz-accent-dim); border-color:var(--onz-accent-dim); color:#fff; }
 button.primary:hover { background:var(--onz-accent-hover); border-color:var(--onz-accent-hover); }
-button[disabled] { opacity:.5; cursor:default; }
 .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:24px; }
 .meter { display:flex; gap:2px; height:22px; align-items:flex-end; margin-top:8px; }
 .meter i { flex:1; background:var(--onz-mic-idle-bg); border-radius:1px; height:35%; }
@@ -50,72 +53,274 @@ textarea { width:100%; height:160px; margin-top:12px; font:12px/1.4 ui-monospace
 </head>
 <body>
 <div class="wrap">
-  <h1>Vérification OnZVoIP</h1>
-  <p class="lede">Cette page teste ton matériel et ta connexion. Rien n'est enregistré, ton micro
-    n'est écouté que par ton navigateur.</p>
+  <div class="head">
+    <h1 id="t-title"></h1>
+    <div class="lang">
+      <button id="lang-en" aria-pressed="false">EN</button>
+      <button id="lang-fr" aria-pressed="false">FR</button>
+    </div>
+  </div>
+  <p class="lede" id="t-lede"></p>
 
   <div id="checks"></div>
 
   <div class="actions">
-    <button class="primary" id="mic">Tester mon micro</button>
-    <button id="again">Relancer les tests</button>
-    <button id="copy">Copier le diagnostic</button>
+    <button class="primary" id="mic"></button>
+    <button id="again"></button>
+    <button id="copy"></button>
   </div>
 
-  <p class="foot">Un test au rouge ? Colle le diagnostic dans le salon d'aide Discord.
-    <a href="/">Retour au vocal</a></p>
+  <p class="foot"><span id="t-foot"></span> <a href="/" id="t-back"></a></p>
   <textarea id="out" hidden readonly></textarea>
 </div>
 
 <script>
-// Every French string here uses double quotes. An apostrophe in a
+// English is the default and French is the exception, because the players
+// come from a Discord where not everyone speaks French. Anything a language
+// is missing falls back to English rather than to an empty string.
+//
+// Every French string here uses double quotes. An apostrophe inside a
 // single-quoted literal is a syntax error, and a syntax error on THIS page
-// means the player sees a blank diagnostic while trying to diagnose a
-// blank page — the one failure mode worth spending a rule on.
-var CHECKS = [
-  { id: "secure",  name: "Page sécurisée (HTTPS)" },
-  { id: "relay",   name: "Relais OnZVoIP joignable" },
-  { id: "livekit", name: "Serveur vocal joignable" },
-  { id: "ws",      name: "Connexion temps réel (WebSocket)" },
-  { id: "webrtc",  name: "WebRTC disponible" },
-  { id: "plugin",  name: "Plugin en jeu" },
-  { id: "mic",     name: "Micro" },
-];
+// means a blank diagnostic shown to someone trying to diagnose a blank
+// page — the one failure mode worth spending a rule on.
+var STR = {
+  en: {
+    title: "OnZVoIP check",
+    lede: "This page tests your hardware and your connection. Nothing is recorded; your microphone is only heard by your own browser.",
+    micBtn: "Test my microphone",
+    again: "Run the tests again",
+    copy: "Copy diagnostic",
+    copied: "Copied ✓",
+    foot: "Something in red? Paste the diagnostic in the Discord help channel.",
+    back: "Back to voice",
+    n_secure: "Secure page (HTTPS)",
+    n_relay: "OnZVoIP relay reachable",
+    n_livekit: "Voice server reachable",
+    n_ws: "Real-time connection (WebSocket)",
+    n_webrtc: "WebRTC available",
+    n_plugin: "In-game plugin",
+    n_mic: "Microphone",
+    waiting: "waiting",
+    running: "testing",
+    notHttps: "this page is not on HTTPS",
+    fixHttps: "Voice and microphone are blocked outside HTTPS. Open the link the in-game plugin gives you, not an address you typed by hand.",
+    unreachable: "unreachable",
+    fixRelay: "The relay is not answering. Turn off any VPN or firewall and try again. If it keeps failing it is the server, not you — say so on Discord.",
+    skipped: "not tested, the relay is not answering",
+    answers: "answers",
+    noLivekit: "the relay cannot reach the voice server",
+    fixLivekit: "This one is not you, it is the server. Report it on Discord.",
+    notTested: "not tested",
+    fixNoNonce: "To test the plugin, open this page from the game: click the OnZVoIP link in the plugin window, then change /?t= to /check?t= in the address bar.",
+    expired: "link expired",
+    unknown: "unknown link",
+    fixNonce: "That link is over 12 minutes old, or it has already been used. Go back in game and take the link shown in the plugin window.",
+    on: " on ",
+    disconnected: " — plugin disconnected",
+    fixDisconnected: "The link is valid but the plugin is no longer talking to the relay. Check that the game is still running and the OnZVoIP window is open.",
+    version: " — version ",
+    wsOpen: "open",
+    wsTimeout: "no answer after 8 s",
+    wsRefused: "connection refused",
+    fixWs: "A firewall, antivirus or proxy is blocking WebSockets. Try without a VPN, or tethered to your phone.",
+    noWebrtc: "not supported by this browser",
+    fixNoWebrtc: "Use an up-to-date Firefox, Chrome or Edge. Old Safari and embedded browsers (Discord, Steam) are not enough.",
+    routes1: " network route found",
+    routesN: " network routes found",
+    noRoute: "no network route found",
+    fixNoRoute: "Your browser is blocking WebRTC. Turn off blocking extensions (uBlock in strict mode, WebRTC Leak Shield) and try again.",
+    allowMic: "allow the microphone in the browser prompt",
+    noMicApi: "this browser gives no microphone access",
+    fixNoMicApi: "Use an up-to-date Firefox, Chrome or Edge, over HTTPS.",
+    micDenied: "permission denied",
+    fixMicDenied: "Click the padlock left of the address bar, set the microphone back to « Allow », then run the test again.",
+    micNone: "no microphone detected",
+    fixMicNone: "Plug in a microphone or a headset and try again. On Windows, check it is enabled under Settings > Sound > Input.",
+    micBusy: "microphone busy in another app",
+    fixMicBusy: "Close Discord, OBS, or anything else using the microphone, then run the test again.",
+    micErr: "error ",
+    micSpeak: " — say something, we are watching the level",
+    micHeard: " — we can hear you",
+    micSilent: " — no sound picked up",
+    fixMicSilent: "The microphone is allowed but nothing is coming through. Check it is the default device in Windows and that the input volume is not at zero.",
+    micLabel: "microphone",
+    diagTitle: "OnZVoIP — diagnostic ",
+    browser: "browser: ",
+    screen: "screen: ",
+    langLine: " / language: "
+  },
+  fr: {
+    title: "Vérification OnZVoIP",
+    lede: "Cette page teste ton matériel et ta connexion. Rien n'est enregistré, ton micro n'est écouté que par ton navigateur.",
+    micBtn: "Tester mon micro",
+    again: "Relancer les tests",
+    copy: "Copier le diagnostic",
+    copied: "Copié ✓",
+    foot: "Un test au rouge ? Colle le diagnostic dans le salon d'aide Discord.",
+    back: "Retour au vocal",
+    n_secure: "Page sécurisée (HTTPS)",
+    n_relay: "Relais OnZVoIP joignable",
+    n_livekit: "Serveur vocal joignable",
+    n_ws: "Connexion temps réel (WebSocket)",
+    n_webrtc: "WebRTC disponible",
+    n_plugin: "Plugin en jeu",
+    n_mic: "Micro",
+    waiting: "en attente",
+    running: "test en cours",
+    notHttps: "la page n'est pas en HTTPS",
+    fixHttps: "Le micro et le vocal sont bloqués hors HTTPS. Ouvre le lien donné par le plugin en jeu, pas une adresse tapée à la main.",
+    unreachable: "injoignable",
+    fixRelay: "Le relais ne répond pas. Coupe VPN et pare-feu, puis relance. Si ça persiste, c'est le serveur : préviens sur Discord.",
+    skipped: "non testé, le relais ne répond pas",
+    answers: "répond",
+    noLivekit: "le relais ne joint pas le serveur vocal",
+    fixLivekit: "Ce n'est pas toi, c'est le serveur. Signale-le sur Discord.",
+    notTested: "non testé",
+    fixNoNonce: "Pour tester le plugin, ouvre cette page depuis le jeu : clique le lien OnZVoIP dans la fenêtre du plugin, puis remplace /?t= par /check?t= dans la barre d'adresse.",
+    expired: "lien expiré",
+    unknown: "lien inconnu",
+    fixNonce: "Ce lien a plus de 12 minutes, ou il a déjà servi. Retourne en jeu et reprends le lien affiché dans la fenêtre du plugin.",
+    on: " sur ",
+    disconnected: " — plugin déconnecté",
+    fixDisconnected: "Le lien est valide mais le plugin ne parle plus au relais. Vérifie que le jeu tourne toujours et que la fenêtre OnZVoIP est ouverte.",
+    version: " — version ",
+    wsOpen: "ouverte",
+    wsTimeout: "pas de réponse en 8 s",
+    wsRefused: "connexion refusée",
+    fixWs: "Un pare-feu, un antivirus ou un proxy bloque les WebSockets. Essaie sans VPN, ou en partage de connexion depuis ton téléphone.",
+    noWebrtc: "non supporté par ce navigateur",
+    fixNoWebrtc: "Utilise Firefox, Chrome ou Edge à jour. Safari ancien et les navigateurs intégrés (Discord, Steam) ne suffisent pas.",
+    routes1: " route réseau trouvée",
+    routesN: " routes réseau trouvées",
+    noRoute: "aucune route réseau trouvée",
+    fixNoRoute: "Ton navigateur bloque WebRTC. Coupe les extensions de blocage (uBlock en mode strict, WebRTC Leak Shield) et relance.",
+    allowMic: "autorise le micro dans la fenêtre du navigateur",
+    noMicApi: "ce navigateur ne donne pas accès au micro",
+    fixNoMicApi: "Utilise Firefox, Chrome ou Edge à jour, en HTTPS.",
+    micDenied: "autorisation refusée",
+    fixMicDenied: "Clique le cadenas à gauche de l'adresse, remets le micro sur « Autoriser », puis relance le test.",
+    micNone: "aucun micro détecté",
+    fixMicNone: "Branche un micro ou un casque, puis relance. Sous Windows, vérifie qu'il est activé dans Paramètres > Son > Entrée.",
+    micBusy: "micro occupé par une autre application",
+    fixMicBusy: "Ferme Discord, OBS ou tout ce qui utilise le micro, puis relance le test.",
+    micErr: "erreur ",
+    micSpeak: " — parle, on regarde le niveau",
+    micHeard: " — on t'entend",
+    micSilent: " — aucun son capté",
+    fixMicSilent: "Le micro est autorisé mais rien n'arrive. Vérifie qu'il est bien le périphérique par défaut dans Windows, et que le volume d'entrée n'est pas à zéro.",
+    micLabel: "micro",
+    diagTitle: "OnZVoIP — diagnostic ",
+    browser: "navigateur : ",
+    screen: "écran : ",
+    langLine: " / langue : "
+  }
+};
 
+// Order of preference: an explicit ?lang=, then a saved choice, then the
+// browser. Someone who flipped the toggle should not have to flip it again
+// on their next visit.
+function pickLang() {
+  var q = /[?&]lang=(fr|en)\b/i.exec(location.search);
+  if (q) return q[1].toLowerCase();
+  try {
+    var saved = localStorage.getItem("onzvoip.lang");
+    if (saved === "fr" || saved === "en") return saved;
+  } catch (e) {}
+  var list = navigator.languages && navigator.languages.length
+    ? navigator.languages : [navigator.language || "en"];
+  for (var i = 0; i < list.length; i++) {
+    var tag = String(list[i]).toLowerCase();
+    // "fr", "fr-FR", "fr-BE"… but not "frr" (Frisian) or "fry".
+    if (tag === "fr" || tag.indexOf("fr-") === 0) return "fr";
+  }
+  return "en";
+}
+
+var LANG = pickLang();
+function T(key) {
+  var s = STR[LANG][key];
+  return s === undefined ? STR.en[key] : s;
+}
+
+var CHECKS = ["secure", "relay", "livekit", "ws", "webrtc", "plugin", "mic"];
+
+// Results are stored as translation keys plus their arguments, never as
+// finished text, so flipping the language re-renders what already ran
+// instead of leaving half the page in the other language.
 var state = {};
 var host = document.getElementById("checks");
 var els = {};
 
-CHECKS.forEach(function (c) {
+// detail and fix are arrays. Each item is either a translation key, or an
+// object {raw: "..."} for values that must not be translated: a login, a
+// version number, a device label, a browser error name.
+function set(id, status, detail, fix) {
+  state[id] = { status: status, detail: detail || [], fix: fix || null };
+  paint(id);
+}
+
+function join(parts) {
+  if (!parts) return "";
+  return parts.map(function (p) {
+    return p && typeof p === "object" ? String(p.raw) : T(p);
+  }).join("");
+}
+
+function paint(id) {
+  var e = els[id];
+  var s = state[id];
+  if (!e || !s) return;
+  var glyph = { wait: "·", run: "…", ok: "✓", warn: "!", bad: "✕" }[s.status] || "·";
+  e.dot.className = "dot" + (s.status === "wait" ? "" : " " + s.status);
+  e.dot.textContent = glyph;
+  e.name.textContent = T("n_" + id);
+  e.detail.textContent = join(s.detail);
+  var fixText = s.fix ? join(s.fix) : "";
+  e.fix.hidden = !fixText;
+  e.fix.textContent = fixText;
+}
+
+CHECKS.forEach(function (id) {
   var row = document.createElement("div");
   row.className = "check";
   row.innerHTML = '<div class="dot" data-dot>·</div><div class="body">'
     + '<div class="name"></div><div class="detail"></div>'
     + '<div class="fix" hidden></div></div>';
-  row.querySelector(".name").textContent = c.name;
   host.appendChild(row);
-  els[c.id] = {
+  els[id] = {
     dot: row.querySelector("[data-dot]"),
+    name: row.querySelector(".name"),
     detail: row.querySelector(".detail"),
     fix: row.querySelector(".fix"),
-    body: row.querySelector(".body"),
+    body: row.querySelector(".body")
   };
-  set(c.id, "wait", "en attente");
+  set(id, "wait", ["waiting"]);
 });
 
-// status: wait | run | ok | warn | bad. The dot glyph doubles as the value
-// copied into the diagnostic text, so colour is never the only signal.
-function set(id, status, detail, fix) {
-  state[id] = { status: status, detail: detail || "", fix: fix || "" };
-  var e = els[id];
-  if (!e) return;
-  var glyph = { wait: "·", run: "…", ok: "✓", warn: "!", bad: "✕" }[status] || "·";
-  e.dot.className = "dot" + (status === "wait" ? "" : " " + status);
-  e.dot.textContent = glyph;
-  e.detail.textContent = detail || "";
-  e.fix.hidden = !fix;
-  e.fix.textContent = fix || "";
+function applyLang() {
+  document.documentElement.lang = LANG;
+  document.title = LANG === "fr" ? "OnZVoIP — vérification" : "OnZVoIP — check";
+  document.getElementById("t-title").textContent = T("title");
+  document.getElementById("t-lede").textContent = T("lede");
+  document.getElementById("mic").textContent = T("micBtn");
+  document.getElementById("again").textContent = T("again");
+  document.getElementById("copy").textContent = T("copy");
+  document.getElementById("t-foot").textContent = T("foot");
+  document.getElementById("t-back").textContent = T("back");
+  document.getElementById("lang-en").setAttribute("aria-pressed", String(LANG === "en"));
+  document.getElementById("lang-fr").setAttribute("aria-pressed", String(LANG === "fr"));
+  CHECKS.forEach(paint);
 }
+
+function setLang(next) {
+  if (next === LANG) return;
+  LANG = next;
+  try { localStorage.setItem("onzvoip.lang", next); } catch (e) {}
+  applyLang();
+}
+
+document.getElementById("lang-en").addEventListener("click", function () { setLang("en"); });
+document.getElementById("lang-fr").addEventListener("click", function () { setLang("fr"); });
 
 function nonce() {
   var m = /[?&]t=([^&]+)/.exec(location.search);
@@ -124,17 +329,16 @@ function nonce() {
 
 function checkSecure() {
   if (window.isSecureContext) {
-    set("secure", "ok", location.protocol + "//" + location.host);
+    set("secure", "ok", [{ raw: location.protocol + "//" + location.host }]);
     return;
   }
-  set("secure", "bad", "la page n'est pas en HTTPS",
-    "Le micro et le vocal sont bloqués hors HTTPS. Ouvre le lien donné par le plugin en jeu, pas une adresse tapée à la main.");
+  set("secure", "bad", ["notHttps"], ["fixHttps"]);
 }
 
 async function checkRelay() {
-  set("relay", "run", "test en cours");
-  set("livekit", "run", "test en cours");
-  set("plugin", "run", "test en cours");
+  set("relay", "run", ["running"]);
+  set("livekit", "run", ["running"]);
+  set("plugin", "run", ["running"]);
   var t = nonce();
   var url = "/check.json" + (t ? "?t=" + encodeURIComponent(t) : "");
   var data;
@@ -143,41 +347,38 @@ async function checkRelay() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     data = await res.json();
   } catch (err) {
-    set("relay", "bad", "injoignable (" + err.message + ")",
-      "Le relais ne répond pas. Coupe VPN et pare-feu, puis relance. Si ça persiste, c'est le serveur : préviens sur Discord.");
-    set("livekit", "bad", "non testé, le relais ne répond pas");
-    set("plugin", "bad", "non testé, le relais ne répond pas");
+    set("relay", "bad", ["unreachable", { raw: " (" + err.message + ")" }], ["fixRelay"]);
+    set("livekit", "bad", ["skipped"]);
+    set("plugin", "bad", ["skipped"]);
     return;
   }
-  set("relay", "ok", "répond");
-  if (data.livekit) set("livekit", "ok", "répond");
-  else set("livekit", "bad", "le relais ne joint pas le serveur vocal",
-    "Ce n'est pas toi, c'est le serveur. Signale-le sur Discord.");
+  set("relay", "ok", ["answers"]);
+  if (data.livekit) set("livekit", "ok", ["answers"]);
+  else set("livekit", "bad", ["noLivekit"], ["fixLivekit"]);
   paintPlugin(data.plugin || { checked: false });
 }
 
 function paintPlugin(p) {
   if (!p.checked) {
-    set("plugin", "warn", "non testé",
-      "Pour tester le plugin, ouvre cette page depuis le jeu : clique le lien OnZVoIP dans la fenêtre du plugin, puis remplace /?t= par /check?t= dans la barre d'adresse.");
+    set("plugin", "warn", ["notTested"], ["fixNoNonce"]);
     return;
   }
   if (!p.ok) {
-    set("plugin", "bad", p.reason === "expired" ? "lien expiré" : "lien inconnu",
-      "Ce lien a plus de 12 minutes, ou il a déjà servi. Retourne en jeu et reprends le lien affiché dans la fenêtre du plugin.");
+    set("plugin", "bad", [p.reason === "expired" ? "expired" : "unknown"], ["fixNonce"]);
     return;
   }
-  var who = p.login + (p.serverName ? " sur " + p.serverName : "");
+  var who = [{ raw: p.login }];
+  if (p.serverName) who.push("on", { raw: p.serverName });
   if (!p.connected) {
-    set("plugin", "warn", who + " — plugin déconnecté",
-      "Le lien est valide mais le plugin ne parle plus au relais. Vérifie que le jeu tourne toujours et que la fenêtre OnZVoIP est ouverte.");
+    set("plugin", "warn", who.concat(["disconnected"]), ["fixDisconnected"]);
     return;
   }
-  set("plugin", "ok", who + (p.version ? " — version " + p.version : ""));
+  if (p.version) who.push("version", { raw: p.version });
+  set("plugin", "ok", who);
 }
 
 function checkWs() {
-  set("ws", "run", "test en cours");
+  set("ws", "run", ["running"]);
   return new Promise(function (resolve) {
     var proto = location.protocol === "https:" ? "wss:" : "ws:";
     var ws;
@@ -190,21 +391,19 @@ function checkWs() {
       resolve();
     };
     var timer = setTimeout(function () {
-      finish("bad", "pas de réponse en 8 s",
-        "Un pare-feu, un antivirus ou un proxy bloque les WebSockets. Essaie sans VPN, ou en partage de connexion depuis ton téléphone.");
+      finish("bad", ["wsTimeout"], ["fixWs"]);
     }, 8000);
     try {
       ws = new WebSocket(proto + "//" + location.host + "/ingest");
     } catch (err) {
       clearTimeout(timer);
-      finish("bad", "impossible d'ouvrir la connexion");
+      finish("bad", ["wsRefused"], ["fixWs"]);
       return;
     }
-    ws.addEventListener("open", function () { clearTimeout(timer); finish("ok", "ouverte"); });
+    ws.addEventListener("open", function () { clearTimeout(timer); finish("ok", ["wsOpen"]); });
     ws.addEventListener("error", function () {
       clearTimeout(timer);
-      finish("bad", "connexion refusée",
-        "Un pare-feu, un antivirus ou un proxy bloque les WebSockets. Essaie sans VPN, ou en partage de connexion depuis ton téléphone.");
+      finish("bad", ["wsRefused"], ["fixWs"]);
     });
   });
 }
@@ -215,12 +414,11 @@ function checkWs() {
 // asking an external STUN would fail on exactly the restricted networks
 // where LiveKit still works fine through the relay.
 function checkWebrtc() {
-  set("webrtc", "run", "test en cours");
+  set("webrtc", "run", ["running"]);
   return new Promise(function (resolve) {
     var PC = window.RTCPeerConnection;
     if (!PC) {
-      set("webrtc", "bad", "non supporté par ce navigateur",
-        "Utilise Firefox, Chrome ou Edge à jour. Safari ancien et les navigateurs intégrés (Discord, Steam) ne suffisent pas.");
+      set("webrtc", "bad", ["noWebrtc"], ["fixNoWebrtc"]);
       resolve();
       return;
     }
@@ -231,9 +429,8 @@ function checkWebrtc() {
       if (done) return;
       done = true;
       try { pc.close(); } catch (e) {}
-      if (found > 0) set("webrtc", "ok", found + " route" + (found > 1 ? "s" : "") + " réseau trouvée" + (found > 1 ? "s" : ""));
-      else set("webrtc", "bad", "aucune route réseau trouvée",
-        "Ton navigateur bloque WebRTC. Coupe les extensions de blocage (uBlock en mode strict, WebRTC Leak Shield) et relance.");
+      if (found > 0) set("webrtc", "ok", [{ raw: String(found) }, found > 1 ? "routesN" : "routes1"]);
+      else set("webrtc", "bad", ["noRoute"], ["fixNoRoute"]);
       resolve();
     };
     var timer = setTimeout(finish, 6000);
@@ -267,33 +464,26 @@ function stopMic() {
 
 async function checkMic() {
   stopMic();
-  set("mic", "run", "autorise le micro dans la fenêtre du navigateur");
+  set("mic", "run", ["allowMic"]);
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    set("mic", "bad", "ce navigateur ne donne pas accès au micro",
-      "Utilise Firefox, Chrome ou Edge à jour, en HTTPS.");
+    set("mic", "bad", ["noMicApi"], ["fixNoMicApi"]);
     return;
   }
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
     var n = err && err.name;
-    if (n === "NotAllowedError") {
-      set("mic", "bad", "autorisation refusée",
-        "Clique le cadenas à gauche de l'adresse, remets le micro sur « Autoriser », puis relance le test.");
-    } else if (n === "NotFoundError" || n === "DevicesNotFoundError") {
-      set("mic", "bad", "aucun micro détecté",
-        "Branche un micro ou un casque, puis relance. Sous Windows, vérifie qu'il est activé dans Paramètres > Son > Entrée.");
-    } else if (n === "NotReadableError") {
-      set("mic", "bad", "micro occupé par une autre application",
-        "Ferme Discord, OBS ou tout ce qui utilise le micro, puis relance le test.");
-    } else {
-      set("mic", "bad", "erreur " + (n || "inconnue"));
-    }
+    if (n === "NotAllowedError") set("mic", "bad", ["micDenied"], ["fixMicDenied"]);
+    else if (n === "NotFoundError" || n === "DevicesNotFoundError") set("mic", "bad", ["micNone"], ["fixMicNone"]);
+    else if (n === "NotReadableError") set("mic", "bad", ["micBusy"], ["fixMicBusy"]);
+    else set("mic", "bad", ["micErr", { raw: n || "?" }]);
     return;
   }
   var track = micStream.getAudioTracks()[0];
-  var label = track && track.label ? track.label : "micro";
-  set("mic", "run", label + " — parle, on regarde le niveau");
+  // The device label is whatever the OS calls it, so it stays raw in both
+  // languages; only the sentence around it is translated.
+  var label = track && track.label ? { raw: track.label } : "micLabel";
+  set("mic", "run", [label, "micSpeak"]);
 
   if (!meter) {
     meter = document.createElement("div");
@@ -324,9 +514,8 @@ async function checkMic() {
     // 8 s is long enough for someone to notice the meter and say something,
     // short enough that nobody wonders whether it is stuck.
     if (Date.now() - startedAt > 8000) {
-      if (peak >= 12) set("mic", "ok", label + " — on t'entend");
-      else set("mic", "warn", label + " — aucun son capté",
-        "Le micro est autorisé mais rien n'arrive. Vérifie qu'il est bien le périphérique par défaut dans Windows, et que le volume d'entrée n'est pas à zéro.");
+      if (peak >= 12) set("mic", "ok", [label, "micHeard"]);
+      else set("mic", "warn", [label, "micSilent"], ["fixMicSilent"]);
       // The bars stay where the last frame left them, so the result is
       // readable after the test rather than snapping back to idle.
       try { ctx.close(); } catch (e) {}
@@ -339,14 +528,15 @@ async function checkMic() {
 }
 
 function diagnostic() {
-  var lines = ["OnZVoIP — diagnostic " + new Date().toISOString()];
-  CHECKS.forEach(function (c) {
-    var s = state[c.id] || {};
+  var lines = [T("diagTitle") + new Date().toISOString()];
+  CHECKS.forEach(function (id) {
+    var s = state[id] || {};
     var glyph = { wait: "·", run: "…", ok: "OK", warn: "!!", bad: "KO" }[s.status] || "?";
-    lines.push("[" + glyph + "] " + c.name + (s.detail ? " — " + s.detail : ""));
+    var d = join(s.detail);
+    lines.push("[" + glyph + "] " + T("n_" + id) + (d ? " — " + d : ""));
   });
-  lines.push("navigateur: " + navigator.userAgent);
-  lines.push("écran: " + screen.width + "x" + screen.height + " / langue: " + navigator.language);
+  lines.push(T("browser") + navigator.userAgent);
+  lines.push(T("screen") + screen.width + "x" + screen.height + T("langLine") + navigator.language);
   return lines.join("\n");
 }
 
@@ -362,9 +552,9 @@ document.getElementById("copy").addEventListener("click", async function () {
   var out = document.getElementById("out");
   try {
     await navigator.clipboard.writeText(text);
-    this.textContent = "Copié ✓";
+    this.textContent = T("copied");
     var btn = this;
-    setTimeout(function () { btn.textContent = "Copier le diagnostic"; }, 2000);
+    setTimeout(function () { btn.textContent = T("copy"); }, 2000);
   } catch (err) {
     // Clipboard access is denied often enough (Firefox without a gesture it
     // trusts, http origins) that falling back silently to a selectable box
@@ -375,6 +565,7 @@ document.getElementById("copy").addEventListener("click", async function () {
   }
 });
 
+applyLang();
 runAll();
 </script>
 </body>
