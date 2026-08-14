@@ -330,7 +330,7 @@ document.addEventListener('click', (e) => {
   if (btn.dataset.act === 'debug') {
     const msg = debugOn
       ? 'Couper le mode debug ? Les onglets déjà connectés gardent leur voix.'
-      : 'Activer le mode debug ? N'importe qui pourra rejoindre n'importe quel salon sans preuve.';
+      : "Activer le mode debug ? N'importe qui pourra rejoindre n'importe quel salon sans preuve.";
     if (!confirm(msg)) return;
     act('debug', { on: !debugOn });
   } else if (btn.dataset.act === 'autokick') {
@@ -348,7 +348,7 @@ function renderActions(a, debug) {
   actionsDrawn = key;
 
   if (!a.enabled) {
-    const off = 'indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)';
+    const off = "indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)";
     $('actionsUI').className = 'empty'; $('actionsUI').textContent = off;
     $('botsUI').className = 'empty'; $('botsUI').textContent = off;
     return;
@@ -359,7 +359,7 @@ function renderActions(a, debug) {
     '<div class="row"><span class="lbl">Mode debug</span>'
     + '<button class="act danger ' + (debug ? 'on' : '') + '" data-act="debug">'
     + (debug ? 'ACTIF — couper' : 'coupé — activer') + '</button>'
-    + '<span class="sub">jeton pour n'importe quel salon sans preuve : à couper en public</span></div>'
+    + "<span class=\"sub\">jeton pour n'importe quel salon sans preuve : à couper en public</span></div>"
     + '<div class="row"><span class="lbl">Expulsion auto des fantômes</span>'
     + '<button class="act ' + (a.autoKick ? 'on' : '') + '" data-act="autokick">'
     + (a.autoKick ? 'activée' : 'désactivée') + '</button>'
@@ -367,7 +367,7 @@ function renderActions(a, debug) {
 
   if (!a.testBots) {
     $('botsUI').className = 'empty';
-    $('botsUI').textContent = 'indisponible (ENABLE_TEST_BOTS n'est pas activé au démarrage du relais)';
+    $('botsUI').textContent = "indisponible (ENABLE_TEST_BOTS n'est pas activé au démarrage du relais)";
     return;
   }
   $('botsUI').className = '';
