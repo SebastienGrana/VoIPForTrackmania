@@ -44,7 +44,7 @@ OpenPlanet plugin  ──TCP──▶  Node.js relay  ──data channel──�
                                                          (computes gain + pan per player)
 ```
 
-- **OpenPlanet plugin** (`openplanet-plugin/`) — reads the local player's position every 200 ms and sends it to the relay over a raw TCP socket (no extra plugin dependency).
+- **OpenPlanet plugin** (`OnZVoIP/`) — reads the local player's position every 200 ms and sends it to the relay over a raw TCP socket (no extra plugin dependency).
 - **Node.js relay** (`server/`) — fans out positions to all room participants via LiveKit data channels; also issues LiveKit join tokens.
 - **Web client** (`server/public/`) — receives positions, computes distance and stereo pan for each remote player in WebAudio, and plays their audio stream accordingly. Also serves `/check`, the player-facing self-test page. Includes a calibration bot (`bot.html`) for solo testing, served only when `ENABLE_CALIBRATION_BOT=true` (off by default — see `server/.env.example`).
 
@@ -78,7 +78,7 @@ docker compose up
 
 Runs a dev LiveKit server + the relay locally. `LIVEKIT_NODE_IP` (default `127.0.0.1`) is the address LiveKit advertises to WebRTC clients for media — only needed if you're joining from a device other than the one running docker compose.
 
-While working on the plugin itself, copy `openplanet-plugin/` into `Openplanet4\Plugins\OnZVoIP\` as loose files and use *Reload plugins* — an `.op` is only for distribution. To build the one players download:
+While working on the plugin itself, copy `OnZVoIP/` into `Openplanet4\Plugins\OnZVoIP\` as loose files and use *Reload plugins* — an `.op` is only for distribution. To build the one players download:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\build-op.ps1   # -> dist/OnZVoIP.op

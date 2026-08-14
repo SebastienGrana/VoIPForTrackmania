@@ -5,7 +5,7 @@
 # below it (checked against the installed plugins on this machine: EditorTrails
 # keeps them at the root, BlocksItemsCounter under Source/, ServersList under
 # lib/). Ours are flat, so the archive is simply the contents of
-# openplanet-plugin/ — note the trailing \* : zipping the folder itself would
+# OnZVoIP/ — note the trailing \* : zipping the folder itself would
 # bury info.toml one level down and OpenPlanet would not see the plugin at all.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File tools\build-op.ps1
@@ -13,7 +13,7 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$src  = Join-Path $root 'openplanet-plugin'
+$src  = Join-Path $root 'OnZVoIP'
 $dist = Join-Path $root 'dist'
 $op   = Join-Path $dist 'OnZVoIP.op'
 $zip  = Join-Path $dist 'OnZVoIP.zip'
