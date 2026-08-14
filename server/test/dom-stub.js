@@ -69,8 +69,17 @@ class FakeElement {
 const canvasOps = [];
 const record = (op) => (...args) => { canvasOps.push({ op, args }); };
 
+// A real canvas throws IndexSizeError on a negative radius, and that throw
+// escapes whatever callback draw() was running under. Reproduce it here, or a
+// test can only ever prove the arc was requested, not that it was legal.
+const arc = record('arc');
+const checkedArc = (x, y, r, ...rest) => {
+  if (r < 0) throw new Error(`IndexSizeError: The radius provided (${r}) is negative.`);
+  arc(x, y, r, ...rest);
+};
+
 const fakeCtx = {
-  clearRect: record('clearRect'), beginPath: record('beginPath'), arc: record('arc'),
+  clearRect: record('clearRect'), beginPath: record('beginPath'), arc: checkedArc,
   stroke: record('stroke'), fill: record('fill'), fillText: record('fillText'),
   moveTo: record('moveTo'), lineTo: record('lineTo'), closePath: record('closePath'),
   save: record('save'), restore: record('restore'), roundRect: record('roundRect'),

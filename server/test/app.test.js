@@ -594,6 +594,32 @@ describe('car heading (radar rotation + rotating stereo)', () => {
       `pinned blip should be off to the right, got ${JSON.stringify(pinned)}`);
   });
 
+  test('draw() draws nothing while the canvas has no size, instead of throwing', () => {
+    // The collapsed "Advanced settings" panel leaves the canvas laid out at
+    // zero, and the ring radii used to go negative there - ctx.arc() threw and
+    // the interval callback lost renderPeerTable()/renderFollowChips() with it.
+    const canvas = stub.elements.canvas;
+    const [w, h] = [canvas.width, canvas.height];
+    app.peers.set('alice', { x: app.me.x + 20, y: 0, z: app.me.z, lastSeen: Date.now() });
+    try {
+      canvas.width = 0;
+      canvas.height = 0;
+      stub.canvasOps.length = 0;
+      app.draw();
+      assert.strictEqual(stub.canvasOps.length, 0, 'expected draw() to bail before drawing');
+      // Stale blips must not stay clickable at coordinates nothing was drawn at.
+      assert.strictEqual(app.hitTestPeer(0, 0), null);
+    } finally {
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    // And it comes back as soon as the panel gives the canvas a real box.
+    stub.canvasOps.length = 0;
+    app.draw();
+    assert.ok(stub.canvasOps.some((o) => o.op === 'arc'), 'expected the rings once sized');
+  });
+
   test('our own blip is an arrow once we have a heading, a dot before', () => {
     // An arrow pointing at a direction we do not know would be a confident lie,
     // so the plain dot has to survive for browsers with no plugin.

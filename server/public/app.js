@@ -1834,7 +1834,7 @@ export {
   purgeAll, disconnectLiveKit, attachRoomEvents, connectLiveKit,
   startIngestWs, startPositionSend, shouldSendOwnPosition, handleRoomPush,
   connectViaNonce, join,
-  renderPlayerList, renderPeerTable, renderFollowChips, draw,
+  renderPlayerList, renderPeerTable, renderFollowChips, draw, hitTestPeer,
   projectToRadar, emojiForPseudo, setupCalibration,
   gainForCurrentMode, cutoffForCurrentMode, offsetInEarFrame, headingForView,
   driveDoppler, dopplerPreset, setupDoppler,

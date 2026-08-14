@@ -91,6 +91,20 @@ export function createRadar({
 
   function draw() {
     resizeCanvas();
+
+    // While the "Advanced settings" panel is still collapsed the canvas has no
+    // laid-out size, so the ring radius below comes out negative and every
+    // ctx.arc() throws IndexSizeError. That throw escapes the interval callback
+    // and takes the peer table and the follow chips down with it, so bail out
+    // quietly: at that size there is nothing to show anyway. Checked before
+    // clearing, since a canvas with no area has nothing to clear either.
+    // lastDrawnPeers is emptied so no stale blip stays clickable at
+    // coordinates nothing was drawn at.
+    if (!(Math.min(canvas.width, canvas.height) / 2 - 20 > 0)) {
+      lastDrawnPeers = [];
+      return;
+    }
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     const me = getMe();
