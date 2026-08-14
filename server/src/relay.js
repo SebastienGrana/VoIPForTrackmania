@@ -12,6 +12,7 @@ import { WebSocketServer } from 'ws';
 import { AccessToken } from 'livekit-server-sdk';
 import { DataPacket_Kind, TrackType } from '@livekit/protocol';
 import { roomNameFor, displayNameFor, stripTmFormatting } from './room-name.js';
+import { positionGroups } from './position-cull.js';
 import { nullEventLog } from './event-log.js';
 
 // One-time nonce store.
@@ -164,6 +165,43 @@ export function createRelay({
   // simply stops appearing in future broadcasts, instead of their last
   // position being resent forever.
   const pendingPositions = new Map(); // room → Map(pseudo → {x, y, z, ts})
+  // Same data, but NOT cleared on flush: the relevance cull needs to know where
+  // every listener is, including the ones who sent nothing this tick because
+  // they are parked (the plugin drops to a 1 Hz heartbeat when a car does not
+  // move). Reading recipients out of pendingPositions instead would quietly
+  // drop those players from the broadcast and freeze their screen.
+  const knownPositions = new Map(); // room → Map(pseudo → {x, y, z, ts})
+  // A player this quiet is gone, not parked - the plugin heartbeat is 1 s.
+  const KNOWN_POSITION_TTL_MS = 15_000;
+
+  // Who is actually listening in this room, and where they are - the input the
+  // relevance cull needs. Returns null whenever we are not certain, and null
+  // means "broadcast to everyone" (today's behaviour): sending a filtered
+  // message to a listener we forgot about would freeze their radar, which is a
+  // far worse failure than a few wasted bytes. The listener set comes from
+  // browserRooms (who holds a token for this room) rather than from the
+  // positions themselves, precisely so a listener without a position is
+  // detected instead of silently skipped.
+  function listenersIn(room) {
+    const knownMap = knownPositions.get(room);
+    if (!knownMap) return null;
+    const now = Date.now();
+    for (const [pseudo, p] of knownMap) {
+      if (now - p.ts > KNOWN_POSITION_TTL_MS) knownMap.delete(pseudo);
+    }
+    if (knownMap.size === 0) {
+      knownPositions.delete(room);
+      return null;
+    }
+    const listeners = new Map();
+    for (const [login, r] of browserRooms) {
+      if (r !== room) continue;
+      const at = knownMap.get(login);
+      if (!at) return null; // someone is listening from a place we can't locate
+      listeners.set(login, at);
+    }
+    return listeners.size > 0 ? listeners : null;
+  }
 
   async function flushPositions() {
     for (const [room, posMap] of pendingPositions) {
@@ -189,13 +227,16 @@ export function createRelay({
       }
       if (!roomExists) continue;
 
-      const payload = JSON.stringify(positions);
-      try {
-        await roomService.sendData(room, encoder.encode(payload), DataPacket_Kind.LOSSY, {
-          topic: 'position',
-        });
-      } catch (err) {
-        console.error('sendData failed:', err.message);
+      for (const group of positionGroups(positions, listenersIn(room))) {
+        const payload = JSON.stringify(group.positions);
+        try {
+          await roomService.sendData(room, encoder.encode(payload), DataPacket_Kind.LOSSY, {
+            topic: 'position',
+            ...(group.identities ? { destinationIdentities: group.identities } : {}),
+          });
+        } catch (err) {
+          console.error('sendData failed:', err.message);
+        }
       }
     }
   }
@@ -1090,6 +1131,13 @@ export function createRelay({
       entry.fz = fz;
     }
     posMap.set(pseudo, entry);
+
+    let knownMap = knownPositions.get(targetRoom);
+    if (!knownMap) {
+      knownMap = new Map();
+      knownPositions.set(targetRoom, knownMap);
+    }
+    knownMap.set(pseudo, entry);
   }
 
   function handleMessage(msg, fallbackRoom) {

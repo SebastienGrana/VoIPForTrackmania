@@ -2,7 +2,7 @@
 name        = "OnZVoIP"
 author      = "VELP"
 category    = "Multiplayer"
-version     = "0.3.3"
+version     = "0.3.4"
 description = """
 Proximity voice chat for Trackmania² Stadium — you hear nearby players louder, and from the direction they are.
 

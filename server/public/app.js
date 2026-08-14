@@ -9,6 +9,7 @@ import {
   distance, gainForDistance, gainForDistanceRealistic, panForDirection,
   lowpassForDistance, LOWPASS_NEAR_HZ, toCarFrame,
   dopplerDelayFor, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC,
+  velocityFrom, extrapolatedPosition,
 } from './audio-math.js';
 import { validateAvatar, emojiForPseudo } from './avatar.js';
 import { setupToast, showToast } from './toast.js';
@@ -664,10 +665,22 @@ function sameVoiceTeam(pseudo) {
   return !!mine && mine.voice === true && teamMembers[pseudo] === mine.id;
 }
 
+// Same extrapolation the audio uses, for everything that *draws* a peer: a dot
+// that steps once per packet while the voice slides would look broken next to
+// it. Rebuilt per call rather than cached - it depends on the current time, and
+// the map is a handful of entries.
+function peersSnapshot(nowMs = Date.now()) {
+  const out = new Map();
+  for (const [pseudo, raw] of peers) {
+    out.set(pseudo, { ...raw, ...extrapolatedPosition(raw, nowMs) });
+  }
+  return out;
+}
+
 const radar = createRadar({
   canvas, ctx, onzRoot,
   getTeamColor: teamColorFor,
-  getPeers: () => peers,
+  getPeers: () => peersSnapshot(),
   getGains: () => gains,
   getMe: () => me,
   getMaxDist: () => MAX_DIST,
@@ -730,8 +743,15 @@ function tickGains() {
   // Audit #6: while waiting for our first real in-game position, force
   // silence instead of computing distance from the placeholder "me".
   const meReady = !isSwitchOn(followGameCheckbox) || meKnown;
-  for (const [pseudo, pos] of peers) {
-    const stale = Date.now() - pos.lastSeen > 3000;
+  for (const [pseudo, raw] of peers) {
+    const nowMs = Date.now();
+    const stale = nowMs - raw.lastSeen > 3000;
+    // Between two packets, carry the peer forward at the speed they were last
+    // seen moving: the gain/pan/filter then slide the way the car does instead
+    // of stepping once per packet. Beyond EXTRAPOLATION_MAX_MS this is a no-op,
+    // so a peer who stopped sending still freezes and then goes stale exactly
+    // as before.
+    const pos = extrapolatedPosition(raw, nowMs);
     const dist = distance(me, pos);
     // A teammate is heard at full volume wherever they are - including while
     // their positions are stale or before we know our own, since team voice is
@@ -1151,7 +1171,14 @@ function attachRoomEvents(newRoom) {
           || Math.abs(px) >= 1e6 || Math.abs(py) >= 1e6 || Math.abs(pz) >= 1e6) continue;
       const pseudo = typeof msg.pseudo === 'string' && msg.pseudo.length <= 64 ? msg.pseudo : null;
       if (!pseudo) continue;
-      peers.set(pseudo, { x: px, y: py, z: pz, lastSeen: Date.now() });
+      // Keep the velocity implied by the previous packet so tickGains() and the
+      // radar can carry this peer forward between packets instead of freezing
+      // them (see extrapolatedPosition). Derived here, where we know the exact
+      // arrival time of both samples; never sent over the wire.
+      const prev = peers.get(pseudo);
+      const next = { x: px, y: py, z: pz, lastSeen: Date.now() };
+      const vel = velocityFrom(prev, next, prev);
+      peers.set(pseudo, { ...next, ...vel });
     }
   });
 

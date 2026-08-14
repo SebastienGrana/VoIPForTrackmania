@@ -6,6 +6,8 @@ import {
   toCarFrame,
   dopplerDelayFor, DOPPLER_PRESETS, DOPPLER_BASE_SEC, DOPPLER_MAX_DELAY_SEC, SPEED_OF_SOUND,
   DOPPLER_GLIDE_SEC,
+  velocityFrom, extrapolatedPosition, EXTRAPOLATION_MAX_MS, EXTRAPOLATION_MAX_SPEED,
+  VELOCITY_SMOOTHING,
 } from '../public/audio-math.js';
 
 describe('distance()', () => {
@@ -422,5 +424,72 @@ describe('dopplerDelayFor()', () => {
       // a hair under 0.1, so the bound is written with room for that hair.
       assert.ok(1 / (1 - p.maxRate) <= 10.001, `${p.maxRate} -> ${1 / (1 - p.maxRate)}`);
     }
+  });
+});
+
+// Positions arrive a few times a second; between two packets a peer is drawn
+// where its last known velocity says it should be. These two functions are the
+// whole of it, so they carry the guard rails.
+describe('velocityFrom()', () => {
+  const at = (x, y, z, t) => ({ x, y, z, lastSeen: t });
+
+  test('two samples 100 ms apart give the speed between them', () => {
+    const v = velocityFrom(at(0, 0, 0, 1000), at(10, 0, 5, 1100), null);
+    assert.deepEqual(v, { vx: 100, vy: 0, vz: 50 });
+  });
+
+  test('a missing sample means no velocity, not a crash', () => {
+    assert.deepEqual(velocityFrom(null, at(1, 2, 3, 1000), null), { vx: 0, vy: 0, vz: 0 });
+    assert.deepEqual(velocityFrom(at(1, 2, 3, 1000), null, null), { vx: 0, vy: 0, vz: 0 });
+  });
+
+  test('samples too close together are ignored: the divide would amplify jitter', () => {
+    assert.deepEqual(velocityFrom(at(0, 0, 0, 1000), at(1, 0, 0, 1005), null), { vx: 0, vy: 0, vz: 0 });
+  });
+
+  test('samples too far apart are ignored: the peer was gone, not moving', () => {
+    assert.deepEqual(velocityFrom(at(0, 0, 0, 1000), at(50, 0, 0, 3000), null), { vx: 0, vy: 0, vz: 0 });
+  });
+
+  test('a respawn reads as an impossible speed and is dropped', () => {
+    const v = velocityFrom(at(0, 0, 0, 1000), at(0, 0, 500, 1100), null);
+    assert.ok(500 / 0.1 > EXTRAPOLATION_MAX_SPEED);
+    assert.deepEqual(v, { vx: 0, vy: 0, vz: 0 });
+  });
+
+  test('the new velocity is blended with the old one, so one odd packet cannot snap it', () => {
+    const prev = { ...at(0, 0, 0, 1000), vx: 0, vy: 0, vz: 0 };
+    const v = velocityFrom(prev, at(10, 0, 0, 1100), prev);
+    assert.equal(v.vx, 100 * VELOCITY_SMOOTHING);
+    assert.equal(v.vy, 0);
+  });
+});
+
+describe('extrapolatedPosition()', () => {
+  const peer = (over) => ({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, lastSeen: 1000, ...over });
+
+  test('a standing peer stays exactly where it was', () => {
+    assert.deepEqual(extrapolatedPosition(peer(), 1300), { x: 0, y: 0, z: 0 });
+  });
+
+  test('a moving peer is advanced along its velocity', () => {
+    const p = extrapolatedPosition(peer({ vx: 50, vz: -20 }), 1100);
+    assert.ok(Math.abs(p.x - 5) < 1e-9);
+    assert.ok(Math.abs(p.z + 2) < 1e-9);
+  });
+
+  test('a peer we stopped hearing from drifts only so far, then holds', () => {
+    const stuck = peer({ vx: 50 });
+    const capped = extrapolatedPosition(stuck, 1000 + EXTRAPOLATION_MAX_MS);
+    assert.deepEqual(extrapolatedPosition(stuck, 9000), capped);
+  });
+
+  test('a packet timestamped in the future is not run backwards', () => {
+    assert.deepEqual(extrapolatedPosition(peer({ vx: 50 }), 900), { x: 0, y: 0, z: 0 });
+  });
+
+  test('a peer without velocity fields is passed through untouched', () => {
+    const raw = { x: 3, y: 4, z: 5, lastSeen: 1000 };
+    assert.deepEqual(extrapolatedPosition(raw, 1200), { x: 3, y: 4, z: 5 });
   });
 });

@@ -11,7 +11,26 @@
 // Strings.as (JSON/Trackmania string helpers), Settings.as (user-configurable
 // options).
 
-const int SEND_INTERVAL_MS = 200;
+// How often we LOOK at the car. Cheap (one game-state read, no socket write),
+// and the faster we look, the sooner a sudden move can be reported.
+const int SAMPLE_INTERVAL_MS = 100;
+// How often we actually put a position on the wire while the car is moving.
+// This is the rate the whole system was tuned around; the browser smooths
+// between packets (extrapolation), so it is a floor, not a quality knob.
+const int SEND_INTERVAL_MOVING_MS = 200;
+// Parked in a menu, at the start line, or spectating: nothing to describe, so
+// stop paying the relay's fan-out for it. Still frequent enough to stay well
+// inside the browser's 3 s "stale" mute, so a stationary player never fades.
+const int SEND_INTERVAL_IDLE_MS = 1000;
+// Under this, the car has not really moved - engine idle, physics jitter.
+const float POSITION_IDLE_EPSILON_M = 0.25f;
+// A jump this big is a respawn, a checkpoint restart or a teleport. It goes out
+// on the next sample without waiting for the cadence: this is the one case
+// where the browser's extrapolation would be actively wrong.
+const float POSITION_JUMP_M = 8.0f;
+// Turning on the spot moves nobody but rotates everyone's stereo image, so a
+// heading change counts as movement even at a standstill.
+const float HEADING_EPSILON = 0.08f;
 const int RECONNECT_INTERVAL_MS = 2000;
 const int DIAG_INTERVAL_MS = 3000;
 // Refresh the nonce before the relay's 12-minute TTL expires.
@@ -23,7 +42,13 @@ const int NONCE_REFRESH_MS = 9 * 60 * 1000;
 const int AUTH_RETRY_BACKOFF_MS = 10000;
 
 Net::Socket@ g_socket = null;
-int64 g_lastSendAt = 0;
+int64 g_lastSampleAt = 0;
+// The last position/heading we actually put on the wire, so the next sample can
+// tell "moved" from "parked" (see SEND_INTERVAL_IDLE_MS).
+vec3 g_lastSentPos = vec3(0, 0, 0);
+float g_lastSentFx = 0.0f;
+float g_lastSentFz = 0.0f;
+bool g_hasLastSent = false;
 int64 g_lastConnectAttemptAt = 0;
 int64 g_lastDiagAt = 0;
 bool g_loggedConnected = false;
@@ -200,8 +225,8 @@ void Main() {
             }
         }
 
-        if (now - g_lastSendAt < SEND_INTERVAL_MS) continue;
-        g_lastSendAt = now;
+        if (now - g_lastSampleAt < SAMPLE_INTERVAL_MS) continue;
+        g_lastSampleAt = now;
 
         vec3 pos;
         vec3 aimDir;
@@ -256,6 +281,28 @@ void Main() {
             headingPart = ",\"fx\":" + FormatFloat(aimDir.x) + ",\"fz\":" + FormatFloat(aimDir.z);
         }
 
+        // Adaptive cadence: a position is only worth sending if it says
+        // something the last one did not. A car at racing speed still goes out
+        // every SEND_INTERVAL_MOVING_MS; a car parked in a menu drops to the
+        // idle heartbeat, which is what keeps the relay's fan-out (one message
+        // per sender per listener) from being paid for players who are not
+        // moving. The browser extrapolates between packets, so slowing down
+        // here does not make anyone's voice step.
+        float fx = hasAim ? aimDir.x : 0.0f;
+        float fz = hasAim ? aimDir.z : 0.0f;
+        float dx = pos.x - g_lastSentPos.x;
+        float dy = pos.y - g_lastSentPos.y;
+        float dz = pos.z - g_lastSentPos.z;
+        float moved = Math::Sqrt(dx * dx + dy * dy + dz * dz);
+        float turned = Math::Abs(fx - g_lastSentFx) + Math::Abs(fz - g_lastSentFz);
+        int64 sinceSent = now - g_lastPositionOkAt;
+        bool due = !g_hasLastSent
+            || moved >= POSITION_JUMP_M
+            || sinceSent >= SEND_INTERVAL_IDLE_MS
+            || ((moved >= POSITION_IDLE_EPSILON_M || turned >= HEADING_EPSILON)
+                && sinceSent >= SEND_INTERVAL_MOVING_MS);
+        if (!due) continue;
+
         // Include the server login (and raw name) so the relay can route
         // this position to the right room; an empty server falls back to
         // the default room for backward compatibility.
@@ -275,6 +322,13 @@ void Main() {
         } else {
             g_lastPositionOkAt = now;
             g_lastSendFail = "";
+            // Only a position that made it out becomes the reference: if the
+            // write failed, the next sample must still compare against the last
+            // thing the relay actually knows about us.
+            g_lastSentPos = pos;
+            g_lastSentFx = fx;
+            g_lastSentFz = fz;
+            g_hasLastSent = true;
         }
     }
 }

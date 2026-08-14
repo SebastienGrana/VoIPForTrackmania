@@ -193,3 +193,66 @@ export function dopplerDelayFor(dist, prevDelay, dtSec, preset = 'subtle') {
   const cap = p.maxRate * dt;
   return prevDelay + clamp(eased, -cap, cap);
 }
+
+// --- Extrapolation between position packets --------------------------------
+// Positions arrive a few times a second; the ear (and the radar) run at frame
+// rate. Without anything in between, a peer teleports on every packet and
+// stands still for the rest of the time - which is exactly the staircase the
+// Doppler glide above has to fight. Remembering how fast a peer was moving and
+// carrying them forward between packets makes the smoothness a property of the
+// client, not of the packet rate: sending less often stops being visible.
+// Costs nothing on the wire - the velocity is derived from two positions we
+// already received, never sent.
+
+// How far ahead of the last packet we are willing to guess. Past this the peer
+// is not "moving", they are "gone" (alt-tab, disconnect, plugin stopped), and
+// gliding them across the map for a second would be a lie the radar tells.
+export const EXTRAPOLATION_MAX_MS = 400;
+// A car does not do 430 km/h. Anything faster is a respawn, a map restart or a
+// packet reordering, and extrapolating it would fling the peer off the radar.
+export const EXTRAPOLATION_MAX_SPEED = 120; // m/s
+// Each new sample is worth half of the estimate. Raw per-packet velocity is
+// noisy (the sample interval itself jitters); a hard average would lag turns.
+export const VELOCITY_SMOOTHING = 0.5;
+
+// Velocity implied by two consecutive samples, in units/second, blended with
+// the previous estimate when there is one. Returns zeros whenever the pair
+// cannot be trusted - too close together, too far apart, or physically absurd -
+// because a zero velocity degrades to today's behaviour (hold the last known
+// position) instead of guessing wrong.
+export function velocityFrom(prev, next, prevVel) {
+  const zero = { vx: 0, vy: 0, vz: 0 };
+  if (!prev || !next) return zero;
+  const dt = (Number(next.lastSeen) - Number(prev.lastSeen)) / 1000;
+  // Under 10 ms the divisor amplifies noise into nonsense; over 1 s we have no
+  // idea what happened in the gap, so we refuse to interpolate across it.
+  if (!isFinite(dt) || dt < 0.01 || dt > 1) return zero;
+  const vx = (next.x - prev.x) / dt;
+  const vy = (next.y - prev.y) / dt;
+  const vz = (next.z - prev.z) / dt;
+  if (!isFinite(vx) || !isFinite(vy) || !isFinite(vz)) return zero;
+  if (Math.hypot(vx, vy, vz) > EXTRAPOLATION_MAX_SPEED) return zero;
+  if (!prevVel) return { vx, vy, vz };
+  const a = VELOCITY_SMOOTHING;
+  return {
+    vx: prevVel.vx + (vx - prevVel.vx) * a,
+    vy: prevVel.vy + (vy - prevVel.vy) * a,
+    vz: prevVel.vz + (vz - prevVel.vz) * a,
+  };
+}
+
+// Where a peer probably is right now, given their last packet and the velocity
+// derived from it. Falls back to the raw last-known position whenever there is
+// nothing to extrapolate from, so every caller can use this unconditionally.
+export function extrapolatedPosition(peer, nowMs) {
+  if (!peer) return peer;
+  const dt = (Number(nowMs) - Number(peer.lastSeen)) / 1000;
+  if (!isFinite(dt) || dt <= 0) return { x: peer.x, y: peer.y, z: peer.z };
+  const capped = Math.min(dt, EXTRAPOLATION_MAX_MS / 1000);
+  const vx = Number(peer.vx) || 0, vy = Number(peer.vy) || 0, vz = Number(peer.vz) || 0;
+  return {
+    x: peer.x + vx * capped,
+    y: peer.y + vy * capped,
+    z: peer.z + vz * capped,
+  };
+}
