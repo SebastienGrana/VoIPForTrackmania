@@ -761,6 +761,9 @@ export function createRelay({
       now: new Date().toISOString(),
       uptimeSeconds: Math.round(process.uptime()),
       debugMode: debugEnabled,
+      // Lets the Liens tab hide the calibration bot link when the relay does
+      // not serve it — a listed URL that 404s reads as a broken deploy.
+      calibrationBot: enableCalibrationBot,
       // Drives which buttons the page draws at all: a control that cannot work
       // should not be on screen looking like it could.
       actions: { enabled: adminActions, testBots: enableTestBots, autoKick, bots: botClients.size, botMax: BOT_MAX },

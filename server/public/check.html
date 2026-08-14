@@ -46,6 +46,12 @@ button.primary:hover { background:var(--onz-accent-hover); border-color:var(--on
 .meter i.on { background:var(--onz-teal); }
 .foot { margin-top:28px; color:var(--onz-muted2); font-size:12px; }
 .foot a { color:var(--onz-accent); }
+.links { margin-top:20px; border-top:1px solid var(--onz-row-border); padding-top:12px; }
+.links .lbl { color:var(--onz-muted2); font-size:12px; }
+.link { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; font-size:12px; }
+.link a { color:var(--onz-accent); min-width:130px; }
+.link code { color:var(--onz-muted); font:12px/1.4 ui-monospace,Consolas,monospace; }
+button.mini { padding:2px 8px; font-size:11px; }
 textarea { width:100%; height:160px; margin-top:12px; font:12px/1.4 ui-monospace,Consolas,monospace;
   background:var(--onz-input-bg); color:var(--onz-text); border:1px solid var(--onz-border3);
   border-radius:6px; padding:8px; }
@@ -71,6 +77,21 @@ textarea { width:100%; height:160px; margin-top:12px; font:12px/1.4 ui-monospace
   </div>
 
   <p class="foot"><span id="t-foot"></span> <a href="/" id="t-back"></a></p>
+
+  <!-- Only the two pages every player may open. The admin dashboard and the
+       calibration bot are deliberately absent: this page is public. -->
+  <div class="links">
+    <span class="lbl" id="t-links"></span>
+    <div class="link">
+      <a id="l-voice" href="/"></a><code id="u-voice"></code>
+      <button class="mini" data-copy="u-voice"></button>
+    </div>
+    <div class="link">
+      <a id="l-check" href="/check"></a><code id="u-check"></code>
+      <button class="mini" data-copy="u-check"></button>
+    </div>
+  </div>
+
   <textarea id="out" hidden readonly></textarea>
 </div>
 
@@ -93,6 +114,10 @@ var STR = {
     copied: "Copied ✓",
     foot: "Something in red? Paste the diagnostic in the Discord help channel.",
     back: "Back to voice",
+    links: "Links to share:",
+    linkVoice: "Voice client",
+    linkCheck: "This check page",
+    copyLink: "Copy",
     n_secure: "Secure page (HTTPS)",
     n_relay: "OnZVoIP relay reachable",
     n_livekit: "Voice server reachable",
@@ -158,6 +183,10 @@ var STR = {
     copied: "Copié ✓",
     foot: "Un test au rouge ? Colle le diagnostic dans le salon d'aide Discord.",
     back: "Retour au vocal",
+    links: "Liens à partager :",
+    linkVoice: "Client vocal",
+    linkCheck: "Cette page de test",
+    copyLink: "Copier",
     n_secure: "Page sécurisée (HTTPS)",
     n_relay: "Relais OnZVoIP joignable",
     n_livekit: "Serveur vocal joignable",
@@ -307,6 +336,12 @@ function applyLang() {
   document.getElementById("copy").textContent = T("copy");
   document.getElementById("t-foot").textContent = T("foot");
   document.getElementById("t-back").textContent = T("back");
+  document.getElementById("t-links").textContent = T("links");
+  document.getElementById("l-voice").textContent = T("linkVoice");
+  document.getElementById("l-check").textContent = T("linkCheck");
+  document.querySelectorAll("button[data-copy]").forEach(function (b) {
+    b.textContent = T("copyLink");
+  });
   document.getElementById("lang-en").setAttribute("aria-pressed", String(LANG === "en"));
   document.getElementById("lang-fr").setAttribute("aria-pressed", String(LANG === "fr"));
   CHECKS.forEach(paint);
@@ -544,6 +579,30 @@ async function runAll() {
   checkSecure();
   await Promise.all([checkRelay(), checkWs(), checkWebrtc()]);
 }
+
+// Absolute URLs, built from wherever this page is actually served: the same
+// file runs on localhost during development and on the public domain, and a
+// link you paste into Discord has to carry the host with it.
+document.getElementById("u-voice").textContent = location.origin + "/";
+document.getElementById("u-check").textContent = location.origin + "/check";
+
+document.querySelectorAll("button[data-copy]").forEach(function (btn) {
+  btn.addEventListener("click", async function () {
+    var text = document.getElementById(btn.getAttribute("data-copy")).textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = T("copied");
+      setTimeout(function () { btn.textContent = T("copyLink"); }, 2000);
+    } catch (err) {
+      // Same reasoning as the diagnostic button: show it selectable rather
+      // than report a clipboard permission the player cannot grant.
+      var out = document.getElementById("out");
+      out.hidden = false;
+      out.value = text;
+      out.select();
+    }
+  });
+});
 
 document.getElementById("again").addEventListener("click", function () { runAll(); });
 document.getElementById("mic").addEventListener("click", function () { checkMic(); });
