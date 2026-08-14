@@ -24,6 +24,14 @@ Enter a race, then click **Open in browser** in the plugin window. That link is 
 
 If the button can't reach your browser, **Copy URL** under *Advanced* gives you the same link to paste by hand.
 
+### 3. If something doesn't work — `/check`
+
+`https://<server>/check` is a self-test page: HTTPS, relay reachable, voice server reachable, WebSocket, WebRTC, in-game plugin, microphone. Every failure comes with what to *do* about it, not an error code, and a **Copy diagnostic** button produces a block to paste in the Discord help channel. No password.
+
+It is in English by default, and in French if your browser asks for French.
+
+To have it check the **plugin** too, open it from the game: take the plugin's link and change `/?t=` to `/check?t=` in the address bar. Opened without that, the plugin test simply reads *not tested* — never a failure.
+
 ---
 
 ## Architecture overview
@@ -38,7 +46,7 @@ OpenPlanet plugin  ──TCP──▶  Node.js relay  ──data channel──�
 
 - **OpenPlanet plugin** (`openplanet-plugin/`) — reads the local player's position every 200 ms and sends it to the relay over a raw TCP socket (no extra plugin dependency).
 - **Node.js relay** (`server/`) — fans out positions to all room participants via LiveKit data channels; also issues LiveKit join tokens.
-- **Web client** (`server/public/`) — receives positions, computes distance and stereo pan for each remote player in WebAudio, and plays their audio stream accordingly. Includes a calibration bot (`bot.html`) for solo testing, served only when `ENABLE_CALIBRATION_BOT=true` (off by default — see `server/.env.example`).
+- **Web client** (`server/public/`) — receives positions, computes distance and stereo pan for each remote player in WebAudio, and plays their audio stream accordingly. Also serves `/check`, the player-facing self-test page. Includes a calibration bot (`bot.html`) for solo testing, served only when `ENABLE_CALIBRATION_BOT=true` (off by default — see `server/.env.example`).
 
 Volume and panning are computed **client-side** — LiveKit (an SFU) distributes the same encoded audio stream to all subscribers; per-pair attenuation must happen at the listener's end.
 
@@ -104,8 +112,13 @@ Three optional variables turn the relay into something you can watch during a se
 
 - `EVENT_LOG_FILE` — appends one JSON object per line for each connect, disconnect, room change, rejected link and problem report. Logins, rooms and timestamps only: no positions, no audio.
 - `ADMIN_USER` + `ADMIN_PASSWORD` — serve `/admin`, a live page listing who has the plugin running, on which version, who is missing their browser half, and the reports players sent. Both must be set or the page does not exist at all (404, not 401). Basic auth, so put it behind HTTPS.
+- `ADMIN_ACTIONS` — additionally enables the tabs of `/admin` that *act* on the session (test bots, teams). With it off, those routes 404 and `/admin` stays read-only.
 
-Players report problems from the web client itself — a **Report a problem** button at the bottom of the page sends their message with a short snapshot of their session (which they can read before sending), so a report arrives with the state that produced it instead of a "it doesn't work" in chat.
+`/admin` is in French, and has a **Liens** tab listing every address of the running deployment — built from the page's own origin, so they are correct whatever the domain — with each one labelled public or private, because the point is that the public ones get copied into Discord and the others do not.
+
+**Teams** (`ADMIN_ACTIONS`): group players by hand or split them automatically into 2–8 teams. Each team gets a colour, drawn as a ring around its members on everyone's radar, and can be given a *voice* flag — its members then hear each other anywhere on the map instead of only within earshot, still panned in the right direction. There is no second LiveKit room involved: a browser can only be in one room at a time, and leaving the map's room would remove that player from everyone else's proximity chat. Teams live in memory only and a relay restart clears them — they belong to one evening.
+
+Players report problems from the web client itself — a **Report a problem** button at the bottom of the page sends their message with a short snapshot of their session (which they can read before sending), so a report arrives with the state that produced it instead of a "it doesn't work" in chat. Point them at `/check` first: it usually answers the question without anyone reading a log.
 
 ### Point the plugin at your server
 
