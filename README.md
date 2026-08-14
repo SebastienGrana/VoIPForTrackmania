@@ -2,7 +2,7 @@
 
 Proximity voice chat for **Trackmania² Stadium (ManiaPlanet)**. Players who are close to each other hear each other loudly; players far away hear each other faintly or not at all.
 
-> **Live server:** `https://62.238.61.115.sslip.io` — hosted by the ONZSM community.
+> **Live server:** `https://onzvoip.com` — hosted by the ONZSM community.
 
 ---
 

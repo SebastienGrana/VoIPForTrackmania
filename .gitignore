@@ -29,3 +29,6 @@ logadmin.txt
 
 # Config IntelliJ : machine-locale (workspace.xml contient des chemins perso).
 .idea/
+
+# Sauvegardes de .env : contiennent des secrets (mot de passe /admin).
+.env.bak*

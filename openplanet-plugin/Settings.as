@@ -10,7 +10,7 @@ string S_RelayHost = "62.238.61.115";
 uint S_RelayPort = 8081;
 
 [Setting category="Connection" name="Voice chat URL" description="Web client URL for the same relay as above (must match — this is where the Copy URL button points)."]
-string S_VoipUrl = "https://62.238.61.115.sslip.io";
+string S_VoipUrl = "https://onzvoip.com";
 
 // Raises the bar on the open TCP ingest port from "anyone on the internet"
 // to "someone who has the community's token" — it does not identify
