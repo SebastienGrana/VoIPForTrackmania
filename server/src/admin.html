@@ -53,6 +53,18 @@
   .warnbanner .who { font-weight: 700; color: #fff; }
   .warnbanner div + div { margin-top: 4px; }
 
+  .rooms { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+  .room { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .room h3 { margin: 0 0 4px; font-size: 12px; font-weight: 700; word-break: break-all; }
+  .room .who { display: inline-block; margin: 1px 6px 1px 0; }
+  .room .half { color: var(--warn); }
+  .room .ghost { color: var(--bad); }
+
+  #spark { width: 100%; height: 90px; display: block; }
+  #spark .area { fill: rgba(74, 222, 128, .18); }
+  #spark .line { fill: none; stroke: var(--ok); stroke-width: 2; }
+  #spark .line2 { fill: none; stroke: var(--dim); stroke-width: 1; stroke-dasharray: 3 3; }
+
   .tools { display: flex; gap: 8px; align-items: center; margin: -4px 0 8px; flex-wrap: wrap; }
   .tools input { flex: 1 1 160px; min-width: 0; background: var(--bg); color: var(--fg);
                  border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px;
@@ -78,7 +90,20 @@
 
 <div id="unpaired" class="banner warnbanner" hidden></div>
 
+<div id="lkBanner" class="banner" hidden></div>
+
 <div class="grid">
+  <section class="wide">
+    <h2>10 dernières minutes</h2>
+    <div class="scroll"><svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none" role="img"></svg></div>
+    <div class="sub" id="sparkLegend"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Salons</h2>
+    <div id="rooms"></div>
+  </section>
+
   <section>
     <h2>Plugins connectés (jeu)</h2>
     <div class="scroll"><table id="plugins"></table></div>
@@ -87,6 +112,11 @@
   <section>
     <h2>Navigateurs connectés (voix)</h2>
     <div class="scroll"><table id="browsers"></table></div>
+  </section>
+
+  <section>
+    <h2>Reconnexions (10 min)</h2>
+    <div class="scroll"><table id="reconnects"></table></div>
   </section>
 
   <section class="wide">
@@ -175,6 +205,51 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('focus', () => { pendingReports = 0; document.title = BASE_TITLE; });
 
+// --- salons ------------------------------------------------------------------
+// A flat player list hides the failure that actually ruins an evening: several
+// rooms of two or three, each convinced voice is broken.
+function renderRooms(rooms) {
+  if (!rooms.length) { $('rooms').innerHTML = '<div class="empty">aucun salon actif</div>'; return; }
+  $('rooms').innerHTML = '<div class="rooms">' + rooms.map((r) => {
+    const players = r.players.map((p) =>
+      '<span class="who ' + (p.paired ? '' : 'half') + '">' + esc(p.login)
+      + (p.half === 'plugin' ? ' <span class="dim">(sans onglet)</span>'
+        : p.half === 'browser' ? ' <span class="dim">(sans jeu)</span>' : '') + '</span>'
+    ).join('') || '<span class="empty">personne côté relais</span>';
+    const lk = r.livekit === null ? '<span class="dim">LiveKit ?</span>'
+      : '<span class="dim">LiveKit : ' + r.livekit + '</span>';
+    const ghosts = r.ghosts.length
+      ? '<div class="ghost">fantômes LiveKit : ' + r.ghosts.map(esc).join(', ') + '</div>' : '';
+    const missing = r.missing.length
+      ? '<div class="warn">onglet ouvert mais absent de LiveKit : ' + r.missing.map(esc).join(', ') + '</div>' : '';
+    return '<div class="room"><h3>' + esc(r.serverName || r.room) + '</h3>'
+      + '<div class="sub">' + r.players.length + ' joueur(s) · ' + lk + '</div>'
+      + '<div>' + players + '</div>' + ghosts + missing + '</div>';
+  }).join('') + '</div>';
+}
+
+// --- historique --------------------------------------------------------------
+// Answers "it dropped — when?" without reading the log line by line.
+function renderSpark(history) {
+  const el = $('spark');
+  if (history.length < 2) {
+    el.innerHTML = '';
+    $('sparkLegend').textContent = 'pas encore assez de points (1 point / 10 s)';
+    return;
+  }
+  const W = 600, H = 90, max = Math.max(1, ...history.map((h) => Math.max(h.paired, h.plugins)));
+  const x = (i) => (i / (history.length - 1)) * W;
+  const y = (v) => H - 4 - (v / max) * (H - 12);
+  const path = (key) => history.map((h, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(h[key]).toFixed(1)).join(' ');
+  el.innerHTML =
+    '<path class="area" d="' + path('paired') + ' L' + W + ' ' + H + ' L0 ' + H + ' Z"></path>'
+    + '<path class="line2" d="' + path('plugins') + '"></path>'
+    + '<path class="line" d="' + path('paired') + '"></path>';
+  const span = Math.round((history[history.length - 1].t - history[0].t) / 60000);
+  $('sparkLegend').innerHTML = '<span class="ok">—</span> en voix · '
+    + '<span class="dim">- -</span> plugins · max ' + max + ' · ' + span + ' min';
+}
+
 // --- filtre du journal -------------------------------------------------------
 let allEvents = [];
 $('filter').addEventListener('input', renderEvents);
@@ -247,6 +322,20 @@ async function poll() {
     '<tr><td class="login">' + esc(b.login) + '</td>'
     + '<td>' + esc(b.room || '—') + '</td></tr>'
   );
+
+  // Someone reconnecting eight times in five minutes is the real problem of
+  // the night, but in the flat feed it looks like eight ordinary lines.
+  table($('reconnects'), ['Login', 'Jeu', 'Onglet', 'Total'], data.reconnects || [], (r) =>
+    '<tr><td class="login">' + esc(r.login) + '</td>'
+    + '<td>' + r.plugin + '</td><td>' + r.browser + '</td>'
+    + '<td class="' + (r.total >= 5 ? 'bad' : 'warn') + '">' + r.total + '</td></tr>'
+  );
+
+  renderRooms(data.rooms || []);
+  renderSpark(data.history || []);
+  $('lkBanner').hidden = data.livekitOk !== false;
+  $('lkBanner').innerHTML = '<b>LiveKit injoignable</b> — les salons et les fantômes ne sont pas vérifiables. '
+    + '<span class="dim">' + esc(data.livekitError || '') + '</span>';
 
   $('reports').innerHTML = data.reports.length
     ? data.reports.map((r) =>

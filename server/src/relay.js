@@ -243,6 +243,109 @@ export function createRelay({
     }
   }, statePushIntervalMs).unref();
 
+  // --- Observability, admin page only -----------------------------------
+  // None of what follows feeds the voice path: every read is wrapped so a
+  // failure here can only make the admin page emptier, never drop a player.
+
+  // A login that reconnects eight times in five minutes is the actual problem
+  // of the evening, but in a flat event feed it looks like eight ordinary
+  // lines. Counted per login over a rolling window so it can be ranked.
+  const RECONNECT_WINDOW_MS = 10 * 60 * 1000;
+  const RECONNECT_LOGINS_MAX = 500;
+  const reconnects = new Map(); // login → { plugin: [ts], browser: [ts] }
+
+  function noteReconnect(kind, login) {
+    const now = Date.now();
+    let e = reconnects.get(login);
+    if (!e) {
+      e = { plugin: [], browser: [] };
+      // Bounded like browserRooms: this is fed by unauthenticated connects.
+      if (reconnects.size >= RECONNECT_LOGINS_MAX) {
+        const oldest = reconnects.keys().next().value;
+        reconnects.delete(oldest);
+      }
+      reconnects.set(login, e);
+    }
+    e[kind].push(now);
+    if (e[kind].length > 100) e[kind].splice(0, e[kind].length - 100);
+  }
+
+  function reconnectRows() {
+    const cutoff = Date.now() - RECONNECT_WINDOW_MS;
+    const rows = [];
+    for (const [login, e] of reconnects) {
+      const plugin = e.plugin.filter((t) => t >= cutoff).length;
+      const browser = e.browser.filter((t) => t >= cutoff).length;
+      if (plugin + browser === 0) { reconnects.delete(login); continue; }
+      rows.push({ login, plugin, browser, total: plugin + browser });
+    }
+    // Only the noisy ones are worth screen space; one reconnect is just a join.
+    return rows.filter((r) => r.total >= 2).sort((a, b) => b.total - a.total).slice(0, 10);
+  }
+
+  function countsNow() {
+    const inTab = new Set(browserSockets.keys());
+    let paired = 0;
+    for (const login of tcpSocketsByLogin.keys()) if (inTab.has(login)) paired++;
+    return {
+      plugins: tcpSocketsByLogin.size,
+      browsers: browserSockets.size,
+      paired,
+      pluginOnly: tcpSocketsByLogin.size - paired,
+      browserOnly: browserSockets.size - paired,
+      nonces: nonces.size,
+    };
+  }
+
+  // "It dropped — when?" is unanswerable from a live snapshot. 10 s samples
+  // over 10 minutes, kept server-side so a page reload does not lose the dip.
+  const HISTORY_INTERVAL_MS = 10_000;
+  const HISTORY_MAX = 60;
+  const history = [];
+  function sampleHistory() {
+    const c = countsNow();
+    history.push({ t: Date.now(), paired: c.paired, plugins: c.plugins, browsers: c.browsers });
+    if (history.length > HISTORY_MAX) history.shift();
+  }
+  const historyTimer = setInterval(sampleHistory, HISTORY_INTERVAL_MS).unref();
+
+  // What the relay believes vs what LiveKit actually holds. The gap is where
+  // ghosts live: a tab killed mid-session can leave a participant behind that
+  // still occupies the login, and nothing in the relay's own state shows it.
+  // Cached because the admin page polls every 2 s and this is a network call.
+  const LIVEKIT_CACHE_MS = 5000;
+  let livekitCache = { at: 0, value: null, pending: null };
+
+  async function livekitSnapshot() {
+    if (Date.now() - livekitCache.at < LIVEKIT_CACHE_MS && livekitCache.value) {
+      return livekitCache.value;
+    }
+    if (livekitCache.pending) return livekitCache.pending;
+    livekitCache.pending = (async () => {
+      try {
+        const rooms = await roomService.listRooms();
+        const byRoom = new Map();
+        for (const r of rooms) {
+          let identities = [];
+          try {
+            identities = (await roomService.listParticipants(r.name)).map((p) => p.identity);
+          } catch { /* room vanished between the two calls */ }
+          byRoom.set(r.name, identities.sort());
+        }
+        return { ok: true, byRoom };
+      } catch (err) {
+        return { ok: false, error: String(err?.message ?? err).slice(0, 200), byRoom: new Map() };
+      }
+    })();
+    try {
+      const value = await livekitCache.pending;
+      livekitCache = { at: Date.now(), value, pending: null };
+      return value;
+    } finally {
+      livekitCache.pending = null;
+    }
+  }
+
   // Rate-limiting: a handful of token requests per join is normal, dozens per
   // second is a scripted attack. Ingestion is per-connection since positions
   // are unauthenticated (per socket, not per login, since the login itself
@@ -513,7 +616,7 @@ export function createRelay({
     return true;
   }
 
-  app.get('/admin/state.json', (req, res) => {
+  app.get('/admin/state.json', async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const now = Date.now();
     const plugins = Array.from(tcpSocketsByLogin, ([login, e]) => ({
@@ -547,10 +650,54 @@ export function createRelay({
     for (const p of plugins) p.paired = inTab.has(p.login);
     for (const b of browsers) b.paired = inGame.has(b.login);
 
+    // Per room, because "12 players connected" hides the case that actually
+    // ruins an evening: four rooms of three who each think voice is broken.
+    const live = await livekitSnapshot();
+    const roomsMap = new Map();
+    const roomEntry = (room) => {
+      if (!roomsMap.has(room)) {
+        roomsMap.set(room, { room, serverName: null, players: [], livekit: null, ghosts: [], missing: [] });
+      }
+      return roomsMap.get(room);
+    };
+    for (const p of plugins) {
+      if (!p.room) continue;
+      const e = roomEntry(p.room);
+      if (!e.serverName) e.serverName = p.serverName;
+      e.players.push({ login: p.login, paired: p.paired, half: p.paired ? 'both' : 'plugin' });
+    }
+    for (const b of browsers) {
+      if (!b.room || inGame.has(b.login)) continue;
+      roomEntry(b.room).players.push({ login: b.login, paired: false, half: 'browser' });
+    }
+    for (const [room, identities] of live.byRoom) {
+      // A LiveKit room with nobody in it is normal housekeeping, not a room.
+      if (identities.length === 0 && !roomsMap.has(room)) continue;
+      roomEntry(room).livekit = identities.length;
+    }
+    for (const e of roomsMap.values()) {
+      const identities = live.byRoom.get(e.room);
+      if (identities) {
+        const known = new Set(browsers.filter((b) => b.room === e.room).map((b) => b.login));
+        // In LiveKit but not in our books: usually a tab closed the hard way,
+        // still holding the login. Missing is the mirror case.
+        e.ghosts = identities.filter((id) => !known.has(id));
+        e.missing = [...known].filter((l) => !identities.includes(l));
+      }
+      e.players.sort((a, b) => a.login.localeCompare(b.login));
+    }
+    const rooms = [...roomsMap.values()]
+      .sort((a, b) => b.players.length - a.players.length || a.room.localeCompare(b.room));
+
     res.json({
       now: new Date().toISOString(),
       uptimeSeconds: Math.round(process.uptime()),
       debugMode,
+      livekitOk: live.ok,
+      livekitError: live.ok ? null : live.error,
+      rooms,
+      history,
+      reconnects: reconnectRows(),
       counts: {
         plugins: plugins.length,
         browsers: browsers.length,
@@ -683,6 +830,7 @@ export function createRelay({
             if (wsLogin && browserSockets.get(wsLogin) === ws) browserSockets.delete(wsLogin);
             wsLogin = login;
             browserSockets.set(login, ws);
+            noteReconnect('browser', login);
             eventLog.log('browser.connect', { login, room: browserRooms.get(login) ?? null });
           }
           return;
@@ -813,6 +961,7 @@ export function createRelay({
             // player changed server" answer different questions after the fact,
             // and collapsing them into one line makes the second invisible.
             if (!sameSocket) {
+              noteReconnect('plugin', login);
               eventLog.log('plugin.connect', { login, room: tcpRoom, version, ip: socket.remoteAddress });
             } else if (prev.room !== tcpRoom) {
               eventLog.log('plugin.room', { login, from: prev.room, to: tcpRoom });
@@ -830,5 +979,5 @@ export function createRelay({
     socket.on('error', (err) => console.error('TCP ingest: socket error:', err.message));
   });
 
-  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer, statePushTimer };
+  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer, statePushTimer, historyTimer };
 }
