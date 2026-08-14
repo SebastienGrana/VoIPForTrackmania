@@ -173,15 +173,29 @@ export function createRelay({
   const knownPositions = new Map(); // room → Map(pseudo → {x, y, z, ts})
   // A player this quiet is gone, not parked - the plugin heartbeat is 1 s.
   const KNOWN_POSITION_TTL_MS = 15_000;
+  // login -> last time a browser socket for it was seen alive. A tab that
+  // reconnects stays a recipient across the gap; a tab that closed for good
+  // ages out, and the cull can engage again. Kept under the position TTL above:
+  // a grace longer than that would leave a closed tab counted as a listener
+  // after its own position had already expired, and every one of those seconds
+  // is a second the cull spends switched off.
+  const browserSeen = new Map();
+  const BROWSER_GRACE_MS = 10_000;
 
   // Who is actually listening in this room, and where they are - the input the
   // relevance cull needs. Returns null whenever we are not certain, and null
   // means "broadcast to everyone" (today's behaviour): sending a filtered
   // message to a listener we forgot about would freeze their radar, which is a
   // far worse failure than a few wasted bytes. The listener set comes from
-  // browserRooms (who holds a token for this room) rather than from the
-  // positions themselves, precisely so a listener without a position is
-  // detected instead of silently skipped.
+  // live browser sockets rather than from the positions themselves, precisely
+  // so a listener without a position is detected instead of silently skipped.
+  //
+  // Not browserRooms: that map is written at token issuance and never cleared,
+  // so the first player to close their tab would stay a listener forever, no
+  // position would ever be found for them, and the cull would switch itself
+  // off for the rest of the evening. Live sockets churn, though - a tab whose
+  // WebSocket reconnects would drop out of the set for a second and stop
+  // receiving positions - hence the grace period.
   function listenersIn(room) {
     const knownMap = knownPositions.get(room);
     if (!knownMap) return null;
@@ -194,8 +208,10 @@ export function createRelay({
       return null;
     }
     const listeners = new Map();
-    for (const [login, r] of browserRooms) {
-      if (r !== room) continue;
+    for (const [login, seenAt] of browserSeen) {
+      if (browserSockets.has(login)) browserSeen.set(login, now);
+      else if (now - seenAt > BROWSER_GRACE_MS) { browserSeen.delete(login); continue; }
+      if (browserRooms.get(login) !== room) continue;
       const at = knownMap.get(login);
       if (!at) return null; // someone is listening from a place we can't locate
       listeners.set(login, at);
@@ -1186,6 +1202,7 @@ export function createRelay({
             if (wsLogin && browserSockets.get(wsLogin) === ws) browserSockets.delete(wsLogin);
             wsLogin = login;
             browserSockets.set(login, ws);
+            browserSeen.set(login, Date.now());
             noteReconnect('browser', login);
             eventLog.log('browser.connect', { login, room: browserRooms.get(login) ?? null });
             // Current teams straight away: a browser that joins mid-event would

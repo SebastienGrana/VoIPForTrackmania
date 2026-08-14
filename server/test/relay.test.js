@@ -1201,3 +1201,108 @@ describe('POST /tcp-auth — not configured (own relay instance)', () => {
     assert.strictEqual(body.token, undefined);
   });
 });
+
+// The cull only pays off once a room has enough listeners to make the n^2
+// hurt, and it only engages when the relay knows where every one of them is.
+// position-cull.test.js covers the decision itself; what is wired here is
+// everything around it - who counts as a listener, and what happens to the
+// ones who stop counting.
+describe('position relevance cull (own relay instance)', () => {
+  let relay, mockService, HTTP_PORT, TCP_PORT;
+  const sockets = [];
+
+  // Two packs 100 km apart: nobody in one can hear the other.
+  const N = 12;
+  const login = (i) => `cull${String(i).padStart(2, '0')}`;
+  const xOf = (i) => (i < N / 2 ? i : 100000 + i);
+
+  // A listener is a browser that holds a token for the room AND has a live
+  // socket, so the setup has to do both halves for every fake player.
+  async function joinAs(name) {
+    await fetch(`http://localhost:${HTTP_PORT}/token?identity=${name}`);
+    const ws = new WebSocket(`ws://localhost:${HTTP_PORT}/ingest`);
+    await new Promise((r) => ws.on('open', r));
+    ws.send(JSON.stringify({ type: 'hello', login: name }));
+    return ws;
+  }
+
+  before(async () => {
+    mockService = makeMockRoomService();
+    relay = createRelay({
+      roomService: mockService,
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+      enableCalibrationBot: true, // opens /token?identity=, standing in for the nonce path
+    });
+    await new Promise((r) => relay.server.listen(0, r));
+    HTTP_PORT = relay.server.address().port;
+    await new Promise((r) => relay.tcpServer.listen(0, r));
+    TCP_PORT = relay.tcpServer.address().port;
+
+    for (let i = 0; i < N; i++) sockets.push(await joinAs(login(i)));
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
+  after(async () => {
+    for (const ws of sockets) ws.close();
+    await new Promise((r) => relay.server.close(r));
+    await new Promise((r) => relay.tcpServer.close(r));
+  });
+
+  async function feedPositions(count = N) {
+    await tcpSend(TCP_PORT, Array.from({ length: count }, (_, i) =>
+      JSON.stringify({ type: 'position', pseudo: login(i), x: xOf(i), y: 0, z: 0 })));
+    await new Promise((r) => setTimeout(r, 20));
+  }
+
+  test('two distant packs -> one targeted message each, nobody left out', async () => {
+    const before = mockService.calls.length;
+    await feedPositions();
+    await relay.flushPositions();
+    const calls = mockService.calls.slice(before);
+    assert.equal(calls.length, 2, 'one send per pack');
+    const served = new Set();
+    for (const [room, payload, , opts] of calls) {
+      assert.equal(room, ROOM);
+      const positions = JSON.parse(new TextDecoder().decode(payload));
+      assert.equal(positions.length, N / 2, 'each pack only carries its own half');
+      assert.equal(opts.destinationIdentities.length, N / 2);
+      for (const id of opts.destinationIdentities) served.add(id);
+    }
+    assert.equal(served.size, N, 'every listener is addressed by exactly one message');
+  });
+
+  test('a tab that closes stops counting, so the cull keeps working', async () => {
+    // The regression this guards: recipients used to be read from the token
+    // ledger, which is never cleared, so the first player to close their tab
+    // would stay a listener forever, no position would ever be found for them,
+    // and the cull would switch itself off for the rest of the evening.
+    sockets.pop().close();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const before = mockService.calls.length;
+    await feedPositions(N - 1);
+    await relay.flushPositions();
+    const calls = mockService.calls.slice(before);
+    assert.equal(calls.length, 2, 'still culling after someone left');
+    for (const call of calls) assert.ok(call[3].destinationIdentities);
+  });
+
+  test('a listener whose position the relay does not have -> full broadcast', async () => {
+    // A player opens the page before their plugin has ever reported a position.
+    // Sending them a filtered list would mean guessing where they are, so the
+    // whole room falls back to one broadcast until they show up.
+    const ghost = await joinAs('ghost');
+    await new Promise((r) => setTimeout(r, 50));
+
+    const before = mockService.calls.length;
+    await feedPositions();
+    await relay.flushPositions();
+    const calls = mockService.calls.slice(before);
+    assert.equal(calls.length, 1, 'one doubt is enough to send to everyone');
+    assert.equal(calls[0][3].destinationIdentities, undefined);
+    ghost.close();
+  });
+});
