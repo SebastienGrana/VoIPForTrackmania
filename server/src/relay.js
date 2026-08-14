@@ -808,7 +808,14 @@ export function createRelay({
   // which is the durable copy; this ring exists so the admin page can show
   // them without reading the file.
   const reports = [];
-  const REPORTS_MAX = 100;
+  const REPORTS_MAX = 500;
+  // Bumped on anything that changes what the admin page should show: a new
+  // report, or one marked handled. The page sends back the value it holds and
+  // gets nothing at all when it matches, which is what makes it affordable to
+  // send every report of the evening instead of the last twenty — a quiet poll
+  // costs one number, and the full list only crosses the wire when it moved.
+  let reportSeq = 0;
+  let reportId = 0;
   // Matches the log's own in-memory ring: asking for more would just return
   // everything it has, and the page is built to hold this much.
   const EVENTS_WINDOW = 1000;
@@ -825,6 +832,10 @@ export function createRelay({
     // itself. Fields are clamped so a report cannot be used to stuff the log.
     const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
     const report = {
+      // Addressable, so "handled" can name a report rather than a position in a
+      // list that shifts under it every time somebody else sends one.
+      id: ++reportId,
+      handled: false,
       ts: new Date().toISOString(),
       message: str(req.body?.message, 1000),
       login: validateLogin(req.body?.login) ?? null,
@@ -844,6 +855,7 @@ export function createRelay({
     report.version = (report.login && tcpSocketsByLogin.get(report.login)?.version) || null;
     reports.push(report);
     if (reports.length > REPORTS_MAX) reports.shift();
+    reportSeq += 1;
     eventLog.log('report', report);
     res.json({ ok: true });
   });
@@ -926,6 +938,22 @@ export function createRelay({
       return { events: eventLog.tail(EVENTS_WINDOW).reverse(), eventSeq: eventLog.seq, eventsFull: true };
     }
     return { events: delta.reverse(), eventSeq: eventLog.seq, eventsFull: false };
+  }
+
+  // The page used to get the last twenty reports and nothing else, which on a
+  // busy evening means the first complaint of the night is gone by the time
+  // anyone gets round to it. It now gets all of them — but only when something
+  // actually changed, tracked by the same kind of cursor as the log. A report
+  // is a few hundred bytes; sending every one of them on every 2 s poll would
+  // not be, and a quiet poll is by far the common case.
+  //
+  // Unlike the log this is not a delta: "handled" edits a row that is already
+  // on the page, so the honest answer to "something moved" is the whole list.
+  function reportsPayload(req) {
+    const raw = Number(req.query.sinceReport);
+    const cursor = Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+    if (cursor === reportSeq) return { reportSeq, reportsChanged: false };
+    return { reports: reports.slice().reverse(), reportSeq, reportsChanged: true };
   }
 
   app.get('/admin/state.json', async (req, res) => {
@@ -1036,7 +1064,7 @@ export function createRelay({
       },
       plugins,
       browsers,
-      reports: reports.slice(-20).reverse(),
+      ...reportsPayload(req),
       ...eventsPayload(req),
     });
   });
@@ -1265,6 +1293,26 @@ export function createRelay({
         ...(errors.length ? { error: errors.join('; ') } : {}) });
     if (errors.length) { res.status(502).json({ error: errors.join('; '), blocked: minutes > 0 }); return; }
     res.json({ ok: true, login, minutes });
+  });
+
+  // Marking a report handled is deliberately relay-side and not a checkbox in
+  // one browser's memory: on an event night the page is open on two screens,
+  // and "someone is already on this one" is the whole value of the button.
+  app.post('/admin/actions/report', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    const id = Number(req.body?.id);
+    if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: 'id required' }); return; }
+    const report = reports.find((r) => r.id === id);
+    // Gone means aged out of the ring, not an error worth a 500 — but it must
+    // not answer ok either, or the page would draw a state the relay dropped.
+    if (!report) { res.status(404).json({ error: 'unknown report' }); return; }
+    const handled = req.body?.handled !== false; // absent means "mark it done"
+    if (report.handled !== handled) {
+      report.handled = handled;
+      reportSeq += 1;
+    }
+    eventLog.log('admin.action', { action: 'report', id, handled, ip: req.ip });
+    res.json({ ok: true, id, handled });
   });
 
   app.post('/admin/actions/unblock', express.json(), (req, res) => {

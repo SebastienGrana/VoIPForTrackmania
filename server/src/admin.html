@@ -46,6 +46,9 @@
 
   .report { border-top: 1px solid var(--line); padding: 8px 0; }
   .report p { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; }
+  /* Estompé plutôt que masqué : un signalement traité reste consultable, mais
+     l'œil doit tomber d'abord sur ceux dont personne ne s'est occupé. */
+  .report.done { opacity: .45; }
   .banner { background: #3b1f1f; border: 1px solid var(--bad); color: #ffd7d7;
             border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
   .warnbanner { background: #3a2f10; border-color: var(--warn); color: #ffe7b3; }
@@ -274,7 +277,9 @@ let lastOk = 0;
 // thing on this page that must not wait for the next glance.
 const BASE_TITLE = document.title;
 let lastReportTs = null;   // null until the first poll, so a reload never beeps
-let pendingReports = 0;
+let allReports = [];       // newest first, as the relay sends them
+let reportCursor = null;   // relay-side revision; null asks for the full list
+let pendingReports = 0;    // unhandled, counted from the relay's own state
 
 function beep() {
   try {
@@ -292,11 +297,12 @@ function beep() {
 
 function noteReports(reports) {
   const newest = reports.length ? reports[0].ts : null;
-  if (lastReportTs !== null && newest !== null && newest !== lastReportTs) {
-    pendingReports += reports.filter((r) => r.ts > lastReportTs).length;
-    beep();
-  }
+  if (lastReportTs !== null && newest !== null && newest !== lastReportTs) beep();
   lastReportTs = newest;
+  // Counted from the relay rather than tallied here: with the page open on two
+  // screens, a local counter tells each of them a different number, and the
+  // one that matters is "how many has nobody dealt with yet".
+  pendingReports = reports.filter((r) => !r.handled).length;
   paintPending();
 }
 
@@ -308,16 +314,32 @@ function paintPending() {
   $('tabReports').textContent = pendingReports ? '(' + pendingReports + ')' : '';
 }
 
-// Reading the reports is the acknowledgement; no button, no state change.
-// Reading them means the Signalements tab is open and the window is focused —
-// clearing on focus alone would wipe the badge of a report nobody ever read.
-const ackReports = () => {
-  if (document.hidden || currentTab !== 'reports') return;
-  pendingReports = 0;
-  paintPending();
-};
-document.addEventListener('visibilitychange', ackReports);
-window.addEventListener('focus', ackReports);
+// Opening the tab used to be the acknowledgement. It stopped being enough the
+// moment reports outlived a glance: "I have seen it" and "somebody has dealt
+// with it" are different facts, and only the second one should clear a badge
+// that two people are looking at. That is the « traité » button below.
+
+function renderReports(canAct) {
+  if (!allReports.length) { $('reports').innerHTML = '<div class="empty">aucun signalement</div>'; return; }
+  $('reports').innerHTML = allReports.map((r) =>
+    '<div class="report' + (r.handled ? ' done' : '') + '">'
+    + '<span class="dim">' + new Date(r.ts).toLocaleTimeString('fr-FR')
+    + '</span> <b>' + esc(r.login || 'anonyme') + '</b> '
+    + '<span class="dim">' + esc(r.version || 'version ?') + ' · ' + esc(r.room || 'hors salon')
+    + (r.state ? ' · ' + esc(r.state) : '') + '</span> '
+    + (canAct
+      ? '<button class="act' + (r.handled ? ' on' : '') + '" data-report="' + r.id
+        + '" data-handled="' + (r.handled ? '0' : '1') + '">'
+        + (r.handled ? '✓ traité' : 'traité') + '</button>'
+      : (r.handled ? '<span class="ok">✓ traité</span>' : ''))
+    + '<p>' + esc(r.message) + '</p></div>').join('');
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-report]');
+  if (!btn) return;
+  act('report', { id: Number(btn.dataset.report), handled: btn.dataset.handled === '1' });
+});
 
 // --- onglets -----------------------------------------------------------------
 // Remembered across reloads: during an event this page gets refreshed a lot,
@@ -334,7 +356,6 @@ function selectTab(name) {
   for (const panel of document.querySelectorAll('.panel')) {
     panel.hidden = panel.id !== 'tab-' + name;
   }
-  if (name === 'reports') { pendingReports = 0; paintPending(); }
 }
 $('tabs').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-tab]');
@@ -723,7 +744,10 @@ function renderEvents() {
 async function poll() {
   let data;
   try {
-    const url = '/admin/state.json' + (eventCursor === null ? '' : '?sinceEvent=' + eventCursor);
+    const qs = [];
+    if (eventCursor !== null) qs.push('sinceEvent=' + eventCursor);
+    if (reportCursor !== null) qs.push('sinceReport=' + reportCursor);
+    const url = '/admin/state.json' + (qs.length ? '?' + qs.join('&') : '');
     const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     data = await res.json();
@@ -800,16 +824,15 @@ async function poll() {
   $('lkBanner').innerHTML = '<b>LiveKit injoignable</b> — les salons et les fantômes ne sont pas vérifiables. '
     + '<span class="dim">' + esc(data.livekitError || '') + '</span>';
 
-  $('reports').innerHTML = data.reports.length
-    ? data.reports.map((r) =>
-        '<div class="report"><span class="dim">' + new Date(r.ts).toLocaleTimeString('fr-FR')
-        + '</span> <b>' + esc(r.login || 'anonyme') + '</b> '
-        + '<span class="dim">' + esc(r.version || 'version ?') + ' · ' + esc(r.room || 'hors salon')
-        + (r.state ? ' · ' + esc(r.state) : '') + '</span>'
-        + '<p>' + esc(r.message) + '</p></div>')
-      .join('')
-    : '<div class="empty">aucun signalement</div>';
-  noteReports(data.reports);
+  // Only redrawn when the relay says something moved: rebuilding this list on
+  // every poll would fight the text you are half-way through selecting out of
+  // a report to paste into Discord.
+  if (data.reportsChanged) {
+    allReports = data.reports;
+    renderReports(canAct);
+    noteReports(allReports);
+  }
+  if (typeof data.reportSeq === 'number') reportCursor = data.reportSeq;
 
   // Full window on the first poll, and again whenever the relay says our cursor
   // fell out of its ring (a restart, or a burst longer than the window). The
