@@ -7,7 +7,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test test/audio-math.test.js test/position-cull.test.js test/relay.test.js test/room-name.test.js test/avatar.test.js test/app.test.js test/admin-report.test.js",
+    "test": "node --test test/audio-math.test.js test/position-cull.test.js test/relay.test.js test/room-name.test.js test/avatar.test.js test/app.test.js test/admin-report.test.js test/admin-secret.test.js",
     "coverage": "node --test --experimental-test-coverage test/"
   },
   "dependencies": {

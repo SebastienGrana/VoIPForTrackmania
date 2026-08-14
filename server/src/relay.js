@@ -153,6 +153,14 @@ export function createRelay({
   // Mutable so the admin page can flip it mid-event; `debugMode` stays the
   // boot value nobody mutates by accident.
   let debugEnabled = debugMode;
+  // Same idea for the TCP secret: settable from the admin page so the port can
+  // be closed the moment something looks wrong, without a restart. Runtime
+  // only — a restart falls back to TCP_SHARED_SECRET from the environment,
+  // which is deliberate: a web handler must never be able to lock the relay
+  // out of its own .env. Note that `authenticated` is decided once per socket
+  // at connect time, so turning a secret on gates NEW connections only; the
+  // plugins already in the room keep working.
+  let tcpSecret = tcpSharedSecret;
   const encoder = new TextEncoder();
   // Positions are batched instead of sent one-by-one: calling
   // roomService.sendData() per incoming position would mean one HTTP call to
@@ -734,7 +742,7 @@ export function createRelay({
   // configured at all, so it doesn't leak whether this relay has the
   // feature enabled to an unauthenticated prober.
   app.post('/tcp-auth', express.json(), (req, res) => {
-    if (!tcpSharedSecret) {
+    if (!tcpSecret) {
       res.status(404).json({ error: 'not configured' });
       return;
     }
@@ -743,7 +751,7 @@ export function createRelay({
       return;
     }
     const secret = typeof req.body?.secret === 'string' ? req.body.secret : '';
-    if (secret !== tcpSharedSecret) {
+    if (secret !== tcpSecret) {
       res.status(401).json({ error: 'invalid secret' });
       return;
     }
@@ -937,7 +945,13 @@ export function createRelay({
       teams: teamsPayload(),
       // Drives which buttons the page draws at all: a control that cannot work
       // should not be on screen looking like it could.
-      actions: { enabled: adminActions, testBots: enableTestBots, autoKick, bots: botClients.size, botMax: BOT_MAX },
+      // tcpSecret is a boolean on purpose: the page needs to show whether the
+      // port is gated, and never the value — this JSON is behind Basic auth,
+      // but it also ends up in browser caches, screenshots and bug reports.
+      actions: {
+        enabled: adminActions, testBots: enableTestBots, autoKick,
+        bots: botClients.size, botMax: BOT_MAX, tcpSecret: !!tcpSecret,
+      },
       livekitOk: live.ok,
       livekitError: live.ok ? null : live.error,
       rooms,
@@ -1012,7 +1026,7 @@ export function createRelay({
     const send = (obj) => { try { socket.write(JSON.stringify(obj) + '\n'); } catch {} };
     socket.setEncoding('utf8');
     socket.on('connect', () => {
-      if (tcpSharedSecret) send({ type: 'auth', secret: tcpSharedSecret });
+      if (tcpSecret) send({ type: 'auth', secret: tcpSecret });
       send({ type: 'nonce', nonce: `bot-${login}-${Date.now()}`, login,
              server: BOT_SERVER, serverName: BOT_SERVER_NAME, version: 'bot' });
       // Circle of 60 m, one bot per slice: they spread out instead of piling
@@ -1088,6 +1102,28 @@ export function createRelay({
     debugEnabled = req.body?.on === true;
     eventLog.log('admin.action', { action: 'debug', on: debugEnabled, ip: req.ip });
     res.json({ ok: true, debugMode: debugEnabled });
+  });
+
+  // Sets, changes or clears the TCP shared secret without a restart. The value
+  // is never echoed back and never written to the event log — only whether one
+  // is now in force. Clearing it (empty string) reopens port 8081 to anyone,
+  // which is the pre-secret behaviour, so it is logged as loudly as setting it.
+  app.post('/admin/actions/secret', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    const raw = typeof req.body?.secret === 'string' ? req.body.secret.trim() : '';
+    // A secret with whitespace or a newline in it would be silently mangled by
+    // the plugin's setting field and the newline-delimited TCP protocol, and
+    // the symptom ("wrong secret" for something that looks right) is horrible
+    // to diagnose during an event. Refuse it instead.
+    if (raw && !/^[\x21-\x7e]{8,128}$/.test(raw)) {
+      res.status(400).json({ error: 'secret must be 8-128 printable characters, no spaces' });
+      return;
+    }
+    tcpSecret = raw;
+    // Tokens already handed out were minted against the previous secret.
+    tcpAuthTokens.clear();
+    eventLog.log('admin.action', { action: 'secret', on: !!tcpSecret, ip: req.ip });
+    res.json({ ok: true, tcpSecret: !!tcpSecret });
   });
 
   app.post('/admin/actions/autokick', express.json(), (req, res) => {
@@ -1342,7 +1378,7 @@ export function createRelay({
     let tcpWindowStart = Date.now();
     // No secret configured → nothing to check, same behavior as before this
     // feature existed (local dev / tests keep working unchanged).
-    let authenticated = !tcpSharedSecret;
+    let authenticated = !tcpSecret;
     let tcpLogin = null; // login associated with this socket, for state push-back
     let tcpRoom = null;  // current room for this socket
     socket.setEncoding('utf8');
@@ -1399,7 +1435,7 @@ export function createRelay({
             tcpAuthTokens.delete(msg.token); // single-use
             authenticated = true;
             continue; // a message right after auth in the same chunk (e.g. nonce) must still be processed below
-          } else if (msg.secret === tcpSharedSecret) {
+          } else if (msg.secret === tcpSecret) {
             authenticated = true;
             continue;
           } else {

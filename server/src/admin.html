@@ -368,6 +368,21 @@ document.addEventListener('click', (e) => {
       : "Activer le mode debug ? N'importe qui pourra rejoindre n'importe quel salon sans preuve.";
     if (!confirm(msg)) return;
     act('debug', { on: !debugOn });
+  } else if (btn.dataset.act === 'secretSet') {
+    // prompt() and not a form field on purpose: the value must not sit in the
+    // DOM of a page that stays open on a stream or a shared screen all evening.
+    const s = prompt('Secret du port 8081 — 8 à 128 caractères, sans espace.\n'
+      + 'Les plugins déjà connectés ne sont pas coupés ; les nouveaux devront le saisir.', '');
+    if (s === null) return;
+    const v = s.trim();
+    if (!/^[\x21-\x7e]{8,128}$/.test(v)) {
+      $('stale').textContent = '⚠ secret refusé (8 à 128 caractères imprimables, sans espace)';
+      return;
+    }
+    act('secret', { secret: v });
+  } else if (btn.dataset.act === 'secretClear') {
+    if (!confirm('Couper le secret ? Le port 8081 réaccepte alors n\'importe quelle connexion.')) return;
+    act('secret', { secret: '' });
   } else if (btn.dataset.act === 'autokick') {
     act('autokick', { on: !actionState.autoKick });
   } else if (btn.dataset.act === 'bots') {
@@ -415,7 +430,14 @@ function renderActions(a, debug) {
     + '<div class="row"><span class="lbl">Expulsion auto des fantômes</span>'
     + '<button class="act ' + (a.autoKick ? 'on' : '') + '" data-act="autokick">'
     + (a.autoKick ? 'activée' : 'désactivée') + '</button>'
-    + '<span class="sub">retire de LiveKit les identités absentes du relais sur deux passages (40 s)</span></div>';
+    + '<span class="sub">retire de LiveKit les identités absentes du relais sur deux passages (40 s)</span></div>'
+    + '<div class="row"><span class="lbl">Secret du port 8081</span>'
+    + '<button class="act ' + (a.tcpSecret ? 'on' : '') + '" data-act="secretSet">'
+    + (a.tcpSecret ? 'actif — changer' : 'aucun — définir') + '</button>'
+    + (a.tcpSecret ? '<button class="act danger" data-act="secretClear">couper</button>' : '')
+    + '<span class="sub">exigé des <b>nouvelles</b> connexions plugin ; celles déjà en place ne sont pas coupées. '
+    + 'Chaque joueur doit le saisir dans Openplanet → Settings → OnZVoIP → Relay secret. '
+    + 'Perdu au redémarrage du relais : c\'est <code>TCP_SHARED_SECRET</code> du <code>.env</code> qui reprend la main.</span></div>';
 
   if (!a.testBots) {
     $('botsUI').className = 'empty';
