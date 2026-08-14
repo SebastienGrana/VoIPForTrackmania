@@ -542,6 +542,11 @@ export function createRelay({
     const inTab = new Set(browsers.map((b) => b.login));
     const paired = [...inGame].filter((l) => inTab.has(l));
 
+    // Flagged per row, not just counted: during the evening the question is
+    // never "how many are unpaired" but "who", so the name can be called out.
+    for (const p of plugins) p.paired = inTab.has(p.login);
+    for (const b of browsers) b.paired = inGame.has(b.login);
+
     res.json({
       now: new Date().toISOString(),
       uptimeSeconds: Math.round(process.uptime()),
@@ -567,6 +572,18 @@ export function createRelay({
     // anyone, and a page whose whole job is to display logins should not be
     // one typo away from being public even if it is useless without the JSON.
     res.sendFile(ADMIN_HTML);
+  });
+
+  // The admin feed only keeps the last few hundred lines in memory, and they
+  // vanish on restart. This hands over the whole file while the evening is
+  // still running, so a post-mortem does not depend on SSH access.
+  app.get('/admin/events.log', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const file = eventLog.file;
+    if (!file) { res.status(404).json({ error: 'no log file' }); return; }
+    res.download(file, 'onzvoip-events.log', (err) => {
+      if (err && !res.headersSent) res.status(500).json({ error: 'log unavailable' });
+    });
   });
 
   const server = http.createServer(app);
