@@ -24,7 +24,13 @@ const MAX_BYTES = 32 * 1024 * 1024; // rotate at 32 MB, keep one .1 behind
 // Kept in memory alongside the file so the admin page can show a live feed
 // without re-reading (and re-parsing, and re-permissioning) the log from disk
 // every couple of seconds.
-const RECENT_MAX = 300;
+//
+// Sized for an evening rather than for a glance: the admin page filters this
+// window client-side, and a window of a few hundred lines covers minutes, not
+// hours, on a busy night — which is exactly when someone asks what happened
+// twenty minutes ago. It is only affordable because the page fetches the
+// window once and then asks for new lines by sequence number (see `since`).
+const RECENT_MAX = 1000;
 
 export function createEventLog({ file, echo = true } = {}) {
   let stream = null;
@@ -67,6 +73,11 @@ export function createEventLog({ file, echo = true } = {}) {
     }
   }
 
+  // Monotonic, per-process, never reused. It is what lets a reader say "give me
+  // what I have not seen" without comparing timestamps — two events inside the
+  // same millisecond are common here, so `ts` cannot play that role.
+  let seq = 0;
+
   // log('plugin.connect', { login, room, version })
   function log(event, fields = {}) {
     const entry = { ts: new Date().toISOString(), event, ...fields };
@@ -78,7 +89,10 @@ export function createEventLog({ file, echo = true } = {}) {
     }
     if (line.length > MAX_LINE) line = `${line.slice(0, MAX_LINE - 20)}…","truncated":true}`;
 
-    recent.push(entry);
+    // The sequence number is attached to the in-memory copy only, never to the
+    // written line: it is a cursor for one running process, and a number that
+    // restarts at 1 on every boot would be a lie in a file that outlives them.
+    recent.push({ ...entry, seq: ++seq });
     if (recent.length > RECENT_MAX) recent.shift();
 
     if (echo) console.log(line);
@@ -98,8 +112,23 @@ export function createEventLog({ file, echo = true } = {}) {
     return recent.slice(Math.max(0, recent.length - n));
   }
 
-  return { log, tail, get file() { return stream && !broken ? file : null; } };
+  // Everything newer than a cursor the caller already holds. Returns null when
+  // the caller is too far behind for this to be an answer — the window has
+  // scrolled past their cursor and handing back what is left would silently
+  // lose the lines in between. The caller is expected to fall back to tail().
+  //
+  // `after` of 0 (or anything below the oldest line held) is that same case
+  // once the window has filled, which is why a first load must use tail().
+  function since(after) {
+    if (!recent.length) return [];
+    if (after >= seq) return [];
+    if (after < recent[0].seq - 1) return null;
+    return recent.filter((e) => e.seq > after);
+  }
+
+  return { log, tail, since, get seq() { return seq; },
+    get file() { return stream && !broken ? file : null; } };
 }
 
 // Used wherever no log was passed in, so call sites never need a null check.
-export const nullEventLog = { log() {}, tail() { return []; }, file: null };
+export const nullEventLog = { log() {}, tail() { return []; }, since() { return []; }, seq: 0, file: null };

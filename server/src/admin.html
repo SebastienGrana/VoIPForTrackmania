@@ -648,7 +648,13 @@ function renderSpark(history) {
 }
 
 // --- filtre du journal -------------------------------------------------------
-let allEvents = [];
+// The window is deliberately long: on the night the question is "what happened
+// twenty minutes ago", and a few minutes of history makes the filter useless.
+// It is affordable because the poll asks the relay for new lines only — see
+// eventCursor below — so the size costs one fetch on load, not one every 2 s.
+const EVENTS_MAX = 1000;
+let allEvents = [];   // newest first, same order as the relay sends
+let eventCursor = null; // last seq seen; null asks for a full window
 $('filter').addEventListener('input', renderEvents);
 
 function renderEvents() {
@@ -658,7 +664,8 @@ function renderEvents() {
     : allEvents;
   $('filterCount').textContent = q ? shown.length + '/' + allEvents.length : '';
   $('events').innerHTML = shown.map((e) => {
-    const { ts, event, ...rest } = e;
+    // `seq` is the cursor the poll uses, not something to show on the line.
+    const { ts, event, seq, ...rest } = e;
     const cls = event.includes('Failed') || event.includes('Rejected') || event === 'admin.denied'
       ? 'bad' : (event === 'report' ? 'warn' : '');
     const fields = Object.entries(rest).map(([k, v]) => k + '=' + esc(v)).join(' ');
@@ -671,7 +678,8 @@ function renderEvents() {
 async function poll() {
   let data;
   try {
-    const res = await fetch('/admin/state.json', { cache: 'no-store' });
+    const url = '/admin/state.json' + (eventCursor === null ? '' : '?sinceEvent=' + eventCursor);
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     data = await res.json();
   } catch (err) {
@@ -748,7 +756,12 @@ async function poll() {
     : '<div class="empty">aucun signalement</div>';
   noteReports(data.reports);
 
-  allEvents = data.events;
+  // Full window on the first poll, and again whenever the relay says our cursor
+  // fell out of its ring (a restart, or a burst longer than the window). The
+  // rest of the time this is a handful of lines, or none at all.
+  if (data.eventsFull) allEvents = data.events;
+  else if (data.events.length) allEvents = data.events.concat(allEvents).slice(0, EVENTS_MAX);
+  if (typeof data.eventSeq === 'number') eventCursor = data.eventSeq;
   renderEvents();
 }
 

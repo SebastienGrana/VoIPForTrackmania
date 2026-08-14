@@ -766,6 +766,9 @@ export function createRelay({
   // them without reading the file.
   const reports = [];
   const REPORTS_MAX = 100;
+  // Matches the log's own in-memory ring: asking for more would just return
+  // everything it has, and the page is built to hold this much.
+  const EVENTS_WINDOW = 1000;
   const reportLimiter = createRateLimiter(reportRateLimit); // per IP
 
   app.post('/report', express.json({ limit: '16kb' }), (req, res) => {
@@ -860,6 +863,26 @@ export function createRelay({
       return false;
     }
     return true;
+  }
+
+  // The admin page keeps a window of the log client-side so its filter can
+  // reach back over an evening rather than over the last few minutes. Shipping
+  // that whole window every two seconds would be tens of megabytes an hour to a
+  // phone on mobile data, so the page sends back the cursor it already holds
+  // and gets only what is new.
+  //
+  // `eventsFull` tells the page whether to replace its window or append to it.
+  // A cursor the ring has already scrolled past is answered with a full window,
+  // never with the remaining tail: quietly dropping the lines in between would
+  // leave a hole exactly where something went wrong.
+  function eventsPayload(req) {
+    const raw = Number(req.query.sinceEvent);
+    const after = Number.isSafeInteger(raw) && raw >= 0 ? raw : null;
+    const delta = after === null ? null : eventLog.since(after);
+    if (delta === null) {
+      return { events: eventLog.tail(EVENTS_WINDOW).reverse(), eventSeq: eventLog.seq, eventsFull: true };
+    }
+    return { events: delta.reverse(), eventSeq: eventLog.seq, eventsFull: false };
   }
 
   app.get('/admin/state.json', async (req, res) => {
@@ -968,7 +991,7 @@ export function createRelay({
       plugins,
       browsers,
       reports: reports.slice(-20).reverse(),
-      events: eventLog.tail(120).reverse(),
+      ...eventsPayload(req),
     });
   });
 
