@@ -5,11 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>OnZVoIP — admin</title>
+<script>
+  // Before the first paint, or a dark flash lands on a page somebody chose to
+  // keep light — and this one is stared at for a whole evening.
+  try {
+    const saved = localStorage.getItem('onz.theme');
+    const theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch { document.documentElement.setAttribute('data-theme', 'dark'); }
+</script>
 <style>
-  :root {
+  /* Every colour goes through a variable, including the banners: a hardcoded
+     #3b1f1f is invisible red-on-red the moment the page turns light. */
+  :root, :root[data-theme="dark"] {
     --bg: #14161a; --panel: #1c1f25; --line: #2b3038;
     --fg: #e6e8ec; --dim: #8b93a1; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --banner-bg: #3b1f1f; --banner-fg: #ffd7d7;
+    --warnbanner-bg: #3a2f10; --warnbanner-fg: #ffe7b3; --warnbanner-who: #fff;
+    --spark-area: rgba(74, 222, 128, .18);
+    --priv-fg: #ffb454; --priv-line: #6b4a12;
     font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6f8; --panel: #ffffff; --line: #d7dce3;
+    --fg: #1b1f26; --dim: #5d6673; --ok: #15803d; --warn: #a16207; --bad: #b91c1c;
+    --banner-bg: #fdeaea; --banner-fg: #7f1d1d;
+    --warnbanner-bg: #fdf4dd; --warnbanner-fg: #78350f; --warnbanner-who: #3b2606;
+    --spark-area: rgba(21, 128, 61, .14);
+    --priv-fg: #9a5b00; --priv-line: #e2c48a;
   }
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font-size: 13px; }
@@ -19,6 +42,8 @@
   header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
   .sub { color: var(--dim); font-size: 12px; }
   #stale { color: var(--bad); font-weight: 700; }
+  /* Pushed to the right end of the header: they are settings, not readings. */
+  .prefs { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; }
@@ -49,11 +74,11 @@
   /* Estompé plutôt que masqué : un signalement traité reste consultable, mais
      l'œil doit tomber d'abord sur ceux dont personne ne s'est occupé. */
   .report.done { opacity: .45; }
-  .banner { background: #3b1f1f; border: 1px solid var(--bad); color: #ffd7d7;
+  .banner { background: var(--banner-bg); border: 1px solid var(--bad); color: var(--banner-fg);
             border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
-  .warnbanner { background: #3a2f10; border-color: var(--warn); color: #ffe7b3; }
+  .warnbanner { background: var(--warnbanner-bg); border-color: var(--warn); color: var(--warnbanner-fg); }
   .warnbanner b { display: inline-block; margin-right: 6px; }
-  .warnbanner .who { font-weight: 700; color: #fff; }
+  .warnbanner .who { font-weight: 700; color: var(--warnbanner-who); }
   .warnbanner div + div { margin-top: 4px; }
 
   .rooms { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
@@ -64,7 +89,7 @@
   .room .ghost { color: var(--bad); }
 
   #spark { width: 100%; height: 90px; display: block; }
-  #spark .area { fill: rgba(74, 222, 128, .18); }
+  #spark .area { fill: var(--spark-area); }
   #spark .line { fill: none; stroke: var(--ok); stroke-width: 2; }
   #spark .line2 { fill: none; stroke: var(--dim); stroke-width: 1; stroke-dasharray: 3 3; }
 
@@ -105,7 +130,7 @@
   .lnk-u code { font-size: 12px; color: var(--dim); }
   .lnk .note { margin: 0; }
   .tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
-  .tag.priv { color: #ffb454; border-color: #6b4a12; }
+  .tag.priv { color: var(--priv-fg); border-color: var(--priv-line); }
   button.copy { font-size: 11px; padding: 1px 8px; }
   .team { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid var(--line); }
   .team:last-child { border-bottom: 0; }
@@ -117,14 +142,15 @@
 <body>
 <header>
   <h1>OnZVoIP — admin</h1>
-  <span class="sub" id="meta">chargement…</span>
+  <span class="sub" id="meta" data-i18n="loading">chargement…</span>
   <span id="stale"></span>
+  <span class="prefs">
+    <button class="act" id="langBtn" type="button"></button>
+    <button class="act" id="themeBtn" type="button"></button>
+  </span>
 </header>
 
-<div id="debugBanner" class="banner" hidden>
-  <b>DEBUG_MODE est actif.</b> N'importe qui peut obtenir un jeton pour n'importe quel salon
-  via <code>/token?identity=…&amp;room=…</code>, sans authentification. À couper avant d'ouvrir la soirée au public.
-</div>
+<div id="debugBanner" class="banner" hidden data-i18n-html="debugBanner"></div>
 
 <div class="cards" id="cards"></div>
 
@@ -133,60 +159,60 @@
 <div id="lkBanner" class="banner" hidden></div>
 
 <nav id="tabs" role="tablist">
-  <button data-tab="live" role="tab" aria-selected="true">Monitoring</button>
-  <button data-tab="rooms" role="tab" aria-selected="false">Salons</button>
-  <button data-tab="reports" role="tab" aria-selected="false">Signalements <span class="badge" id="tabReports"></span></button>
-  <button data-tab="log" role="tab" aria-selected="false">Journal</button>
-  <button data-tab="bots" role="tab" aria-selected="false">Bots</button>
-  <button data-tab="teams" role="tab" aria-selected="false">Équipes</button>
-  <button data-tab="links" role="tab" aria-selected="false">Liens</button>
-  <button data-tab="actions" role="tab" aria-selected="false">Actions</button>
+  <button data-tab="live" role="tab" aria-selected="true" data-i18n="tab.live">Monitoring</button>
+  <button data-tab="rooms" role="tab" aria-selected="false" data-i18n="tab.rooms">Salons</button>
+  <button data-tab="reports" role="tab" aria-selected="false"><span data-i18n="tab.reports">Signalements</span> <span class="badge" id="tabReports"></span></button>
+  <button data-tab="log" role="tab" aria-selected="false" data-i18n="tab.log">Journal</button>
+  <button data-tab="bots" role="tab" aria-selected="false" data-i18n="tab.bots">Bots</button>
+  <button data-tab="teams" role="tab" aria-selected="false" data-i18n="tab.teams">Équipes</button>
+  <button data-tab="links" role="tab" aria-selected="false" data-i18n="tab.links">Liens</button>
+  <button data-tab="actions" role="tab" aria-selected="false" data-i18n="tab.actions">Actions</button>
 </nav>
 
 <div class="panel" id="tab-live">
   <section class="wide">
-    <h2>10 dernières minutes</h2>
+    <h2 data-i18n="h.last10">10 dernières minutes</h2>
     <div class="scroll"><svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none" role="img"></svg></div>
     <div class="sub" id="sparkLegend"></div>
   </section>
 
   <section>
-    <h2>Plugins connectés (jeu)</h2>
+    <h2 data-i18n="h.plugins">Plugins connectés (jeu)</h2>
     <div class="scroll"><table id="plugins"></table></div>
   </section>
 
   <section>
-    <h2>Navigateurs connectés (voix)</h2>
+    <h2 data-i18n="h.browsers">Navigateurs connectés (voix)</h2>
     <div class="scroll"><table id="browsers"></table></div>
   </section>
 
   <section>
-    <h2>Reconnexions (10 min)</h2>
+    <h2 data-i18n="h.reconnects">Reconnexions (10 min)</h2>
     <div class="scroll"><table id="reconnects"></table></div>
   </section>
 </div>
 
 <div class="panel" id="tab-rooms" hidden>
   <section class="wide">
-    <h2>Salons</h2>
+    <h2 data-i18n="h.rooms">Salons</h2>
     <div id="rooms"></div>
   </section>
 </div>
 
 <div class="panel" id="tab-reports" hidden>
   <section class="wide">
-    <h2>Problèmes signalés</h2>
+    <h2 data-i18n="h.reports">Problèmes signalés</h2>
     <div id="reports"></div>
   </section>
 </div>
 
 <div class="panel" id="tab-log" hidden>
   <section class="wide">
-    <h2>Événements (plus récent en haut)</h2>
+    <h2 data-i18n="h.events">Événements (plus récent en haut)</h2>
     <div class="tools">
-      <input id="filter" type="search" placeholder="filtrer (login, événement, salon…)" autocomplete="off">
+      <input id="filter" type="search" data-i18n-ph="filterPlaceholder" autocomplete="off">
       <span class="sub" id="filterCount"></span>
-      <a href="/admin/events.log" download>⬇ journal complet</a>
+      <a href="/admin/events.log" download data-i18n="fullLog">⬇ journal complet</a>
     </div>
     <div id="events"></div>
   </section>
@@ -194,45 +220,37 @@
 
 <div class="panel" id="tab-bots" hidden>
   <section class="wide">
-    <h2>Bots de test</h2>
-    <p class="note">Chaque bot ouvre une vraie connexion plugin sur le port d'ingestion et tourne en
-      cercle. Ça teste le relais, la diffusion des positions et le radar — pas la voix : un bot n'a
-      pas d'onglet, donc il reste « sans onglet » et n'entre dans aucun salon LiveKit.</p>
-    <div id="botsUI" class="empty">indisponible (ENABLE_TEST_BOTS n'est pas activé)</div>
+    <h2 data-i18n="h.bots">Bots de test</h2>
+    <p class="note" data-i18n="note.bots"></p>
+    <div id="botsUI" class="empty"></div>
   </section>
 </div>
 
 <div class="panel" id="tab-teams" hidden>
   <section class="wide">
-    <h2>Équipes</h2>
-    <p class="note">Chaque équipe a une couleur, reprise sur le radar de tous les joueurs. Avec le
-      vocal d'équipe actif, ses membres s'entendent partout sur la carte, en plus des voix de
-      proximité normales. Les équipes vivent en mémoire : un redémarrage du relais les efface.</p>
-    <div id="teamsUI" class="empty">indisponible (ADMIN_ACTIONS n'est pas activé)</div>
+    <h2 data-i18n="h.teams">Équipes</h2>
+    <p class="note" data-i18n="note.teams"></p>
+    <div id="teamsUI" class="empty"></div>
   </section>
 </div>
 
 <div class="panel" id="tab-links" hidden>
   <section class="wide">
-    <h2>Liens de l'application</h2>
-    <p class="note">Toutes les adresses du déploiement en cours, construites depuis celle de cette page.
-      Les liens marqués « privé » demandent le mot de passe admin : ne les collez pas sur Discord.</p>
+    <h2 data-i18n="h.links">Liens de l'application</h2>
+    <p class="note" data-i18n="note.links"></p>
     <div id="links"></div>
   </section>
 </div>
 
 <div class="panel" id="tab-actions" hidden>
   <section class="wide">
-    <h2>Actions</h2>
-    <p class="note">Cette page est en lecture seule par défaut. Ces boutons changent l'état du relais
-      en direct et sont tous tracés dans le journal.</p>
-    <div id="actionsUI" class="empty">indisponible (ADMIN_ACTIONS n'est pas activé)</div>
+    <h2 data-i18n="h.actions">Actions</h2>
+    <p class="note" data-i18n="note.actions"></p>
+    <div id="actionsUI" class="empty"></div>
   </section>
   <section class="wide">
-    <h2>Joueurs bloqués</h2>
-    <p class="note">Un joueur expulsé est bloqué le temps choisi : ni le jeu, ni l'onglet, ni le lien
-      vocal ne le laissent revenir avant la fin. Les blocages vivent en mémoire — un redémarrage du
-      relais les efface tous.</p>
+    <h2 data-i18n="h.blocked">Joueurs bloqués</h2>
+    <p class="note" data-i18n="note.blocked"></p>
     <div id="blockedUI"></div>
   </section>
 </div>
@@ -246,6 +264,312 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
 ));
+
+// --- langue ------------------------------------------------------------------
+// The page is shared: a co-admin who does not read French should not have to
+// guess which button ejects someone. Both dictionaries carry the same keys, and
+// anything taking a number or a name is a function rather than a template with
+// holes punched in it — word order is not the same in the two languages.
+const STRINGS = {
+  fr: {
+    loading: 'chargement…',
+    langBtn: 'EN', langTitle: 'Switch to English',
+    debugBanner: "<b>DEBUG_MODE est actif.</b> N'importe qui peut obtenir un jeton pour n'importe quel salon "
+      + 'via <code>/token?identity=…&amp;room=…</code>, sans authentification. À couper avant d\'ouvrir la soirée au public.',
+    'tab.live': 'Monitoring', 'tab.rooms': 'Salons', 'tab.reports': 'Signalements', 'tab.log': 'Journal',
+    'tab.bots': 'Bots', 'tab.teams': 'Équipes', 'tab.links': 'Liens', 'tab.actions': 'Actions',
+    'h.last10': '10 dernières minutes', 'h.plugins': 'Plugins connectés (jeu)',
+    'h.browsers': 'Navigateurs connectés (voix)', 'h.reconnects': 'Reconnexions (10 min)',
+    'h.rooms': 'Salons', 'h.reports': 'Problèmes signalés', 'h.events': 'Événements (plus récent en haut)',
+    'h.bots': 'Bots de test', 'h.teams': 'Équipes', 'h.links': "Liens de l'application",
+    'h.actions': 'Actions', 'h.blocked': 'Joueurs bloqués',
+    'note.bots': "Chaque bot ouvre une vraie connexion plugin sur le port d'ingestion et tourne en cercle. "
+      + "Ça teste le relais, la diffusion des positions et le radar — pas la voix : un bot n'a pas d'onglet, "
+      + "donc il reste « sans onglet » et n'entre dans aucun salon LiveKit.",
+    'note.teams': 'Chaque équipe a une couleur, reprise sur le radar de tous les joueurs. Avec le vocal '
+      + "d'équipe actif, ses membres s'entendent partout sur la carte, en plus des voix de proximité "
+      + 'normales. Les équipes vivent en mémoire : un redémarrage du relais les efface.',
+    'note.links': 'Toutes les adresses du déploiement en cours, construites depuis celle de cette page. '
+      + 'Les liens marqués « privé » demandent le mot de passe admin : ne les collez pas sur Discord.',
+    'note.actions': "Cette page est en lecture seule par défaut. Ces boutons changent l'état du relais "
+      + 'en direct et sont tous tracés dans le journal.',
+    'note.blocked': "Un joueur expulsé est bloqué le temps choisi : ni le jeu, ni l'onglet, ni le lien "
+      + 'vocal ne le laissent revenir avant la fin. Les blocages vivent en mémoire — un redémarrage du '
+      + 'relais les efface tous.',
+    filterPlaceholder: 'filtrer (login, événement, salon…)',
+    fullLog: '⬇ journal complet',
+
+    nobody: 'personne',
+    noReports: 'aucun signalement',
+    anonymous: 'anonyme',
+    noVersion: 'version ?',
+    noRoom: 'hors salon',
+    handled: 'traité', handledDone: '✓ traité',
+    handledHint: 'rouvrir ce signalement',
+    markHandled: 'marquer comme traité',
+
+    actionRefused: (msg) => '⚠ action refusée (' + msg + ')',
+    relayUnreachable: (msg) => '⚠ relais injoignable (' + msg + ')',
+    frozen: (s) => '⚠ données figées depuis ' + s + 's',
+    upFor: (age) => ' · relais up depuis ' + age,
+
+    debugOffConfirm: 'Couper le mode debug ? Les onglets déjà connectés gardent leur voix.',
+    debugOnConfirm: "Activer le mode debug ? N'importe qui pourra rejoindre n'importe quel salon sans preuve.",
+    secretPrompt: 'Secret du port 8081 — 8 à 128 caractères, sans espace.\n'
+      + 'Les plugins déjà connectés ne sont pas coupés ; les nouveaux devront le saisir.',
+    secretRefused: '⚠ secret refusé (8 à 128 caractères imprimables, sans espace)',
+    secretClearConfirm: "Couper le secret ? Le port 8081 réaccepte alors n'importe quelle connexion.",
+    teamNamePrompt: "Nom de l'équipe ?",
+    teamAutoConfirm: 'Refaire toutes les équipes ? La répartition actuelle est perdue.',
+    teamClearConfirm: 'Supprimer toutes les équipes ?',
+
+    actionsOff: "indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)",
+    actionsOffShort: "indisponible (ADMIN_ACTIONS n'est pas activé)",
+    botsOff: "indisponible (ENABLE_TEST_BOTS n'est pas activé au démarrage du relais)",
+
+    debugLabel: 'Mode debug', debugOnBtn: 'ACTIF — couper', debugOffBtn: 'coupé — activer',
+    debugSub: "jeton pour n'importe quel salon sans preuve : à couper en public",
+    autoKickLabel: 'Expulsion auto des fantômes', on: 'activée', off: 'désactivée',
+    autoKickSub: 'retire de LiveKit les identités absentes du relais sur deux passages (40 s)',
+    secretLabel: 'Secret du port 8081', secretSet: 'actif — changer', secretNone: 'aucun — définir',
+    secretClear: 'couper',
+    secretSub: 'exigé des <b>nouvelles</b> connexions plugin ; celles déjà en place ne sont pas coupées. '
+      + 'Chaque joueur doit le saisir dans Openplanet → Settings → OnZVoIP → Relay secret. '
+      + "Perdu au redémarrage du relais : c'est <code>TCP_SHARED_SECRET</code> du <code>.env</code> qui reprend la main.",
+    botsActive: 'Bots actifs', botsMax: (n) => '/ ' + n + ' max',
+    botsStop: 'tout arrêter', botsCount: (n) => n + (n > 1 ? ' bots' : ' bot'),
+
+    teamAuto: 'Répartition auto', teamCount: (n) => n + ' équipes',
+    teamAutoSub: 'refait les équipes à partir des joueurs plugin connectés',
+    teamManual: 'Manuel', teamAdd: '+ équipe', teamClear: 'tout effacer',
+    teamNone: 'sans équipe', teamVoiceOn: 'vocal activé', teamVoiceOff: 'vocal coupé',
+    teamRemove: 'supprimer',
+    teamsEmpty: 'aucune équipe — le radar et la voix se comportent normalement',
+    noPlayers: 'aucun joueur connecté', playersLabel: 'Joueurs',
+
+    private: 'privé', public: 'public', copy: 'copier', copied: 'copié ✓',
+    'link.client': 'Client vocal',
+    'link.clientNote': "Ce que les joueurs ouvrent. Le plugin y ajoute son ?t=… tout seul.",
+    'link.check': 'Page de test joueur',
+    'link.checkNote': 'Auto-diagnostic (anglais par défaut, français si le navigateur le demande). '
+      + 'Le lien à donner quand « ça marche pas ».',
+    'link.health': 'Santé du relais',
+    'link.healthNote': 'JSON court : le relais répond, et voit-il LiveKit.',
+    'link.admin': 'Admin (cette page)', 'link.adminNote': 'Mot de passe Basic.',
+    'link.log': 'Journal complet', 'link.logNote': "Téléchargement brut du fichier d'événements.",
+    'link.state': 'État JSON', 'link.stateNote': 'Exactement ce que cette page relit toutes les 5 s.',
+    'link.bot': 'Bot de calibration',
+    'link.botNote': "Publie une piste audio de test dans le salon. Actif seulement parce que "
+      + 'ENABLE_CALIBRATION_BOT est à true.',
+
+    eject: 'expulser',
+    ejectPrompt: (login) => 'Expulser ' + login + ' — bloquer combien de minutes ?\n'
+      + '0 = expulser sans bloquer (il peut revenir tout de suite)',
+    badDuration: 'Durée invalide.',
+    kickConfirm: (identity, room) => 'Expulser ' + identity + ' du salon ' + room + ' ?',
+    minutesLeft: (min) => 'encore ' + min + ' min',
+    unblock: 'débloquer', nobodyBlocked: "personne n'est bloqué",
+
+    noRooms: 'aucun salon actif',
+    noTab: '(sans onglet)', noGame: '(sans jeu)',
+    nobodyRelay: 'personne côté relais',
+    livekitUnknown: 'LiveKit ?', livekitCount: (n) => 'LiveKit : ' + n,
+    ghosts: 'fantômes LiveKit : ',
+    missing: 'onglet ouvert mais absent de LiveKit : ',
+    playerCount: (n) => n + ' joueur(s)',
+
+    sparkThin: 'pas encore assez de points (1 point / 10 s)',
+    sparkLegend: (max, span) => '<span class="ok">—</span> en voix · '
+      + '<span class="dim">- -</span> plugins · max ' + max + ' · ' + span + ' min',
+
+    noMatch: 'aucune ligne ne correspond', nothingYet: 'rien encore',
+
+    'card.paired': 'En voix (jeu + onglet)', 'card.pluginOnly': 'Plugin sans onglet',
+    'card.browserOnly': 'Onglet sans jeu', 'card.plugins': 'Plugins',
+    'card.browsers': 'Navigateurs', 'card.nonces': 'Liens en attente',
+    unpairedNoTab: 'En jeu, sans onglet voix :', unpairedNoGame: 'Onglet ouvert, pas en jeu :',
+    'col.login': 'Login', 'col.version': 'Version', 'col.room': 'Salon', 'col.position': 'Position',
+    'col.connected': 'Connecté', 'col.game': 'Jeu', 'col.tab': 'Onglet', 'col.total': 'Total',
+    livekitDown: '<b>LiveKit injoignable</b> — les salons et les fantômes ne sont pas vérifiables. ',
+  },
+  en: {
+    loading: 'loading…',
+    langBtn: 'FR', langTitle: 'Passer en français',
+    debugBanner: '<b>DEBUG_MODE is on.</b> Anyone can get a token for any room via '
+      + '<code>/token?identity=…&amp;room=…</code>, with no authentication. Turn it off before opening the evening to the public.',
+    'tab.live': 'Monitoring', 'tab.rooms': 'Rooms', 'tab.reports': 'Reports', 'tab.log': 'Log',
+    'tab.bots': 'Bots', 'tab.teams': 'Teams', 'tab.links': 'Links', 'tab.actions': 'Actions',
+    'h.last10': 'Last 10 minutes', 'h.plugins': 'Connected plugins (game)',
+    'h.browsers': 'Connected browsers (voice)', 'h.reconnects': 'Reconnects (10 min)',
+    'h.rooms': 'Rooms', 'h.reports': 'Reported problems', 'h.events': 'Events (newest first)',
+    'h.bots': 'Test bots', 'h.teams': 'Teams', 'h.links': 'Application links',
+    'h.actions': 'Actions', 'h.blocked': 'Blocked players',
+    'note.bots': 'Each bot opens a real plugin connection on the ingest port and drives in a circle. '
+      + 'That exercises the relay, the position fan-out and the radar — not the voice: a bot has no tab, '
+      + 'so it stays "no tab" and never joins a LiveKit room.',
+    'note.teams': 'Each team has a colour, mirrored on every player\'s radar. With team voice on, its '
+      + 'members hear each other anywhere on the map, on top of the normal proximity voices. Teams live '
+      + 'in memory: a relay restart wipes them.',
+    'note.links': 'Every address of the current deployment, built from this page\'s own. Links tagged '
+      + '"private" ask for the admin password: do not paste them on Discord.',
+    'note.actions': 'This page is read-only by default. These buttons change the live state of the relay '
+      + 'and every one of them is written to the log.',
+    'note.blocked': 'An ejected player is blocked for the chosen time: neither the game, nor the tab, nor '
+      + 'the voice link lets them back in before it expires. Blocks live in memory — a relay restart '
+      + 'clears them all.',
+    filterPlaceholder: 'filter (login, event, room…)',
+    fullLog: '⬇ full log',
+
+    nobody: 'nobody',
+    noReports: 'no reports',
+    anonymous: 'anonymous',
+    noVersion: 'version ?',
+    noRoom: 'no room',
+    handled: 'handled', handledDone: '✓ handled',
+    handledHint: 'reopen this report',
+    markHandled: 'mark as handled',
+
+    actionRefused: (msg) => '⚠ action refused (' + msg + ')',
+    relayUnreachable: (msg) => '⚠ relay unreachable (' + msg + ')',
+    frozen: (s) => '⚠ data frozen for ' + s + 's',
+    upFor: (age) => ' · relay up for ' + age,
+
+    debugOffConfirm: 'Turn debug mode off? Tabs already connected keep their voice.',
+    debugOnConfirm: 'Turn debug mode on? Anyone will be able to join any room with no proof.',
+    secretPrompt: 'Port 8081 secret — 8 to 128 characters, no spaces.\n'
+      + 'Plugins already connected are not cut; new ones will have to enter it.',
+    secretRefused: '⚠ secret refused (8 to 128 printable characters, no spaces)',
+    secretClearConfirm: 'Clear the secret? Port 8081 then accepts any connection again.',
+    teamNamePrompt: 'Team name?',
+    teamAutoConfirm: 'Rebuild every team? The current split is lost.',
+    teamClearConfirm: 'Delete every team?',
+
+    actionsOff: 'unavailable (ADMIN_ACTIONS was not enabled when the relay booted)',
+    actionsOffShort: 'unavailable (ADMIN_ACTIONS is not enabled)',
+    botsOff: 'unavailable (ENABLE_TEST_BOTS was not enabled when the relay booted)',
+
+    debugLabel: 'Debug mode', debugOnBtn: 'ON — turn off', debugOffBtn: 'off — turn on',
+    debugSub: 'a token for any room with no proof: turn it off in public',
+    autoKickLabel: 'Auto-kick ghosts', on: 'on', off: 'off',
+    autoKickSub: 'removes from LiveKit the identities the relay has not seen for two passes (40 s)',
+    secretLabel: 'Port 8081 secret', secretSet: 'set — change', secretNone: 'none — set',
+    secretClear: 'clear',
+    secretSub: 'required from <b>new</b> plugin connections; the ones already up are not cut. '
+      + 'Each player enters it in Openplanet → Settings → OnZVoIP → Relay secret. '
+      + 'Lost on a relay restart: <code>TCP_SHARED_SECRET</code> from <code>.env</code> takes over again.',
+    botsActive: 'Active bots', botsMax: (n) => '/ ' + n + ' max',
+    botsStop: 'stop all', botsCount: (n) => n + (n > 1 ? ' bots' : ' bot'),
+
+    teamAuto: 'Auto split', teamCount: (n) => n + ' teams',
+    teamAutoSub: 'rebuilds the teams from the connected plugin players',
+    teamManual: 'Manual', teamAdd: '+ team', teamClear: 'clear all',
+    teamNone: 'no team', teamVoiceOn: 'voice on', teamVoiceOff: 'voice off',
+    teamRemove: 'remove',
+    teamsEmpty: 'no team — radar and voice behave normally',
+    noPlayers: 'no player connected', playersLabel: 'Players',
+
+    private: 'private', public: 'public', copy: 'copy', copied: 'copied ✓',
+    'link.client': 'Voice client',
+    'link.clientNote': 'What the players open. The plugin appends its own ?t=… to it.',
+    'link.check': 'Player test page',
+    'link.checkNote': 'Self-diagnosis (English by default, French if the browser asks for it). '
+      + 'The link to hand out when "it does not work".',
+    'link.health': 'Relay health',
+    'link.healthNote': 'Short JSON: is the relay answering, and does it see LiveKit.',
+    'link.admin': 'Admin (this page)', 'link.adminNote': 'Basic auth password.',
+    'link.log': 'Full log', 'link.logNote': 'Raw download of the event file.',
+    'link.state': 'JSON state', 'link.stateNote': 'Exactly what this page re-reads every 5 s.',
+    'link.bot': 'Calibration bot',
+    'link.botNote': 'Publishes a test audio track into the room. Present only because '
+      + 'ENABLE_CALIBRATION_BOT is true.',
+
+    eject: 'eject',
+    ejectPrompt: (login) => 'Eject ' + login + ' — block for how many minutes?\n'
+      + '0 = eject without blocking (they can come straight back)',
+    badDuration: 'Invalid duration.',
+    kickConfirm: (identity, room) => 'Eject ' + identity + ' from room ' + room + '?',
+    minutesLeft: (min) => min + ' min left',
+    unblock: 'unblock', nobodyBlocked: 'nobody is blocked',
+
+    noRooms: 'no active room',
+    noTab: '(no tab)', noGame: '(no game)',
+    nobodyRelay: 'nobody on the relay side',
+    livekitUnknown: 'LiveKit ?', livekitCount: (n) => 'LiveKit: ' + n,
+    ghosts: 'LiveKit ghosts: ',
+    missing: 'tab open but missing from LiveKit: ',
+    playerCount: (n) => n + ' player(s)',
+
+    sparkThin: 'not enough points yet (1 point / 10 s)',
+    sparkLegend: (max, span) => '<span class="ok">—</span> in voice · '
+      + '<span class="dim">- -</span> plugins · max ' + max + ' · ' + span + ' min',
+
+    noMatch: 'no line matches', nothingYet: 'nothing yet',
+
+    'card.paired': 'In voice (game + tab)', 'card.pluginOnly': 'Plugin without tab',
+    'card.browserOnly': 'Tab without game', 'card.plugins': 'Plugins',
+    'card.browsers': 'Browsers', 'card.nonces': 'Pending links',
+    unpairedNoTab: 'In game, no voice tab:', unpairedNoGame: 'Tab open, not in game:',
+    'col.login': 'Login', 'col.version': 'Version', 'col.room': 'Room', 'col.position': 'Position',
+    'col.connected': 'Connected', 'col.game': 'Game', 'col.tab': 'Tab', 'col.total': 'Total',
+    livekitDown: '<b>LiveKit unreachable</b> — rooms and ghosts cannot be checked. ',
+  },
+};
+
+let lang = (() => {
+  try {
+    const saved = localStorage.getItem('onz.lang');
+    if (saved === 'fr' || saved === 'en') return saved;
+  } catch {}
+  return String(navigator.language || '').toLowerCase().startsWith('fr') ? 'fr' : 'en';
+})();
+
+// Falls back to French rather than to the key: a missing string should read as
+// an untranslated label, never as `h.blocked` on a page somebody is watching.
+const t = (key, ...args) => {
+  const v = STRINGS[lang][key] ?? STRINGS.fr[key] ?? key;
+  return typeof v === 'function' ? v(...args) : v;
+};
+const locale = () => (lang === 'fr' ? 'fr-FR' : 'en-GB');
+const time = (ts) => new Date(ts).toLocaleTimeString(locale());
+
+function applyStatic() {
+  document.documentElement.lang = lang;
+  for (const el of document.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+  for (const el of document.querySelectorAll('[data-i18n-html]')) el.innerHTML = t(el.dataset.i18nHtml);
+  for (const el of document.querySelectorAll('[data-i18n-ph]')) el.placeholder = t(el.dataset.i18nPh);
+  $('langBtn').textContent = t('langBtn');
+  $('langBtn').title = t('langTitle');
+}
+
+$('langBtn').addEventListener('click', () => {
+  lang = lang === 'fr' ? 'en' : 'fr';
+  try { localStorage.setItem('onz.lang', lang); } catch {}
+  applyStatic();
+  // The two memoised panels compare against their last *payload*, which has not
+  // changed just because the language did — clearing the keys is what makes the
+  // switch land on them too.
+  actionsDrawn = null;
+  teamsDrawn = null;
+  renderReports(lastCanAct);
+  renderEvents();
+  poll();
+});
+
+// --- thème -------------------------------------------------------------------
+// Dark by default because that is what a dashboard left open all evening should
+// be, light because a shared screen in a lit room is not that evening.
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  $('themeBtn').textContent = theme === 'dark' ? '☀' : '☾';
+  $('themeBtn').title = theme === 'dark' ? 'Light' : 'Dark';
+}
+$('themeBtn').addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('onz.theme', next); } catch {}
+  applyTheme(next);
+});
+applyTheme(document.documentElement.getAttribute('data-theme') || 'dark');
+applyStatic();
 
 // A player is only really "in" when the game half and the tab half are both
 // up, so the ages are graded rather than shown raw: green = sending, amber =
@@ -265,12 +589,13 @@ function fmtAge(seconds) {
 }
 
 function table(el, cols, rows, render) {
-  if (!rows.length) { el.innerHTML = '<tr><td class="empty">personne</td></tr>'; return; }
+  if (!rows.length) { el.innerHTML = '<tr><td class="empty">' + t('nobody') + '</td></tr>'; return; }
   el.innerHTML = '<tr>' + cols.map((c) => '<th>' + c + '</th>').join('') + '</tr>'
     + rows.map(render).join('');
 }
 
 let lastOk = 0;
+let lastCanAct = false; // last known ADMIN_ACTIONS state, so a language switch can redraw
 
 // --- alerte nouveau signalement ---------------------------------------------
 // A report is someone saying "I can't hear anyone" mid-event: it is the one
@@ -320,18 +645,19 @@ function paintPending() {
 // that two people are looking at. That is the « traité » button below.
 
 function renderReports(canAct) {
-  if (!allReports.length) { $('reports').innerHTML = '<div class="empty">aucun signalement</div>'; return; }
+  if (!allReports.length) { $('reports').innerHTML = '<div class="empty">' + t('noReports') + '</div>'; return; }
   $('reports').innerHTML = allReports.map((r) =>
     '<div class="report' + (r.handled ? ' done' : '') + '">'
-    + '<span class="dim">' + new Date(r.ts).toLocaleTimeString('fr-FR')
-    + '</span> <b>' + esc(r.login || 'anonyme') + '</b> '
-    + '<span class="dim">' + esc(r.version || 'version ?') + ' · ' + esc(r.room || 'hors salon')
+    + '<span class="dim">' + time(r.ts)
+    + '</span> <b>' + esc(r.login || t('anonymous')) + '</b> '
+    + '<span class="dim">' + esc(r.version || t('noVersion')) + ' · ' + esc(r.room || t('noRoom'))
     + (r.state ? ' · ' + esc(r.state) : '') + '</span> '
     + (canAct
       ? '<button class="act' + (r.handled ? ' on' : '') + '" data-report="' + r.id
-        + '" data-handled="' + (r.handled ? '0' : '1') + '">'
-        + (r.handled ? '✓ traité' : 'traité') + '</button>'
-      : (r.handled ? '<span class="ok">✓ traité</span>' : ''))
+        + '" data-handled="' + (r.handled ? '0' : '1') + '"'
+        + ' title="' + (r.handled ? t('handledHint') : t('markHandled')) + '">'
+        + (r.handled ? t('handledDone') : t('handled')) + '</button>'
+      : (r.handled ? '<span class="ok">' + t('handledDone') + '</span>' : ''))
     + '<p>' + esc(r.message) + '</p></div>').join('');
 }
 
@@ -345,7 +671,10 @@ document.addEventListener('click', (e) => {
 // Remembered across reloads: during an event this page gets refreshed a lot,
 // and landing back on Monitoring every time is exactly wrong when you were
 // watching the log.
-let currentTab = localStorage.getItem('onz.tab') || 'live';
+// Read defensively: a browser with storage blocked throws here, and an
+// exception at this point kills the rest of the script — the whole page.
+let currentTab = 'live';
+try { currentTab = localStorage.getItem('onz.tab') || 'live'; } catch {}
 function selectTab(name) {
   if (!$('tab-' + name)) name = 'live';
   currentTab = name;
@@ -377,7 +706,7 @@ async function act(path, body) {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     setTimeout(poll, 200);
   } catch (err) {
-    $('stale').textContent = '⚠ action refusée (' + err.message + ')';
+    $('stale').textContent = t('actionRefused', err.message);
   }
 }
 
@@ -391,46 +720,42 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   if (btn.dataset.act === 'debug') {
-    const msg = debugOn
-      ? 'Couper le mode debug ? Les onglets déjà connectés gardent leur voix.'
-      : "Activer le mode debug ? N'importe qui pourra rejoindre n'importe quel salon sans preuve.";
-    if (!confirm(msg)) return;
+    if (!confirm(debugOn ? t('debugOffConfirm') : t('debugOnConfirm'))) return;
     act('debug', { on: !debugOn });
   } else if (btn.dataset.act === 'secretSet') {
     // prompt() and not a form field on purpose: the value must not sit in the
     // DOM of a page that stays open on a stream or a shared screen all evening.
-    const s = prompt('Secret du port 8081 — 8 à 128 caractères, sans espace.\n'
-      + 'Les plugins déjà connectés ne sont pas coupés ; les nouveaux devront le saisir.', '');
+    const s = prompt(t('secretPrompt'), '');
     if (s === null) return;
     const v = s.trim();
     if (!/^[\x21-\x7e]{8,128}$/.test(v)) {
-      $('stale').textContent = '⚠ secret refusé (8 à 128 caractères imprimables, sans espace)';
+      $('stale').textContent = t('secretRefused');
       return;
     }
     act('secret', { secret: v });
   } else if (btn.dataset.act === 'secretClear') {
-    if (!confirm('Couper le secret ? Le port 8081 réaccepte alors n\'importe quelle connexion.')) return;
+    if (!confirm(t('secretClearConfirm'))) return;
     act('secret', { secret: '' });
   } else if (btn.dataset.act === 'autokick') {
     act('autokick', { on: !actionState.autoKick });
   } else if (btn.dataset.act === 'bots') {
     act('bots', { count: Number(btn.dataset.count) });
   } else if (btn.dataset.act === 'teamCreate') {
-    const name = prompt("Nom de l'équipe ?", '');
+    const name = prompt(t('teamNamePrompt'), '');
     if (name === null) return;
     act('teams', { op: 'create', name });
   } else if (btn.dataset.act === 'teamRemove') {
     act('teams', { op: 'remove', id: btn.dataset.id });
   } else if (btn.dataset.act === 'teamVoice') {
-    const team = teamsState.teams.find((t) => t.id === btn.dataset.id);
+    const team = teamsState.teams.find((t2) => t2.id === btn.dataset.id);
     act('teams', { op: 'voice', id: btn.dataset.id, on: !(team && team.voice) });
   } else if (btn.dataset.act === 'teamAuto') {
     // Destructive: it throws away the teams already on screen, which during an
     // event is somebody's careful hand-sorting.
-    if (teamsState.teams.length && !confirm('Refaire toutes les équipes ? La répartition actuelle est perdue.')) return;
+    if (teamsState.teams.length && !confirm(t('teamAutoConfirm'))) return;
     act('teams', { op: 'auto', count: Number(btn.dataset.count) });
   } else if (btn.dataset.act === 'teamClear') {
-    if (!confirm('Supprimer toutes les équipes ?')) return;
+    if (!confirm(t('teamClearConfirm'))) return;
     act('teams', { op: 'clear' });
   }
 });
@@ -443,7 +768,7 @@ function renderActions(a, debug) {
   actionsDrawn = key;
 
   if (!a.enabled) {
-    const off = "indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)";
+    const off = t('actionsOff');
     $('actionsUI').className = 'empty'; $('actionsUI').textContent = off;
     $('botsUI').className = 'empty'; $('botsUI').textContent = off;
     return;
@@ -451,35 +776,33 @@ function renderActions(a, debug) {
 
   $('actionsUI').className = '';
   $('actionsUI').innerHTML =
-    '<div class="row"><span class="lbl">Mode debug</span>'
+    '<div class="row"><span class="lbl">' + t('debugLabel') + '</span>'
     + '<button class="act danger ' + (debug ? 'on' : '') + '" data-act="debug">'
-    + (debug ? 'ACTIF — couper' : 'coupé — activer') + '</button>'
-    + "<span class=\"sub\">jeton pour n'importe quel salon sans preuve : à couper en public</span></div>"
-    + '<div class="row"><span class="lbl">Expulsion auto des fantômes</span>'
+    + (debug ? t('debugOnBtn') : t('debugOffBtn')) + '</button>'
+    + '<span class="sub">' + t('debugSub') + '</span></div>'
+    + '<div class="row"><span class="lbl">' + t('autoKickLabel') + '</span>'
     + '<button class="act ' + (a.autoKick ? 'on' : '') + '" data-act="autokick">'
-    + (a.autoKick ? 'activée' : 'désactivée') + '</button>'
-    + '<span class="sub">retire de LiveKit les identités absentes du relais sur deux passages (40 s)</span></div>'
-    + '<div class="row"><span class="lbl">Secret du port 8081</span>'
+    + (a.autoKick ? t('on') : t('off')) + '</button>'
+    + '<span class="sub">' + t('autoKickSub') + '</span></div>'
+    + '<div class="row"><span class="lbl">' + t('secretLabel') + '</span>'
     + '<button class="act ' + (a.tcpSecret ? 'on' : '') + '" data-act="secretSet">'
-    + (a.tcpSecret ? 'actif — changer' : 'aucun — définir') + '</button>'
-    + (a.tcpSecret ? '<button class="act danger" data-act="secretClear">couper</button>' : '')
-    + '<span class="sub">exigé des <b>nouvelles</b> connexions plugin ; celles déjà en place ne sont pas coupées. '
-    + 'Chaque joueur doit le saisir dans Openplanet → Settings → OnZVoIP → Relay secret. '
-    + 'Perdu au redémarrage du relais : c\'est <code>TCP_SHARED_SECRET</code> du <code>.env</code> qui reprend la main.</span></div>';
+    + (a.tcpSecret ? t('secretSet') : t('secretNone')) + '</button>'
+    + (a.tcpSecret ? '<button class="act danger" data-act="secretClear">' + t('secretClear') + '</button>' : '')
+    + '<span class="sub">' + t('secretSub') + '</span></div>';
 
   if (!a.testBots) {
     $('botsUI').className = 'empty';
-    $('botsUI').textContent = "indisponible (ENABLE_TEST_BOTS n'est pas activé au démarrage du relais)";
+    $('botsUI').textContent = t('botsOff');
     return;
   }
   $('botsUI').className = '';
   const steps = [...new Set([0, 1, 5, 10, 20, a.botMax])].filter((n) => n <= a.botMax);
   $('botsUI').innerHTML =
-    '<div class="row"><span class="lbl">Bots actifs</span><b>' + a.bots + '</b>'
-    + '<span class="sub">/ ' + a.botMax + ' max</span></div>'
+    '<div class="row"><span class="lbl">' + t('botsActive') + '</span><b>' + a.bots + '</b>'
+    + '<span class="sub">' + t('botsMax', a.botMax) + '</span></div>'
     + '<div class="row">' + steps.map((n) =>
         '<button class="act ' + (n === a.bots ? 'on' : '') + '" data-act="bots" data-count="' + n + '">'
-        + (n === 0 ? 'tout arrêter' : n + ' bots') + '</button>').join('')
+        + (n === 0 ? t('botsStop') : t('botsCount', n)) + '</button>').join('')
     + '<button class="act" data-act="bots" data-count="' + Math.min(a.botMax, a.bots + 1) + '">+1</button>'
     + '<button class="act" data-act="bots" data-count="' + Math.max(0, a.bots - 1) + '">−1</button></div>';
 }
@@ -510,7 +833,7 @@ function renderTeams(data) {
 
   if (!canAct) {
     $('teamsUI').className = 'empty';
-    $('teamsUI').textContent = "indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)";
+    $('teamsUI').textContent = t('actionsOff');
     return;
   }
   $('teamsUI').className = '';
@@ -518,35 +841,35 @@ function renderTeams(data) {
   // The colour comes from the relay's own palette, but it is going into a style
   // attribute: check the shape rather than trust it.
   const swatch = (c) => (/^#[0-9a-f]{6}$/i.test(String(c)) ? c : '#888888');
-  const options = (sel) => '<option value=""' + (sel ? '' : ' selected') + '>sans équipe</option>'
-    + tp.teams.map((t) => '<option value="' + esc(t.id) + '"' + (sel === t.id ? ' selected' : '')
-        + '>' + esc(t.name) + '</option>').join('');
+  const options = (sel) => '<option value=""' + (sel ? '' : ' selected') + '>' + t('teamNone') + '</option>'
+    + tp.teams.map((tm) => '<option value="' + esc(tm.id) + '"' + (sel === tm.id ? ' selected' : '')
+        + '>' + esc(tm.name) + '</option>').join('');
 
-  const rows = tp.teams.length ? tp.teams.map((t) => {
-    const members = logins.filter((l) => tp.members[l] === t.id);
-    return '<div class="team"><span class="sw" style="background:' + swatch(t.color) + '"></span>'
-      + '<span class="nm">' + esc(t.name) + '</span>'
-      + '<button class="act ' + (t.voice ? 'on' : '') + '" data-act="teamVoice" data-id="' + esc(t.id) + '">'
-      + (t.voice ? 'vocal activé' : 'vocal coupé') + '</button>'
-      + '<button class="act danger" data-act="teamRemove" data-id="' + esc(t.id) + '">supprimer</button>'
-      + '<span class="sub">' + (members.length ? members.map(esc).join(', ') : 'personne') + '</span></div>';
-  }).join('') : '<div class="empty">aucune équipe — le radar et la voix se comportent normalement</div>';
+  const rows = tp.teams.length ? tp.teams.map((tm) => {
+    const members = logins.filter((l) => tp.members[l] === tm.id);
+    return '<div class="team"><span class="sw" style="background:' + swatch(tm.color) + '"></span>'
+      + '<span class="nm">' + esc(tm.name) + '</span>'
+      + '<button class="act ' + (tm.voice ? 'on' : '') + '" data-act="teamVoice" data-id="' + esc(tm.id) + '">'
+      + (tm.voice ? t('teamVoiceOn') : t('teamVoiceOff')) + '</button>'
+      + '<button class="act danger" data-act="teamRemove" data-id="' + esc(tm.id) + '">' + t('teamRemove') + '</button>'
+      + '<span class="sub">' + (members.length ? members.map(esc).join(', ') : t('nobody')) + '</span></div>';
+  }).join('') : '<div class="empty">' + t('teamsEmpty') + '</div>';
 
   const assign = logins.length
     ? logins.map((l) => '<div class="team"><span class="nm">' + esc(l) + '</span>'
         + '<select data-assign="' + esc(l) + '">' + options(tp.members[l] || '') + '</select></div>').join('')
-    : '<div class="empty">aucun joueur connecté</div>';
+    : '<div class="empty">' + t('noPlayers') + '</div>';
 
   $('teamsUI').innerHTML =
-    '<div class="row"><span class="lbl">Répartition auto</span>'
+    '<div class="row"><span class="lbl">' + t('teamAuto') + '</span>'
     + [2, 3, 4, 5, 6].map((n) =>
-        '<button class="act" data-act="teamAuto" data-count="' + n + '">' + n + ' équipes</button>').join('')
-    + '<span class="sub">refait les équipes à partir des joueurs plugin connectés</span></div>'
-    + '<div class="row"><span class="lbl">Manuel</span>'
-    + '<button class="act" data-act="teamCreate">+ équipe</button>'
-    + '<button class="act danger" data-act="teamClear">tout effacer</button></div>'
+        '<button class="act" data-act="teamAuto" data-count="' + n + '">' + t('teamCount', n) + '</button>').join('')
+    + '<span class="sub">' + t('teamAutoSub') + '</span></div>'
+    + '<div class="row"><span class="lbl">' + t('teamManual') + '</span>'
+    + '<button class="act" data-act="teamCreate">' + t('teamAdd') + '</button>'
+    + '<button class="act danger" data-act="teamClear">' + t('teamClear') + '</button></div>'
     + rows
-    + '<div class="lbl" style="margin-top:14px">Joueurs</div>'
+    + '<div class="lbl" style="margin-top:14px">' + t('playersLabel') + '</div>'
     + assign;
 }
 
@@ -568,29 +891,23 @@ document.addEventListener('change', (e) => {
 function renderLinks(data) {
   const o = location.origin;
   const rows = [
-    ['Client vocal', o + '/', false,
-      "Ce que les joueurs ouvrent. Le plugin y ajoute son ?t=… tout seul."],
-    ['Page de test joueur', o + '/check', false,
-      "Auto-diagnostic (anglais par défaut, français si le navigateur le demande). Le lien à donner quand « ça marche pas »."],
-    ['Santé du relais', o + '/health', false,
-      'JSON court : le relais répond, et voit-il LiveKit.'],
-    ['Admin (cette page)', o + '/admin', true, 'Mot de passe Basic.'],
-    ['Journal complet', o + '/admin/events.log', true,
-      "Téléchargement brut du fichier d'événements."],
-    ['État JSON', o + '/admin/state.json', true,
-      'Exactement ce que cette page relit toutes les 5 s.'],
+    [t('link.client'), o + '/', false, t('link.clientNote')],
+    [t('link.check'), o + '/check', false, t('link.checkNote')],
+    [t('link.health'), o + '/health', false, t('link.healthNote')],
+    [t('link.admin'), o + '/admin', true, t('link.adminNote')],
+    [t('link.log'), o + '/admin/events.log', true, t('link.logNote')],
+    [t('link.state'), o + '/admin/state.json', true, t('link.stateNote')],
   ];
   if (data.calibrationBot) {
-    rows.push(['Bot de calibration', o + '/bot.html', true,
-      "Publie une piste audio de test dans le salon. Actif seulement parce que ENABLE_CALIBRATION_BOT est à true."]);
+    rows.push([t('link.bot'), o + '/bot.html', true, t('link.botNote')]);
   }
 
   $('links').innerHTML = rows.map(([label, url, priv, note]) =>
     '<div class="lnk">'
     + '<div><b>' + esc(label) + '</b> <span class="tag' + (priv ? ' priv' : '') + '">'
-    + (priv ? 'privé' : 'public') + '</span></div>'
+    + (priv ? t('private') : t('public')) + '</span></div>'
     + '<div class="lnk-u"><a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a>'
-    + '<button class="copy" data-copy="' + esc(url) + '">copier</button></div>'
+    + '<button class="copy" data-copy="' + esc(url) + '">' + t('copy') + '</button></div>'
     + '<div class="note">' + esc(note) + '</div>'
     + '</div>'
   ).join('');
@@ -602,7 +919,7 @@ document.addEventListener('click', async (e) => {
   const url = btn.getAttribute('data-copy');
   try {
     await navigator.clipboard.writeText(url);
-    btn.textContent = 'copié ✓';
+    btn.textContent = t('copied');
   } catch (err) {
     // Clipboard permission is refused often enough that a silent no-op would
     // look like a broken button. Select the text instead so Ctrl+C works.
@@ -616,7 +933,7 @@ document.addEventListener('click', async (e) => {
     }
     btn.textContent = 'Ctrl+C';
   }
-  setTimeout(() => { btn.textContent = 'copier'; }, 2000);
+  setTimeout(() => { btn.textContent = t('copy'); }, 2000);
 });
 
 // --- expulsion d'un joueur nommé ---------------------------------------------
@@ -624,17 +941,17 @@ document.addEventListener('click', async (e) => {
 // is the other case, the one that actually comes up: a real player, connected
 // on both halves, who has to stop being audible now.
 function ejectBtn(login) {
-  return '<button class="act danger" data-eject="' + esc(login) + '">expulser</button>';
+  return '<button class="act danger" data-eject="' + esc(login) + '">' + t('eject') + '</button>';
 }
 
 function ejectFlow(login) {
   // Asked rather than fixed at 15 min: "he is shouting" and "he is streaming
   // the event" do not want the same duration, and the answer is obvious to the
   // person clicking and to nobody else.
-  const raw = prompt('Expulser ' + login + ' — bloquer combien de minutes ?\n0 = expulser sans bloquer (il peut revenir tout de suite)', '15');
+  const raw = prompt(t('ejectPrompt', login), '15');
   if (raw === null) return;
   const minutes = Number(raw.trim());
-  if (!isFinite(minutes) || minutes < 0) { alert('Durée invalide.'); return; }
+  if (!isFinite(minutes) || minutes < 0) { alert(t('badDuration')); return; }
   act('eject', { login: login, minutes: minutes });
 }
 
@@ -647,37 +964,38 @@ document.addEventListener('click', (e) => {
 
 function renderBlocked(rows, canAct) {
   const el = $('blockedUI');
-  if (!canAct) { el.className = 'empty'; el.textContent = "indisponible (ADMIN_ACTIONS n'est pas activé)"; return; }
+  if (!canAct) { el.className = 'empty'; el.textContent = t('actionsOffShort'); return; }
   el.className = '';
   el.innerHTML = rows.length
     ? rows.map((b) => '<div class="row"><span class="lbl">' + esc(b.login) + '</span>'
-        + '<span class="sub">encore ' + Math.max(1, Math.ceil(b.secondsLeft / 60)) + ' min</span>'
-        + '<button class="act" data-unblock="' + esc(b.login) + '">débloquer</button></div>').join('')
-    : '<div class="empty">personne n\'est bloqué</div>';
+        + '<span class="sub">' + t('minutesLeft', Math.max(1, Math.ceil(b.secondsLeft / 60))) + '</span>'
+        + '<button class="act" data-unblock="' + esc(b.login) + '">' + t('unblock') + '</button></div>').join('')
+    : '<div class="empty">' + t('nobodyBlocked') + '</div>';
 }
 
 function renderRooms(rooms, canAct) {
-  if (!rooms.length) { $('rooms').innerHTML = '<div class="empty">aucun salon actif</div>'; return; }
+  if (!rooms.length) { $('rooms').innerHTML = '<div class="empty">' + t('noRooms') + '</div>'; return; }
   $('rooms').innerHTML = '<div class="rooms">' + rooms.map((r) => {
     const players = r.players.map((p) =>
       '<span class="who ' + (p.paired ? '' : 'half') + '">' + esc(p.login)
-      + (p.half === 'plugin' ? ' <span class="dim">(sans onglet)</span>'
-        : p.half === 'browser' ? ' <span class="dim">(sans jeu)</span>' : '')
+      + (p.half === 'plugin' ? ' <span class="dim">' + t('noTab') + '</span>'
+        : p.half === 'browser' ? ' <span class="dim">' + t('noGame') + '</span>' : '')
       + (canAct ? ' ' + ejectBtn(p.login) : '') + '</span>'
-    ).join('') || '<span class="empty">personne côté relais</span>';
-    const lk = r.livekit === null ? '<span class="dim">LiveKit ?</span>'
-      : '<span class="dim">LiveKit : ' + r.livekit + '</span>';
+    ).join('') || '<span class="empty">' + t('nobodyRelay') + '</span>';
+    const lk = r.livekit === null ? '<span class="dim">' + t('livekitUnknown') + '</span>'
+      : '<span class="dim">' + t('livekitCount', r.livekit) + '</span>';
     // A ghost is the one thing on this page you can act on one at a time:
     // the button is right next to the name so the room is never in doubt.
     const ghosts = r.ghosts.length
-      ? '<div class="ghost">fantômes LiveKit : ' + r.ghosts.map((g) =>
+      ? '<div class="ghost">' + t('ghosts') + r.ghosts.map((g) =>
           esc(g) + (canAct
-            ? '<button class="act danger kick" data-room="' + esc(r.room) + '" data-identity="' + esc(g) + '">expulser</button>'
+            ? '<button class="act danger kick" data-room="' + esc(r.room) + '" data-identity="' + esc(g) + '">'
+              + t('eject') + '</button>'
             : '')).join(' ') + '</div>' : '';
     const missing = r.missing.length
-      ? '<div class="warn">onglet ouvert mais absent de LiveKit : ' + r.missing.map(esc).join(', ') + '</div>' : '';
+      ? '<div class="warn">' + t('missing') + r.missing.map(esc).join(', ') + '</div>' : '';
     return '<div class="room"><h3>' + esc(r.serverName || r.room) + '</h3>'
-      + '<div class="sub">' + r.players.length + ' joueur(s) · ' + lk + '</div>'
+      + '<div class="sub">' + t('playerCount', r.players.length) + ' · ' + lk + '</div>'
       + '<div>' + players + '</div>' + ghosts + missing + '</div>';
   }).join('') + '</div>';
 }
@@ -687,7 +1005,7 @@ function renderRooms(rooms, canAct) {
 $('rooms').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-identity]');
   if (!btn) return;
-  if (!confirm('Expulser ' + btn.dataset.identity + ' du salon ' + btn.dataset.room + ' ?')) return;
+  if (!confirm(t('kickConfirm', btn.dataset.identity, btn.dataset.room))) return;
   act('kick', { room: btn.dataset.room, identity: btn.dataset.identity });
 });
 
@@ -697,7 +1015,7 @@ function renderSpark(history) {
   const el = $('spark');
   if (history.length < 2) {
     el.innerHTML = '';
-    $('sparkLegend').textContent = 'pas encore assez de points (1 point / 10 s)';
+    $('sparkLegend').textContent = t('sparkThin');
     return;
   }
   const W = 600, H = 90, max = Math.max(1, ...history.map((h) => Math.max(h.paired, h.plugins)));
@@ -709,8 +1027,7 @@ function renderSpark(history) {
     + '<path class="line2" d="' + path('plugins') + '"></path>'
     + '<path class="line" d="' + path('paired') + '"></path>';
   const span = Math.round((history[history.length - 1].t - history[0].t) / 60000);
-  $('sparkLegend').innerHTML = '<span class="ok">—</span> en voix · '
-    + '<span class="dim">- -</span> plugins · max ' + max + ' · ' + span + ' min';
+  $('sparkLegend').innerHTML = t('sparkLegend', max, span);
 }
 
 // --- filtre du journal -------------------------------------------------------
@@ -735,10 +1052,10 @@ function renderEvents() {
     const cls = event.includes('Failed') || event.includes('Rejected') || event === 'admin.denied'
       ? 'bad' : (event === 'report' ? 'warn' : '');
     const fields = Object.entries(rest).map(([k, v]) => k + '=' + esc(v)).join(' ');
-    return '<div><span class="dim">' + new Date(ts).toLocaleTimeString('fr-FR') + '</span> '
+    return '<div><span class="dim">' + time(ts) + '</span> '
       + '<span class="ev ' + cls + '">' + esc(event) + '</span> '
       + '<span class="dim">' + fields + '</span></div>';
-  }).join('') || '<div class="empty">' + (q ? 'aucune ligne ne correspond' : 'rien encore') + '</div>';
+  }).join('') || '<div class="empty">' + (q ? t('noMatch') : t('nothingYet')) + '</div>';
 }
 
 async function poll() {
@@ -752,24 +1069,23 @@ async function poll() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     data = await res.json();
   } catch (err) {
-    $('stale').textContent = '⚠ relais injoignable (' + err.message + ')';
+    $('stale').textContent = t('relayUnreachable', err.message);
     return;
   }
   $('stale').textContent = '';
   lastOk = Date.now();
 
   const c = data.counts;
-  $('meta').textContent = new Date(data.now).toLocaleTimeString('fr-FR')
-    + ' · relais up depuis ' + fmtAge(data.uptimeSeconds);
+  $('meta').textContent = time(data.now) + t('upFor', fmtAge(data.uptimeSeconds));
   $('debugBanner').hidden = !data.debugMode;
 
   $('cards').innerHTML = [
-    ['En voix (jeu + onglet)', c.paired, 'hl'],
-    ['Plugin sans onglet', c.pluginOnly, c.pluginOnly > 0 ? 'warn' : ''],
-    ['Onglet sans jeu', c.browserOnly, c.browserOnly > 0 ? 'warn' : ''],
-    ['Plugins', c.plugins, ''],
-    ['Navigateurs', c.browsers, ''],
-    ['Liens en attente', c.nonces, ''],
+    [t('card.paired'), c.paired, 'hl'],
+    [t('card.pluginOnly'), c.pluginOnly, c.pluginOnly > 0 ? 'warn' : ''],
+    [t('card.browserOnly'), c.browserOnly, c.browserOnly > 0 ? 'warn' : ''],
+    [t('card.plugins'), c.plugins, ''],
+    [t('card.browsers'), c.browsers, ''],
+    [t('card.nonces'), c.nonces, ''],
   ].map(([label, value, cls]) =>
     '<div class="card ' + cls + '"><b>' + value + '</b><span>' + label + '</span></div>'
   ).join('');
@@ -781,16 +1097,17 @@ async function poll() {
   const names = (list) => list.map((l) => '<span class="who">' + esc(l) + '</span>').join(', ');
   $('unpaired').hidden = !noTab.length && !noGame.length;
   $('unpaired').innerHTML =
-    (noTab.length ? '<div><b>En jeu, sans onglet voix :</b> ' + names(noTab) + '</div>' : '')
-    + (noGame.length ? '<div><b>Onglet ouvert, pas en jeu :</b> ' + names(noGame) + '</div>' : '');
+    (noTab.length ? '<div><b>' + t('unpairedNoTab') + '</b> ' + names(noTab) + '</div>' : '')
+    + (noGame.length ? '<div><b>' + t('unpairedNoGame') + '</b> ' + names(noGame) + '</div>' : '');
 
   // The eject column only exists when the relay would accept the click: a
   // button that always answers 404 teaches people to ignore buttons.
   const canAct = (data.actions || {}).enabled === true;
+  lastCanAct = canAct;
   const ejectCol = canAct ? [''] : [];
   const ejectCell = (login) => canAct ? '<td>' + ejectBtn(login) + '</td>' : '';
 
-  table($('plugins'), ['Login', 'Version', 'Salon', 'Position', 'Connecté'].concat(ejectCol), data.plugins, (p) =>
+  table($('plugins'), [t('col.login'), t('col.version'), t('col.room'), t('col.position'), t('col.connected')].concat(ejectCol), data.plugins, (p) =>
     '<tr><td class="login">' + esc(p.login) + '</td>'
     + '<td>' + (p.version ? esc(p.version) : '<span class="warn">?</span>') + '</td>'
     + '<td>' + esc(p.serverName || p.room || '—') + '</td>'
@@ -798,14 +1115,14 @@ async function poll() {
     + '<td class="dim">' + fmtAge(p.connectedSeconds) + '</td>' + ejectCell(p.login) + '</tr>'
   );
 
-  table($('browsers'), ['Login', 'Salon'].concat(ejectCol), data.browsers, (b) =>
+  table($('browsers'), [t('col.login'), t('col.room')].concat(ejectCol), data.browsers, (b) =>
     '<tr><td class="login">' + esc(b.login) + '</td>'
     + '<td>' + esc(b.room || '—') + '</td>' + ejectCell(b.login) + '</tr>'
   );
 
   // Someone reconnecting eight times in five minutes is the real problem of
   // the night, but in the flat feed it looks like eight ordinary lines.
-  table($('reconnects'), ['Login', 'Jeu', 'Onglet', 'Total'], data.reconnects || [], (r) =>
+  table($('reconnects'), [t('col.login'), t('col.game'), t('col.tab'), t('col.total')], data.reconnects || [], (r) =>
     '<tr><td class="login">' + esc(r.login) + '</td>'
     + '<td>' + r.plugin + '</td><td>' + r.browser + '</td>'
     + '<td class="' + (r.total >= 5 ? 'bad' : 'warn') + '">' + r.total + '</td></tr>'
@@ -821,7 +1138,7 @@ async function poll() {
   renderRooms(data.rooms || [], canAct);
   renderSpark(data.history || []);
   $('lkBanner').hidden = data.livekitOk !== false;
-  $('lkBanner').innerHTML = '<b>LiveKit injoignable</b> — les salons et les fantômes ne sont pas vérifiables. '
+  $('lkBanner').innerHTML = t('livekitDown')
     + '<span class="dim">' + esc(data.livekitError || '') + '</span>';
 
   // Only redrawn when the relay says something moved: rebuilding this list on
@@ -849,7 +1166,7 @@ setInterval(poll, 2000);
 // during the event this is glanced at, not read.
 setInterval(() => {
   if (lastOk && Date.now() - lastOk > 15000) {
-    $('stale').textContent = '⚠ données figées depuis ' + Math.round((Date.now() - lastOk) / 1000) + 's';
+    $('stale').textContent = t('frozen', Math.round((Date.now() - lastOk) / 1000));
   }
 }, 3000);
 </script>
