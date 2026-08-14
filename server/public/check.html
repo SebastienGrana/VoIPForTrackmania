@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="fr" data-onz-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OnZVoIP — vérification</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+/* Deliberately standalone: this page has to work when the main client is the
+   thing that is broken, so it borrows only the theme tokens from styles.css
+   and draws the rest itself. No modules, no LiveKit, no imports — one file
+   the player can load even on a bad connection. */
+body { margin:0; background:var(--onz-bg); color:var(--onz-text);
+  font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+.wrap { max-width:640px; margin:0 auto; padding:24px 16px 64px; }
+h1 { font-size:20px; margin:0 0 4px; }
+.lede { color:var(--onz-muted); margin:0 0 20px; }
+.check { display:flex; gap:12px; padding:12px 0; border-top:1px solid var(--onz-row-border); }
+.check:first-of-type { border-top:0; }
+.dot { flex:0 0 auto; width:20px; height:20px; border-radius:50%; margin-top:2px;
+  display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700;
+  background:var(--onz-surface); color:var(--onz-muted2); border:1px solid var(--onz-border3); }
+.dot.ok { background:var(--onz-mic-live-bg); color:var(--onz-mic-live-text); border-color:var(--onz-mic-live-border); }
+.dot.bad { background:#3a1a1a; color:#e88; border-color:#7a3a3a; }
+.dot.warn { background:var(--onz-expired-bg); color:var(--onz-warn); border-color:var(--onz-expired-border); }
+.dot.run { animation:pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity:.35; } }
+@media (prefers-reduced-motion:reduce) { .dot.run { animation:none; } }
+.body { flex:1; min-width:0; }
+.name { font-weight:600; }
+.detail { color:var(--onz-muted); }
+.fix { margin-top:6px; padding:8px 10px; border-radius:6px;
+  background:var(--onz-expired-bg); border:1px solid var(--onz-expired-border); color:var(--onz-text); }
+button { font:inherit; cursor:pointer; padding:8px 14px; border-radius:6px;
+  background:var(--onz-surface); color:var(--onz-text); border:1px solid var(--onz-border3); }
+button:hover { border-color:var(--onz-accent); }
+button.primary { background:var(--onz-accent-dim); border-color:var(--onz-accent-dim); color:#fff; }
+button.primary:hover { background:var(--onz-accent-hover); border-color:var(--onz-accent-hover); }
+button[disabled] { opacity:.5; cursor:default; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:24px; }
+.meter { display:flex; gap:2px; height:22px; align-items:flex-end; margin-top:8px; }
+.meter i { flex:1; background:var(--onz-mic-idle-bg); border-radius:1px; height:35%; }
+.meter i.on { background:var(--onz-teal); }
+.foot { margin-top:28px; color:var(--onz-muted2); font-size:12px; }
+.foot a { color:var(--onz-accent); }
+textarea { width:100%; height:160px; margin-top:12px; font:12px/1.4 ui-monospace,Consolas,monospace;
+  background:var(--onz-input-bg); color:var(--onz-text); border:1px solid var(--onz-border3);
+  border-radius:6px; padding:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Vérification OnZVoIP</h1>
+  <p class="lede">Cette page teste ton matériel et ta connexion. Rien n'est enregistré, ton micro
+    n'est écouté que par ton navigateur.</p>
+
+  <div id="checks"></div>
+
+  <div class="actions">
+    <button class="primary" id="mic">Tester mon micro</button>
+    <button id="again">Relancer les tests</button>
+    <button id="copy">Copier le diagnostic</button>
+  </div>
+
+  <p class="foot">Un test au rouge ? Colle le diagnostic dans le salon d'aide Discord.
+    <a href="/">Retour au vocal</a></p>
+  <textarea id="out" hidden readonly></textarea>
+</div>
+
+<script>
+// Every French string here uses double quotes. An apostrophe in a
+// single-quoted literal is a syntax error, and a syntax error on THIS page
+// means the player sees a blank diagnostic while trying to diagnose a
+// blank page — the one failure mode worth spending a rule on.
+var CHECKS = [
+  { id: "secure",  name: "Page sécurisée (HTTPS)" },
+  { id: "relay",   name: "Relais OnZVoIP joignable" },
+  { id: "livekit", name: "Serveur vocal joignable" },
+  { id: "ws",      name: "Connexion temps réel (WebSocket)" },
+  { id: "webrtc",  name: "WebRTC disponible" },
+  { id: "plugin",  name: "Plugin en jeu" },
+  { id: "mic",     name: "Micro" },
+];
+
+var state = {};
+var host = document.getElementById("checks");
+var els = {};
+
+CHECKS.forEach(function (c) {
+  var row = document.createElement("div");
+  row.className = "check";
+  row.innerHTML = '<div class="dot" data-dot>·</div><div class="body">'
+    + '<div class="name"></div><div class="detail"></div>'
+    + '<div class="fix" hidden></div></div>';
+  row.querySelector(".name").textContent = c.name;
+  host.appendChild(row);
+  els[c.id] = {
+    dot: row.querySelector("[data-dot]"),
+    detail: row.querySelector(".detail"),
+    fix: row.querySelector(".fix"),
+    body: row.querySelector(".body"),
+  };
+  set(c.id, "wait", "en attente");
+});
+
+// status: wait | run | ok | warn | bad. The dot glyph doubles as the value
+// copied into the diagnostic text, so colour is never the only signal.
+function set(id, status, detail, fix) {
+  state[id] = { status: status, detail: detail || "", fix: fix || "" };
+  var e = els[id];
+  if (!e) return;
+  var glyph = { wait: "·", run: "…", ok: "✓", warn: "!", bad: "✕" }[status] || "·";
+  e.dot.className = "dot" + (status === "wait" ? "" : " " + status);
+  e.dot.textContent = glyph;
+  e.detail.textContent = detail || "";
+  e.fix.hidden = !fix;
+  e.fix.textContent = fix || "";
+}
+
+function nonce() {
+  var m = /[?&]t=([^&]+)/.exec(location.search);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+function checkSecure() {
+  if (window.isSecureContext) {
+    set("secure", "ok", location.protocol + "//" + location.host);
+    return;
+  }
+  set("secure", "bad", "la page n'est pas en HTTPS",
+    "Le micro et le vocal sont bloqués hors HTTPS. Ouvre le lien donné par le plugin en jeu, pas une adresse tapée à la main.");
+}
+
+async function checkRelay() {
+  set("relay", "run", "test en cours");
+  set("livekit", "run", "test en cours");
+  set("plugin", "run", "test en cours");
+  var t = nonce();
+  var url = "/check.json" + (t ? "?t=" + encodeURIComponent(t) : "");
+  var data;
+  try {
+    var res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    data = await res.json();
+  } catch (err) {
+    set("relay", "bad", "injoignable (" + err.message + ")",
+      "Le relais ne répond pas. Coupe VPN et pare-feu, puis relance. Si ça persiste, c'est le serveur : préviens sur Discord.");
+    set("livekit", "bad", "non testé, le relais ne répond pas");
+    set("plugin", "bad", "non testé, le relais ne répond pas");
+    return;
+  }
+  set("relay", "ok", "répond");
+  if (data.livekit) set("livekit", "ok", "répond");
+  else set("livekit", "bad", "le relais ne joint pas le serveur vocal",
+    "Ce n'est pas toi, c'est le serveur. Signale-le sur Discord.");
+  paintPlugin(data.plugin || { checked: false });
+}
+
+function paintPlugin(p) {
+  if (!p.checked) {
+    set("plugin", "warn", "non testé",
+      "Pour tester le plugin, ouvre cette page depuis le jeu : clique le lien OnZVoIP dans la fenêtre du plugin, puis remplace /?t= par /check?t= dans la barre d'adresse.");
+    return;
+  }
+  if (!p.ok) {
+    set("plugin", "bad", p.reason === "expired" ? "lien expiré" : "lien inconnu",
+      "Ce lien a plus de 12 minutes, ou il a déjà servi. Retourne en jeu et reprends le lien affiché dans la fenêtre du plugin.");
+    return;
+  }
+  var who = p.login + (p.serverName ? " sur " + p.serverName : "");
+  if (!p.connected) {
+    set("plugin", "warn", who + " — plugin déconnecté",
+      "Le lien est valide mais le plugin ne parle plus au relais. Vérifie que le jeu tourne toujours et que la fenêtre OnZVoIP est ouverte.");
+    return;
+  }
+  set("plugin", "ok", who + (p.version ? " — version " + p.version : ""));
+}
+
+function checkWs() {
+  set("ws", "run", "test en cours");
+  return new Promise(function (resolve) {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var ws;
+    var done = false;
+    var finish = function (status, detail, fix) {
+      if (done) return;
+      done = true;
+      set("ws", status, detail, fix);
+      try { if (ws) ws.close(); } catch (e) {}
+      resolve();
+    };
+    var timer = setTimeout(function () {
+      finish("bad", "pas de réponse en 8 s",
+        "Un pare-feu, un antivirus ou un proxy bloque les WebSockets. Essaie sans VPN, ou en partage de connexion depuis ton téléphone.");
+    }, 8000);
+    try {
+      ws = new WebSocket(proto + "//" + location.host + "/ingest");
+    } catch (err) {
+      clearTimeout(timer);
+      finish("bad", "impossible d'ouvrir la connexion");
+      return;
+    }
+    ws.addEventListener("open", function () { clearTimeout(timer); finish("ok", "ouverte"); });
+    ws.addEventListener("error", function () {
+      clearTimeout(timer);
+      finish("bad", "connexion refusée",
+        "Un pare-feu, un antivirus ou un proxy bloque les WebSockets. Essaie sans VPN, ou en partage de connexion depuis ton téléphone.");
+    });
+  });
+}
+
+// Gathers ICE candidates against no STUN server on purpose: this checks that
+// the browser can do WebRTC at all (host candidates), not that it can reach
+// the internet — the WebSocket test above already covers the network, and
+// asking an external STUN would fail on exactly the restricted networks
+// where LiveKit still works fine through the relay.
+function checkWebrtc() {
+  set("webrtc", "run", "test en cours");
+  return new Promise(function (resolve) {
+    var PC = window.RTCPeerConnection;
+    if (!PC) {
+      set("webrtc", "bad", "non supporté par ce navigateur",
+        "Utilise Firefox, Chrome ou Edge à jour. Safari ancien et les navigateurs intégrés (Discord, Steam) ne suffisent pas.");
+      resolve();
+      return;
+    }
+    var pc = new PC({ iceServers: [] });
+    var found = 0;
+    var done = false;
+    var finish = function () {
+      if (done) return;
+      done = true;
+      try { pc.close(); } catch (e) {}
+      if (found > 0) set("webrtc", "ok", found + " route" + (found > 1 ? "s" : "") + " réseau trouvée" + (found > 1 ? "s" : ""));
+      else set("webrtc", "bad", "aucune route réseau trouvée",
+        "Ton navigateur bloque WebRTC. Coupe les extensions de blocage (uBlock en mode strict, WebRTC Leak Shield) et relance.");
+      resolve();
+    };
+    var timer = setTimeout(finish, 6000);
+    pc.addEventListener("icecandidate", function (e) {
+      if (e.candidate) found++;
+      else { clearTimeout(timer); finish(); }
+    });
+    try {
+      pc.createDataChannel("onz");
+      pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {
+        clearTimeout(timer);
+        finish();
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      finish();
+    }
+  });
+}
+
+var micStream = null;
+var micRaf = null;
+var meter = null;
+
+function stopMic() {
+  if (micRaf) cancelAnimationFrame(micRaf);
+  micRaf = null;
+  if (micStream) micStream.getTracks().forEach(function (t) { t.stop(); });
+  micStream = null;
+}
+
+async function checkMic() {
+  stopMic();
+  set("mic", "run", "autorise le micro dans la fenêtre du navigateur");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    set("mic", "bad", "ce navigateur ne donne pas accès au micro",
+      "Utilise Firefox, Chrome ou Edge à jour, en HTTPS.");
+    return;
+  }
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    var n = err && err.name;
+    if (n === "NotAllowedError") {
+      set("mic", "bad", "autorisation refusée",
+        "Clique le cadenas à gauche de l'adresse, remets le micro sur « Autoriser », puis relance le test.");
+    } else if (n === "NotFoundError" || n === "DevicesNotFoundError") {
+      set("mic", "bad", "aucun micro détecté",
+        "Branche un micro ou un casque, puis relance. Sous Windows, vérifie qu'il est activé dans Paramètres > Son > Entrée.");
+    } else if (n === "NotReadableError") {
+      set("mic", "bad", "micro occupé par une autre application",
+        "Ferme Discord, OBS ou tout ce qui utilise le micro, puis relance le test.");
+    } else {
+      set("mic", "bad", "erreur " + (n || "inconnue"));
+    }
+    return;
+  }
+  var track = micStream.getAudioTracks()[0];
+  var label = track && track.label ? track.label : "micro";
+  set("mic", "run", label + " — parle, on regarde le niveau");
+
+  if (!meter) {
+    meter = document.createElement("div");
+    meter.className = "meter";
+    for (var i = 0; i < 16; i++) meter.appendChild(document.createElement("i"));
+    els.mic.body.appendChild(meter);
+  }
+  var bars = meter.querySelectorAll("i");
+
+  var Ctx = window.AudioContext || window.webkitAudioContext;
+  var ctx = new Ctx();
+  var src = ctx.createMediaStreamSource(micStream);
+  var analyser = ctx.createAnalyser();
+  analyser.fftSize = 32;
+  src.connect(analyser);
+  var data = new Uint8Array(analyser.frequencyBinCount);
+  var peak = 0;
+  var startedAt = Date.now();
+
+  var tick = function () {
+    analyser.getByteFrequencyData(data);
+    var sum = 0;
+    for (var i = 0; i < data.length; i++) sum += data[i];
+    var avg = sum / data.length;
+    peak = Math.max(peak, avg);
+    var level = Math.min(16, Math.round((avg / 255) * 16 * 1.6));
+    for (var b = 0; b < bars.length; b++) bars[b].className = b < level ? "on" : "";
+    // 8 s is long enough for someone to notice the meter and say something,
+    // short enough that nobody wonders whether it is stuck.
+    if (Date.now() - startedAt > 8000) {
+      if (peak >= 12) set("mic", "ok", label + " — on t'entend");
+      else set("mic", "warn", label + " — aucun son capté",
+        "Le micro est autorisé mais rien n'arrive. Vérifie qu'il est bien le périphérique par défaut dans Windows, et que le volume d'entrée n'est pas à zéro.");
+      // The bars stay where the last frame left them, so the result is
+      // readable after the test rather than snapping back to idle.
+      try { ctx.close(); } catch (e) {}
+      stopMic();
+      return;
+    }
+    micRaf = requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function diagnostic() {
+  var lines = ["OnZVoIP — diagnostic " + new Date().toISOString()];
+  CHECKS.forEach(function (c) {
+    var s = state[c.id] || {};
+    var glyph = { wait: "·", run: "…", ok: "OK", warn: "!!", bad: "KO" }[s.status] || "?";
+    lines.push("[" + glyph + "] " + c.name + (s.detail ? " — " + s.detail : ""));
+  });
+  lines.push("navigateur: " + navigator.userAgent);
+  lines.push("écran: " + screen.width + "x" + screen.height + " / langue: " + navigator.language);
+  return lines.join("\n");
+}
+
+async function runAll() {
+  checkSecure();
+  await Promise.all([checkRelay(), checkWs(), checkWebrtc()]);
+}
+
+document.getElementById("again").addEventListener("click", function () { runAll(); });
+document.getElementById("mic").addEventListener("click", function () { checkMic(); });
+document.getElementById("copy").addEventListener("click", async function () {
+  var text = diagnostic();
+  var out = document.getElementById("out");
+  try {
+    await navigator.clipboard.writeText(text);
+    this.textContent = "Copié ✓";
+    var btn = this;
+    setTimeout(function () { btn.textContent = "Copier le diagnostic"; }, 2000);
+  } catch (err) {
+    // Clipboard access is denied often enough (Firefox without a gesture it
+    // trusts, http origins) that falling back silently to a selectable box
+    // beats an error the player cannot act on.
+    out.hidden = false;
+    out.value = text;
+    out.select();
+  }
+});
+
+runAll();
+</script>
+</body>
+</html>

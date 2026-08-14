@@ -433,6 +433,59 @@ export function createRelay({
     }
   });
 
+  // Player-facing self-test, feeding public/check.html. No password: every
+  // fact here is either public (is the relay up) or already held by the
+  // caller (their own nonce). Without a valid ?t= it says nothing at all
+  // about who is connected, so it is not a roster in disguise.
+  const checkLimiter = createRateLimiter({ windowMs: 60_000, max: 30 }); // per IP
+  // Served at the bare path too: the link goes to players in a Discord
+  // message, and "/check" is what someone types from memory when the vocal
+  // is not working. express.static only maps /check.html.
+  app.get('/check', (req, res) => {
+    res.sendFile(path.resolve(staticDir, 'check.html'));
+  });
+
+  app.get('/check.json', async (req, res) => {
+    if (!checkLimiter.allow(req.ip)) {
+      res.status(429).json({ error: 'too many requests' });
+      return;
+    }
+    // The whole point is a fresh answer; a cached one would tell a player
+    // their plugin is fine minutes after it dropped.
+    res.set('Cache-Control', 'no-store');
+    let livekit = false;
+    try {
+      await roomService.listRooms([roomName]);
+      livekit = true;
+    } catch {}
+    const out = { relay: true, livekit, plugin: { checked: false } };
+    const t = String(req.query.t || '').trim();
+    if (t) {
+      // Peek, never consume. The same nonce still has to work for the real
+      // join a few seconds later: a diagnostic that breaks the thing it is
+      // diagnosing is worse than no diagnostic at all.
+      const entry = nonces.get(t);
+      if (!entry || entry.expiry < Date.now()) {
+        out.plugin = { checked: true, ok: false, reason: entry ? 'expired' : 'unknown' };
+      } else {
+        const conn = tcpSocketsByLogin.get(entry.login);
+        out.plugin = {
+          checked: true,
+          ok: true,
+          login: entry.login,
+          serverName: displayNameFor(entry.server, entry.serverName) || null,
+          version: conn ? conn.version : null,
+          // A valid nonce only proves the plugin was talking when it minted
+          // one. This says whether it still is, which is the failure a player
+          // actually hits: game closed, or the TCP socket dropped.
+          connected: !!(conn && !conn.socket.destroyed),
+          expiresInMs: Math.max(0, entry.expiry - Date.now()),
+        };
+      }
+    }
+    res.json(out);
+  });
+
   app.get('/token', async (req, res) => {
     if (!tokenLimiter.allow(req.ip)) {
       res.status(429).json({ error: 'too many requests' });
