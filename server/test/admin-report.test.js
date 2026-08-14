@@ -242,6 +242,52 @@ describe('/admin and /report (own relay instance)', () => {
     });
   });
 
+  describe('Basic auth — the real rate limit (own relay instance)', () => {
+    // Its own instance, like the /report flood test below: the budget is per
+    // relay, and spending it here would leave the shared instance above with
+    // nothing left for its own wrong-password assertions.
+    let guessed;
+    let GUESSED_PORT;
+    let guessedLog;
+
+    before(async () => {
+      guessedLog = createEventLog({ file: null, echo: false });
+      guessed = createRelay({
+        roomService: makeMockRoomService(),
+        apiKey: API_KEY, apiSecret: API_SECRET, liveKitPublicWsUrl: WS_URL, roomName: ROOM,
+        adminUser: ADMIN_USER, adminPassword: ADMIN_PASS,
+        eventLog: guessedLog,
+      });
+      await new Promise(r => guessed.server.listen(0, r));
+      GUESSED_PORT = guessed.server.address().port;
+    });
+
+    after(async () => { await new Promise(r => guessed.server.close(r)); });
+
+    const ask = (headers) => fetch(`http://localhost:${GUESSED_PORT}/admin/state.json`, { headers });
+
+    test('guessing is cut off at 429, and the right password still works after', async () => {
+      const codes = [];
+      for (let i = 0; i < 14; i++) {
+        codes.push((await ask({ authorization: basic(ADMIN_USER, `guess-${i}`) })).status);
+      }
+      assert.strictEqual(codes.filter(c => c === 401).length, 10, 'exactly the allowance is challenged');
+      assert.ok(codes.includes(429), 'the rest are refused outright');
+      assert.ok(guessedLog.tail(50).some(e => e.event === 'admin.throttled'), 'and the block is logged');
+
+      // The limiter charges failures only, so the admin's own page — which
+      // polls state.json every 2 s — is never the one locked out.
+      assert.strictEqual((await ask({ authorization: basic(ADMIN_USER, ADMIN_PASS) })).status, 200);
+    });
+
+    test('a 429 does not re-challenge, so the browser stops retrying', async () => {
+      let res;
+      for (let i = 0; i < 14; i++) res = await ask({ authorization: basic(ADMIN_USER, 'nope') });
+      assert.strictEqual(res.status, 429);
+      assert.strictEqual(res.headers.get('www-authenticate'), null);
+    });
+  });
+
   describe('plugin version reporting', () => {
     test('a nonce carrying a version shows up in the admin state', async () => {
       const socket = await openTcp(TCP_PORT, [

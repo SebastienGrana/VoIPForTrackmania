@@ -1167,6 +1167,153 @@ describe('WebSocket /ingest (own relay instance)', () => {
   });
 });
 
+// Neither ingest channel is authenticated, so the relay has to at least refuse
+// messages that name a login somebody else is already using. The damage these
+// tests exist to prevent is concrete: a `nonce` naming another player pushes
+// them into a different voice room, i.e. cuts them off from their team in the
+// middle of an event, from anywhere on the internet.
+describe('ingest login ownership (own relay instance)', () => {
+  let relay;
+  let HTTP_PORT;
+  let TCP_PORT;
+  let roomService;
+  const openSockets = [];
+
+  before(async () => {
+    roomService = makeMockRoomService();
+    relay = createRelay({
+      roomService,
+      apiKey: API_KEY,
+      apiSecret: API_SECRET,
+      liveKitPublicWsUrl: WS_URL,
+      roomName: ROOM,
+    });
+    await new Promise(resolve => relay.server.listen(0, resolve));
+    HTTP_PORT = relay.server.address().port;
+    await new Promise(resolve => relay.tcpServer.listen(0, resolve));
+    TCP_PORT = relay.tcpServer.address().port;
+  });
+
+  after(async () => {
+    for (const s of openSockets) s.destroy?.() ?? s.close?.();
+    await new Promise(resolve => relay.tcpServer.close(resolve));
+    await new Promise(resolve => relay.server.close(resolve));
+  });
+
+  function connectWs() {
+    const ws = new WebSocket(`ws://localhost:${HTTP_PORT}/ingest`);
+    openSockets.push(ws);
+    return new Promise((resolve, reject) => {
+      ws.addEventListener('open', () => resolve(ws));
+      ws.addEventListener('error', reject);
+    });
+  }
+
+  // Stays open, so the login it announces stays claimed while the test runs.
+  // localAddress lets a test play "a different machine": the whole 127/8 range
+  // is local on Linux, which is where the suite runs.
+  function connectTcp(lines, localAddress = '127.0.0.1') {
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection({ port: TCP_PORT, host: '127.0.0.1', localAddress }, () => {
+        for (const line of lines) socket.write(`${line}\n`);
+        setTimeout(() => resolve(socket), 60);
+      });
+      openSockets.push(socket);
+      socket.resume();
+      socket.on('error', reject);
+    });
+  }
+
+  test('a stranger cannot move a connected player to another voice room', async () => {
+    const victim = await connectWs();
+    const pushes = [];
+    victim.addEventListener('message', e => pushes.push(JSON.parse(e.data)));
+    victim.send(JSON.stringify({ type: 'hello', login: 'ownvictim' }));
+    await new Promise(r => setTimeout(r, 60));
+
+    const attacker = await connectWs();
+    attacker.send(JSON.stringify({
+      type: 'nonce', nonce: 'hijack01', login: 'ownvictim',
+      server: 'srv-evil', serverName: 'Evil Server',
+    }));
+    await new Promise(r => setTimeout(r, 80));
+
+    assert.strictEqual(pushes.filter(p => p.type === 'room').length, 0,
+      'the victim must not be pushed into a room they never joined');
+  });
+
+  test("a stranger cannot publish a position under a connected player's name", async () => {
+    const victim = await connectWs();
+    victim.send(JSON.stringify({ type: 'hello', login: 'ownpos' }));
+    await new Promise(r => setTimeout(r, 60));
+
+    const attacker = await connectWs();
+    const before = roomService.calls.length;
+    attacker.send(JSON.stringify({ type: 'position', pseudo: 'ownpos', x: 999, y: 999, z: 999 }));
+    await new Promise(r => setTimeout(r, 40));
+    await relay.flushPositions();
+
+    const leaked = roomService.calls.slice(before)
+      .some(([, data]) => JSON.parse(Buffer.from(data).toString()).some(p => p.pseudo === 'ownpos'));
+    assert.strictEqual(leaked, false, 'a spoofed position must not be fanned out');
+  });
+
+  test('a player keeps control of their own login on their own socket', async () => {
+    const ws = await connectWs();
+    const pushes = [];
+    ws.addEventListener('message', e => pushes.push(JSON.parse(e.data)));
+    ws.send(JSON.stringify({ type: 'hello', login: 'ownself' }));
+    await new Promise(r => setTimeout(r, 60));
+    ws.send(JSON.stringify({
+      type: 'nonce', nonce: 'ownself1', login: 'ownself', server: 'srv-ok', serverName: 'OK',
+    }));
+    await new Promise(r => setTimeout(r, 80));
+
+    assert.ok(pushes.find(p => p.type === 'room'), 'a player must still be able to change room');
+  });
+
+  test('a login nobody claimed is still accepted', async () => {
+    const ws = await connectWs();
+    const before = roomService.calls.length;
+    ws.send(JSON.stringify({ type: 'position', pseudo: 'ownfree', x: 1, y: 2, z: 3 }));
+    await new Promise(r => setTimeout(r, 40));
+    await relay.flushPositions();
+
+    const found = roomService.calls.slice(before)
+      .some(([, data]) => JSON.parse(Buffer.from(data).toString()).some(p => p.pseudo === 'ownfree'));
+    assert.ok(found, 'simulate-positions.js and older plugins must keep working');
+  });
+
+  test('a plugin on another machine cannot steal a connected login over TCP', async () => {
+    await connectTcp([JSON.stringify({
+      type: 'nonce', nonce: 'owntcp01', login: 'owntcp', server: 'srv-a', serverName: 'A',
+    })]);
+
+    const attacker = await connectTcp([JSON.stringify({
+      type: 'nonce', nonce: 'owntcp02', login: 'owntcp', server: 'srv-b', serverName: 'B',
+    })], '127.0.0.2');
+
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=owntcp02`);
+    assert.notStrictEqual(res.status, 200, 'the stolen nonce must not mint a token');
+    assert.ok(attacker); // kept open on purpose: the claim is what is under test
+  });
+
+  test('the same player reconnecting from their own machine takes their login back', async () => {
+    await connectTcp([JSON.stringify({
+      type: 'nonce', nonce: 'ownback1', login: 'ownback', server: 'srv-a', serverName: 'A',
+    })]);
+    // Plugin reloaded: a second connection from the same machine, while the
+    // first has not been reaped yet. Refusing this would lock a player out of
+    // their own login until the old socket times out.
+    await connectTcp([JSON.stringify({
+      type: 'nonce', nonce: 'ownback2', login: 'ownback', server: 'srv-b', serverName: 'B',
+    })]);
+
+    const res = await fetch(`http://localhost:${HTTP_PORT}/token?t=ownback2`);
+    assert.strictEqual(res.status, 200, 'a player must be able to reconnect');
+  });
+});
+
 // REVIEWING.md §5 claims an unconfigured relay 404s this endpoint so a prober
 // can't fingerprint whether the feature is on. That claim was untested.
 describe('POST /tcp-auth — not configured (own relay instance)', () => {

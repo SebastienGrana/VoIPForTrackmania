@@ -315,8 +315,73 @@ export function createRelay({
   // the plugin over its existing TCP connection. Note the polarity of `mic`:
   // true means the microphone is OPEN. The plugin read it as "muted" once and
   // showed every player the opposite of their own state.
-  // login → { socket, room, version, serverName, connectedAt, lastPositionAt }
+  // login → { socket, room, version, serverName, connectedAt, lastPositionAt,
+  //           lastSeenAt }
   const tcpSocketsByLogin = new Map();
+
+  // --- Login ownership on the ingest channels ---------------------------
+  // Neither ingest channel is authenticated: TCP 8081 is open to the internet
+  // and /ingest upgrades for anyone. Without a check, a stranger could send a
+  // `nonce` carrying somebody else's login and push that player into a
+  // different voice room — cutting them off from their team mid-event — or
+  // publish positions under their name.
+  //
+  // So a login is owned by the connection that announced it, and messages
+  // naming it from anywhere else are dropped. Ownership is PER CHANNEL: a
+  // player legitimately holds the same login on both, their plugin over TCP
+  // and their browser tab over the WebSocket, so the two are checked
+  // separately and never against each other.
+  //
+  // This is a lock on the door, not authentication: whoever announces a login
+  // first gets it. It stops a stranger from hijacking a player who is already
+  // connected, which is the damage worth preventing tonight. Proper identity
+  // on the ingest channel is a separate job — see todo.txt.
+  //
+  // Ownership normally ends with the socket's 'close'. This timeout covers the
+  // case where it does not: a connection dropped without a FIN (power cut, Wi-Fi
+  // loss) leaves an entry behind, and the player's own reconnect would be the
+  // one refused. Well under the plugin's send interval — a plugin in game
+  // reports at least once a second, so a live claim never goes stale — and
+  // short enough that a real reconnect waits a few seconds at worst.
+  const INGEST_CLAIM_IDLE_MS = 5_000;
+
+  // Rejections are logged, but a flood must not be able to fill the disk
+  // through the event log, so each login gets at most one line per minute.
+  const claimRejectLogged = new Map(); // login → last logged at
+  const CLAIM_REJECT_LOG_MS = 60_000;
+
+  function claimRejected(login, kind, from) {
+    const now = Date.now();
+    if (now - (claimRejectLogged.get(login) ?? 0) < CLAIM_REJECT_LOG_MS) return;
+    claimRejectLogged.set(login, now);
+    eventLog.log('ingest.rejected', { login, kind, from: from ?? null });
+  }
+
+  // True when `login` belongs to a live connection other than `sender` on the
+  // channel it arrived from, i.e. the message must be dropped.
+  function ownedBySomeoneElse(login, sender) {
+    if (!sender) return false; // internal callers (bots, tests) are not gated
+    if (sender.kind === 'tcp') {
+      const held = tcpSocketsByLogin.get(login);
+      if (!held || held.socket === sender.socket) return false;
+      if (held.socket.destroyed) return false;
+      // Same machine, second connection: that is a player whose plugin
+      // reconnected (game restarted, reloaded plugin) while the old socket
+      // has not been reaped yet, so let it take its own login back. Port 8081
+      // is spoken to directly, not through the reverse proxy, so this address
+      // really is the client's — the check does not collapse the way it would
+      // behind Caddy. It is a weak binding, but the attack it has to stop is
+      // a stranger elsewhere on the internet naming somebody else's login.
+      if (held.socket.remoteAddress === sender.socket.remoteAddress) return false;
+      return Date.now() - (held.lastSeenAt ?? held.connectedAt ?? 0) < INGEST_CLAIM_IDLE_MS;
+    }
+    // No such leniency on the WebSocket side: /ingest arrives through Caddy,
+    // where every connection reports 127.0.0.1 and comparing addresses would
+    // let everyone through. A browser that reloads closes its socket, and the
+    // 'close' handler frees the login, so strict ownership costs nothing here.
+    const held = browserSockets.get(login);
+    return held !== undefined && held !== sender.ws && held.readyState === 1;
+  }
 
   async function pushStateToSocket(login, socket, room) {
     // readableEnded: the remote peer sent FIN (is closing). Writing back would
@@ -736,6 +801,13 @@ export function createRelay({
   // copied into Discord, logged by every proxy in between, and never rotated.
   const adminConfigured = adminUser !== '' && adminPassword !== '';
 
+  // Every other public route is rate limited; this one was not, so a stranger
+  // could try passwords as fast as the network allowed. Only *failed* attempts
+  // are charged: the admin page polls /admin/state.json every 2 s with valid
+  // credentials, and counting those would lock the admin out of their own page
+  // within the first minute.
+  const adminAuthLimiter = createRateLimiter({ windowMs: 60_000, max: 10 }); // per IP
+
   function adminAuthOk(req) {
     const header = req.headers.authorization ?? '';
     if (!header.startsWith('Basic ')) return false;
@@ -759,6 +831,14 @@ export function createRelay({
       return false;
     }
     if (!adminAuthOk(req)) {
+      // Wrong credentials that were actually sent are a guess. Past the budget
+      // the answer stops being a challenge: a 401 with WWW-Authenticate invites
+      // the next try, a 429 without it just costs the guesser a minute per ten.
+      if ((req.headers.authorization ?? '') !== '' && !adminAuthLimiter.allow(req.ip)) {
+        eventLog.log('admin.throttled', { ip: req.ip });
+        res.status(429).json({ error: 'too many requests' });
+        return false;
+      }
       res.set('WWW-Authenticate', 'Basic realm="OnZVoIP admin", charset="UTF-8"');
       // Only credentials that were sent AND wrong are worth a line. Every
       // browser opens the page with no Authorization header, waits for the
@@ -1156,13 +1236,28 @@ export function createRelay({
     knownMap.set(pseudo, entry);
   }
 
-  function handleMessage(msg, fallbackRoom) {
+  // `sender` describes the ingest connection the message came in on:
+  // { kind: 'tcp', socket } or { kind: 'ws', ws }. Omitted by internal callers,
+  // which are trusted and skip the ownership checks.
+  // Returns false only when the message was refused as somebody else's login,
+  // which the TCP handler needs to know so a refused nonce does not go on to
+  // claim that login anyway. Every other outcome — including a malformed nonce
+  // — returns true: those were already tolerated before this check existed,
+  // and an old plugin with a short nonce string must keep connecting.
+  function handleMessage(msg, fallbackRoom, sender) {
     if (msg.type === 'nonce') {
       // Plugin registers a nonce so the browser can later call /token?t=
       const nonce = String(msg.nonce ?? '').trim();
-      if (nonce.length < 4 || nonce.length > 64) return;
+      if (nonce.length < 4 || nonce.length > 64) return true;
       const login = validateLogin(msg.login);
-      if (!login) return;
+      if (!login) return true;
+      // A nonce moves its login to another voice room. Coming from anywhere but
+      // that player's own connection, it is someone kicking them out of their
+      // team's room, so it is dropped.
+      if (ownedBySomeoneElse(login, sender)) {
+        claimRejected(login, 'nonce', sender?.kind);
+        return false;
+      }
       const server = validateServer(msg.server) ?? '';
       const serverName = typeof msg.serverName === 'string'
         ? msg.serverName.slice(0, 256) : '';
@@ -1178,9 +1273,20 @@ export function createRelay({
           : { type: 'room', name: null }; // player left the server
         try { ws.send(JSON.stringify(push)); } catch {}
       }
-      return;
+      return true;
+    }
+    // Same rule for positions: a pseudo already announced on this channel can
+    // only be moved by the connection that announced it. Sending a position
+    // never takes ownership — only a `nonce` does — so tools that publish
+    // positions for logins nobody claims (simulate-positions.js, the test
+    // bots) keep working.
+    const pseudo = validateLogin(msg.pseudo);
+    if (pseudo && ownedBySomeoneElse(pseudo, sender)) {
+      claimRejected(pseudo, 'position', sender?.kind);
+      return false;
     }
     broadcastPosition(msg, fallbackRoom);
+    return true;
   }
 
   const wss = new WebSocketServer({ server, path: '/ingest' });
@@ -1213,7 +1319,7 @@ export function createRelay({
           }
           return;
         }
-        handleMessage(msg, wsLogin ? browserRooms.get(wsLogin) : undefined);
+        handleMessage(msg, wsLogin ? browserRooms.get(wsLogin) : undefined, { kind: 'ws', ws });
       } catch {}
     });
     ws.on('close', () => {
@@ -1305,10 +1411,18 @@ export function createRelay({
             return;
           }
         }
-        handleMessage(msg);
+        // Any traffic proves the connection is alive, which is what keeps its
+        // login claim from being treated as stale leftovers.
+        if (tcpLogin) {
+          const held = tcpSocketsByLogin.get(tcpLogin);
+          if (held && held.socket === socket) held.lastSeenAt = Date.now();
+        }
+        const accepted = handleMessage(msg, undefined, { kind: 'tcp', socket });
         // Associate this socket with the player's login after a valid
         // nonce so pushStateToSocket can write back over the same connection.
-        if (msg.type === 'nonce') {
+        // Only when the nonce was accepted: a nonce refused as someone else's
+        // login must not take that login's entry either.
+        if (msg.type === 'nonce' && accepted) {
           const login = validateLogin(msg.login);
           if (login) {
             // Read before the delete below: when the login is unchanged, that
@@ -1334,6 +1448,7 @@ export function createRelay({
               version,
               serverName: sName || null,
               connectedAt: sameSocket ? prev.connectedAt : Date.now(),
+              lastSeenAt: Date.now(),
             });
             // Two different events on purpose: "a player showed up" and "a
             // player changed server" answer different questions after the fact,
