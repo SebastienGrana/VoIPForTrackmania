@@ -22,6 +22,7 @@ const {
   ADMIN_PASSWORD = '',
   ADMIN_ACTIONS,
   ENABLE_TEST_BOTS,
+  BAN_FILE = '',
 } = process.env;
 
 if (!LIVEKIT_INTERNAL_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_PUBLIC_WS_URL) {
@@ -63,6 +64,10 @@ const { server, tcpServer } = createRelay({
   // Both off unless asked for: they turn the admin page from a window into a
   // set of levers, and the bots inject positions under invented logins.
   adminActions: ADMIN_ACTIONS === 'true',
+  // Without a path the ban list still works, it just dies with the process —
+  // which for a list typed in the day before an event means it is gone by the
+  // time it matters.
+  banFile: BAN_FILE,
   enableTestBots: ENABLE_TEST_BOTS === 'true',
   ingestTcpPort: Number(INGEST_TCP_PORT),
   ...(TCP_MAX_CONNECTIONS && { tcpMaxConnections: Number(TCP_MAX_CONNECTIONS) }),

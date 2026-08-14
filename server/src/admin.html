@@ -253,6 +253,19 @@
     <p class="note" data-i18n="note.blocked"></p>
     <div id="blockedUI"></div>
   </section>
+  <section class="wide">
+    <h2 data-i18n="h.bans">Liste noire</h2>
+    <p class="note" data-i18n="note.bans"></p>
+    <!-- Static, not redrawn by the poll: this is the one control on the page
+         you type into, and rebuilding it every five seconds would eat a login
+         halfway through being entered. Only the list below is redrawn. -->
+    <div class="tools" id="banForm" hidden>
+      <input id="banLogin" type="text" data-i18n-ph="banLoginPh" autocomplete="off" spellcheck="false" maxlength="64">
+      <input id="banReason" type="text" data-i18n-ph="banReasonPh" autocomplete="off" maxlength="200">
+      <button class="act danger" id="banBtn" type="button" data-i18n="banAdd">bannir</button>
+    </div>
+    <div id="bansUI"></div>
+  </section>
 </div>
 
 <script>
@@ -282,7 +295,7 @@ const STRINGS = {
     'h.browsers': 'Navigateurs connectés (voix)', 'h.reconnects': 'Reconnexions (10 min)',
     'h.rooms': 'Salons', 'h.reports': 'Problèmes signalés', 'h.events': 'Événements (plus récent en haut)',
     'h.bots': 'Bots de test', 'h.teams': 'Équipes', 'h.links': "Liens de l'application",
-    'h.actions': 'Actions', 'h.blocked': 'Joueurs bloqués',
+    'h.actions': 'Actions', 'h.blocked': 'Joueurs bloqués', 'h.bans': 'Liste noire',
     'note.bots': "Chaque bot ouvre une vraie connexion plugin sur le port d'ingestion et tourne en cercle. "
       + "Ça teste le relais, la diffusion des positions et le radar — pas la voix : un bot n'a pas d'onglet, "
       + "donc il reste « sans onglet » et n'entre dans aucun salon LiveKit.",
@@ -296,6 +309,13 @@ const STRINGS = {
     'note.blocked': "Un joueur expulsé est bloqué le temps choisi : ni le jeu, ni l'onglet, ni le lien "
       + 'vocal ne le laissent revenir avant la fin. Les blocages vivent en mémoire — un redémarrage du '
       + 'relais les efface tous.',
+    'note.bans': "Un banni ne peut plus obtenir de jeton, ni par le lien du jeu, ni par l'onglet, ni par "
+      + "le port du plugin. Pas de durée : ça dure jusqu'à ce que vous le retiriez. Le login peut être "
+      + "saisi avant que la personne se connecte, et la casse n'a pas d'importance.",
+    banFileWarn: '⚠ aucun fichier de liste noire (BAN_FILE) : les bans seront perdus au prochain '
+      + 'redémarrage du relais.',
+    banSaveFailed: (msg) => '⚠ ban appliqué, mais non enregistré sur le disque (' + msg
+      + ') : il sera perdu au redémarrage.',
     filterPlaceholder: 'filtrer (login, événement, salon…)',
     fullLog: '⬇ journal complet',
 
@@ -370,6 +390,17 @@ const STRINGS = {
     minutesLeft: (min) => 'encore ' + min + ' min',
     unblock: 'débloquer', nobodyBlocked: "personne n'est bloqué",
 
+    ban: 'bannir', banAdd: 'bannir',
+    banLoginPh: 'login Trackmania à bannir',
+    banReasonPh: 'motif (facultatif)',
+    banNoLogin: 'Indiquez un login.',
+    banConfirm: (login) => 'Bannir ' + login + " ? Il sera déconnecté s'il est en ligne et ne pourra "
+      + 'plus revenir tant que vous ne le retirez pas de la liste.',
+    banRemove: 'retirer',
+    banRemoveConfirm: (login) => 'Retirer ' + login + ' de la liste noire ?',
+    nobodyBanned: 'liste noire vide',
+    bannedSince: (d) => 'depuis le ' + d,
+
     noRooms: 'aucun salon actif',
     noTab: '(sans onglet)', noGame: '(sans jeu)',
     nobodyRelay: 'personne côté relais',
@@ -403,7 +434,7 @@ const STRINGS = {
     'h.browsers': 'Connected browsers (voice)', 'h.reconnects': 'Reconnects (10 min)',
     'h.rooms': 'Rooms', 'h.reports': 'Reported problems', 'h.events': 'Events (newest first)',
     'h.bots': 'Test bots', 'h.teams': 'Teams', 'h.links': 'Application links',
-    'h.actions': 'Actions', 'h.blocked': 'Blocked players',
+    'h.actions': 'Actions', 'h.blocked': 'Blocked players', 'h.bans': 'Ban list',
     'note.bots': 'Each bot opens a real plugin connection on the ingest port and drives in a circle. '
       + 'That exercises the relay, the position fan-out and the radar — not the voice: a bot has no tab, '
       + 'so it stays "no tab" and never joins a LiveKit room.',
@@ -417,6 +448,12 @@ const STRINGS = {
     'note.blocked': 'An ejected player is blocked for the chosen time: neither the game, nor the tab, nor '
       + 'the voice link lets them back in before it expires. Blocks live in memory — a relay restart '
       + 'clears them all.',
+    'note.bans': 'A banned login cannot get a token at all: not through the in-game link, not through '
+      + 'the tab, not through the plugin port. No duration — it lasts until you remove it. The login can '
+      + 'be entered before that person ever connects, and case does not matter.',
+    banFileWarn: '⚠ no ban file (BAN_FILE) configured: bans will be lost on the next relay restart.',
+    banSaveFailed: (msg) => '⚠ ban applied, but not written to disk (' + msg
+      + '): it will be lost on restart.',
     filterPlaceholder: 'filter (login, event, room…)',
     fullLog: '⬇ full log',
 
@@ -490,6 +527,17 @@ const STRINGS = {
     kickConfirm: (identity, room) => 'Eject ' + identity + ' from room ' + room + '?',
     minutesLeft: (min) => min + ' min left',
     unblock: 'unblock', nobodyBlocked: 'nobody is blocked',
+
+    ban: 'ban', banAdd: 'ban',
+    banLoginPh: 'Trackmania login to ban',
+    banReasonPh: 'reason (optional)',
+    banNoLogin: 'Enter a login.',
+    banConfirm: (login) => 'Ban ' + login + '? They are disconnected if online and cannot come back '
+      + 'until you remove them from the list.',
+    banRemove: 'remove',
+    banRemoveConfirm: (login) => 'Remove ' + login + ' from the ban list?',
+    nobodyBanned: 'ban list is empty',
+    bannedSince: (d) => 'since ' + d,
 
     noRooms: 'no active room',
     noTab: '(no tab)', noGame: '(no game)',
@@ -705,8 +753,13 @@ async function act(path, body) {
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     setTimeout(poll, 200);
+    // Returned rather than discarded so a caller can react to something the
+    // next poll cannot show — a ban that applied but could not be written to
+    // disk is the case that exists.
+    return await res.json().catch(() => null);
   } catch (err) {
     $('stale').textContent = t('actionRefused', err.message);
+    return null;
   }
 }
 
@@ -959,8 +1012,57 @@ document.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-eject]');
   if (btn) { ejectFlow(btn.dataset.eject); return; }
   const un = e.target.closest('button[data-unblock]');
-  if (un) act('unblock', { login: un.dataset.unblock });
+  if (un) { act('unblock', { login: un.dataset.unblock }); return; }
+  const ub = e.target.closest('button[data-unban]');
+  if (ub) {
+    const login = ub.dataset.unban;
+    if (confirm(t('banRemoveConfirm', login))) act('ban', { login: login, remove: true });
+  }
 });
+
+// --- liste noire -------------------------------------------------------------
+// The other half of an eject, and deliberately not the same control: a ban is
+// typed in before the evening starts, for someone who is very probably not
+// connected yet, and it does not lapse on its own.
+async function banFlow() {
+  const login = $('banLogin').value.trim();
+  if (!login) { alert(t('banNoLogin')); $('banLogin').focus(); return; }
+  if (!confirm(t('banConfirm', login))) return;
+  const body = await act('ban', { login: login, reason: $('banReason').value.trim() });
+  if (!body) return;
+  $('banLogin').value = '';
+  $('banReason').value = '';
+  $('banLogin').focus(); // three or four to type in a row, not one
+  // A ban that did not reach the disk still works tonight and is gone tomorrow.
+  // Saying so here is the only place anyone would find out.
+  if (body.saveError) alert(t('banSaveFailed', body.saveError));
+}
+
+$('banBtn').addEventListener('click', banFlow);
+// Enter in either field: typing a login and reaching for the mouse for every
+// name on the list is the sort of thing you only notice at the fourth one.
+for (const id of ['banLogin', 'banReason']) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') banFlow(); });
+}
+
+let bansDrawn = null; // same memo as the other panels: never redraw mid-click
+
+function renderBans(rows, canAct, hasFile) {
+  const el = $('bansUI');
+  $('banForm').hidden = !canAct;
+  if (!canAct) { el.className = 'empty'; el.textContent = t('actionsOffShort'); bansDrawn = null; return; }
+  const key = JSON.stringify([rows, hasFile, lang]);
+  if (key === bansDrawn) return;
+  bansDrawn = key;
+  el.className = '';
+  const warn = hasFile ? '' : '<div class="note" style="color: var(--warn)">' + t('banFileWarn') + '</div>';
+  el.innerHTML = warn + (rows.length
+    ? rows.map((b) => '<div class="row"><span class="lbl">' + esc(b.login) + '</span>'
+        + '<span class="sub">' + t('bannedSince', new Date(b.since).toLocaleDateString(locale()))
+        + (b.reason ? ' — ' + esc(b.reason) : '') + '</span>'
+        + '<button class="act" data-unban="' + esc(b.login) + '">' + t('banRemove') + '</button></div>').join('')
+    : '<div class="empty">' + t('nobodyBanned') + '</div>');
+}
 
 function renderBlocked(rows, canAct) {
   const el = $('blockedUI');
@@ -1133,6 +1235,7 @@ async function poll() {
   // a countdown that only refreshes when the actions block changes is a clock
   // that stops.
   renderBlocked(data.blocked || [], canAct);
+  renderBans(data.bans || [], canAct, !!data.banFile);
   renderTeams(data);
   renderLinks(data);
   renderRooms(data.rooms || [], canAct);

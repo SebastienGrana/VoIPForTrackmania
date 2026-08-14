@@ -108,15 +108,18 @@ Config templates for running LiveKit and the relay as systemd services behind a 
 
 ### Running an event
 
-Three optional variables turn the relay into something you can watch during a session (all in `server/.env.example`):
+A handful of optional variables turn the relay into something you can watch during a session (all in `server/.env.example`):
 
 - `EVENT_LOG_FILE` — appends one JSON object per line for each connect, disconnect, room change, rejected link and problem report. Logins, rooms and timestamps only: no positions, no audio.
+- `BAN_FILE` — where the ban list is stored. Leave it blank and bans work but die with the process.
 - `ADMIN_USER` + `ADMIN_PASSWORD` — serve `/admin`, a live page listing who has the plugin running, on which version, who is missing their browser half, and the reports players sent. Both must be set or the page does not exist at all (404, not 401). Basic auth, so put it behind HTTPS.
-- `ADMIN_ACTIONS` — additionally enables the tabs of `/admin` that *act* on the session (test bots, teams). With it off, those routes 404 and `/admin` stays read-only.
+- `ADMIN_ACTIONS` — additionally enables the tabs of `/admin` that *act* on the session (test bots, teams, ejecting a player, the ban list). With it off, those routes 404 and `/admin` stays read-only.
 
-`/admin` is in French, and has a **Liens** tab listing every address of the running deployment — built from the page's own origin, so they are correct whatever the domain — with each one labelled public or private, because the point is that the public ones get copied into Discord and the others do not.
+`/admin` is in French or English (a button in the header, remembered), follows the light or dark theme, and has a **Liens** tab listing every address of the running deployment — built from the page's own origin, so they are correct whatever the domain — with each one labelled public or private, because the point is that the public ones get copied into Discord and the others do not.
 
 **Teams** (`ADMIN_ACTIONS`): group players by hand or split them automatically into 2–8 teams. Each team gets a colour, drawn as a ring around its members on everyone's radar, and can be given a *voice* flag — its members then hear each other anywhere on the map instead of only within earshot, still panned in the right direction. There is no second LiveKit room involved: a browser can only be in one room at a time, and leaving the map's room would remove that player from everyone else's proximity chat. Teams live in memory only and a relay restart clears them — they belong to one evening.
+
+**Blocks and bans** (`ADMIN_ACTIONS`) are two different things and the Actions tab keeps them apart. *Ejecting* a player cuts their game socket, their browser socket and their LiveKit participant at once, and blocks the login for a quarter of an hour by default — a lever for an evening, kept in memory, gone on restart. The **ban list** is the other case: a login typed in before anyone connects, with no expiry, written to `BAN_FILE` so a restart does not quietly let three people back in. Both are enforced at every door — the one-time link, the debug identity path, the browser socket and the plugin socket — so a banned login cannot get a token at all. Bans match regardless of case, since the login is usually copied by hand.
 
 Players report problems from the web client itself — a **Report a problem** button at the bottom of the page sends their message with a short snapshot of their session (which they can read before sending), so a report arrives with the state that produced it instead of a "it doesn't work" in chat. Point them at `/check` first: it usually answers the question without anyone reading a log.
 

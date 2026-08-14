@@ -4,6 +4,7 @@
 
 import crypto from 'crypto';
 import express from 'express';
+import fs from 'node:fs';
 import http from 'http';
 import net from 'net';
 import path from 'node:path';
@@ -142,6 +143,11 @@ export function createRelay({
   // the admin password can flip DEBUG_MODE and disconnect players. Worth it
   // during an event you are running yourself, not worth it standing.
   adminActions = false,
+  // Where the ban list is kept between restarts. Empty (the default) means the
+  // list lives in memory only, which is what the tests want; a deployment that
+  // bans anyone before an event wants a path here, because the whole point of a
+  // ban — unlike an eject — is that restarting the relay does not undo it.
+  banFile = '',
   // Fake plugin connections, started from the admin page, to answer "does it
   // hold at 30 players" without 30 humans. Also off by default — it injects
   // positions under made-up logins, which is exactly what the TCP port is
@@ -662,7 +668,87 @@ export function createRelay({
   const BLOCK_DEFAULT_MINUTES = 15;
   const BLOCK_MAX_MINUTES = 720;
 
+  // --- Ban list ------------------------------------------------------------
+  // The other half of the same story, and deliberately the opposite of the map
+  // above on every axis. A block is a lever for an evening; a ban is a decision
+  // taken *before* one — "these three are not coming in" — so it has no expiry,
+  // it survives a restart, and it can name a login that has never connected.
+  // Without that last property the only way to ban someone would be to wait for
+  // them to turn up and shout, which is exactly the moment you don't want to be
+  // typing in an admin page.
+  //
+  // Matched case-insensitively: the login is typed by hand from a Discord
+  // message or a screenshot, and a ban that misses because someone wrote a
+  // capital is worse than one that catches a login differing only in case —
+  // Trackmania logins are lowercase in practice anyway. The form as typed is
+  // kept for display so the page shows what the admin wrote.
+  const bans = new Map(); // lowercased login → { login, reason, since }
+  const BAN_REASON_MAX = 200;
+
+  function loadBans() {
+    if (!banFile) return;
+    let raw;
+    try { raw = fs.readFileSync(banFile, 'utf8'); }
+    catch (err) {
+      // No file yet is the normal first boot, not a problem to report.
+      if (err.code !== 'ENOENT') console.error(`ban list unreadable (${banFile}): ${err.message}`);
+      return;
+    }
+    try {
+      for (const row of JSON.parse(raw)) {
+        const login = validateLogin(row?.login);
+        if (!login) continue;
+        bans.set(login.toLowerCase(), {
+          login,
+          reason: typeof row?.reason === 'string' ? row.reason.slice(0, BAN_REASON_MAX) : '',
+          since: typeof row?.since === 'string' ? row.since : new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      // Refusing to boot over a corrupt ban file would take the relay down for
+      // everyone; losing the list silently would let banned players back in.
+      // So: keep serving, and say it loudly enough to be found in journalctl.
+      console.error(`ban list is not valid JSON (${banFile}): ${err.message} — starting with an empty list`);
+    }
+  }
+
+  function saveBans() {
+    if (!banFile) return null;
+    try {
+      // Written whole and via a temp file: a half-written list read at the next
+      // boot is the corrupt-file case above, and this is the one moment we can
+      // cheaply avoid it.
+      const tmp = `${banFile}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify([...bans.values()], null, 2)}\n`);
+      fs.renameSync(tmp, banFile);
+      return null;
+    } catch (err) {
+      // The ban still applies in memory, so this is not a failure of the ban —
+      // only of its persistence. The caller reports it so the admin knows it
+      // will not survive a restart, instead of finding out during the event.
+      console.error(`ban list could not be saved (${banFile}): ${err.message}`);
+      return err.message;
+    }
+  }
+
+  function isBanned(login) {
+    return typeof login === 'string' && bans.has(login.trim().toLowerCase());
+  }
+
+  function banRows() {
+    return [...bans.values()]
+      .map(({ login, reason, since }) => ({ login, reason, since }))
+      .sort((a, b) => a.login.localeCompare(b.login));
+  }
+
+  loadBans();
+
   function isBlocked(login) {
+    // Folded in here rather than checked separately at each door: the four
+    // places that turn a player away (nonce, debug identity, browser socket,
+    // plugin socket) already ask this question, and a ban that only covered
+    // three of them would be a ban with a way in.
+    if (isBanned(login)) return true;
     const until = blocked.get(login);
     if (until === undefined) return false;
     if (until <= Date.now()) { blocked.delete(login); return false; }
@@ -1049,6 +1135,10 @@ export function createRelay({
       // Shown as a list with a countdown, not just a count: a block that nobody
       // can see is a player mysteriously unable to join half an hour later.
       blocked: blockedRows(),
+      // Separate from `blocked` on purpose: no countdown, no lapsing, and the
+      // page has to be able to say which of the two a refused player is under.
+      bans: banRows(),
+      banFile: !!banFile,
       livekitOk: live.ok,
       livekitError: live.ok ? null : live.error,
       rooms,
@@ -1265,6 +1355,18 @@ export function createRelay({
       : Math.min(BLOCK_MAX_MINUTES, Math.max(0, Math.round(Number(raw)) || 0));
     if (minutes > 0) blocked.set(login, Date.now() + minutes * 60_000);
 
+    const { rooms, errors } = await cutOff(login);
+    eventLog.log(errors.length ? 'admin.actionFailed' : 'admin.action',
+      { action: 'eject', login, minutes, rooms: rooms.join(','), ip: req.ip,
+        ...(errors.length ? { error: errors.join('; ') } : {}) });
+    if (errors.length) { res.status(502).json({ error: errors.join('; '), blocked: minutes > 0 }); return; }
+    res.json({ ok: true, login, minutes });
+  });
+
+  // The cutting half of an eject, without the blocking half — shared with the
+  // ban list, which has to throw out whoever is already inside when the ban
+  // lands and would otherwise leave them talking until they reconnected.
+  async function cutOff(login) {
     // Collected before the sockets go: closing them clears these maps.
     const rooms = new Set();
     const browserRoom = browserRooms.get(login);
@@ -1288,11 +1390,52 @@ export function createRelay({
       try { await roomService.removeParticipant(room, login); }
       catch (err) { if (!/not found|does not exist/i.test(err.message)) errors.push(`${room}: ${err.message}`); }
     }
-    eventLog.log(errors.length ? 'admin.actionFailed' : 'admin.action',
-      { action: 'eject', login, minutes, rooms: [...rooms].join(','), ip: req.ip,
-        ...(errors.length ? { error: errors.join('; ') } : {}) });
-    if (errors.length) { res.status(502).json({ error: errors.join('; '), blocked: minutes > 0 }); return; }
-    res.json({ ok: true, login, minutes });
+    return { rooms: [...rooms], errors };
+  }
+
+  // The ban list: add, remove, and nothing else. Unlike an eject this takes a
+  // login that has never connected, which is the whole point — the three names
+  // you were given the day before are typed in before anyone joins.
+  app.post('/admin/actions/ban', express.json(), async (req, res) => {
+    if (!requireActions(req, res)) return;
+    const login = validateLogin(req.body?.login);
+    if (!login) { res.status(400).json({ error: 'login required' }); return; }
+    const key = login.toLowerCase();
+    const remove = req.body?.remove === true;
+
+    if (remove) {
+      if (!bans.delete(key)) { res.status(404).json({ error: 'not banned' }); return; }
+      const saveError = saveBans();
+      eventLog.log('admin.action', { action: 'unban', login, ip: req.ip, ...(saveError ? { saveError } : {}) });
+      res.json({ ok: true, login, banned: false, bans: banRows(), ...(saveError ? { saveError } : {}) });
+      return;
+    }
+
+    const reason = typeof req.body?.reason === 'string'
+      ? req.body.reason.trim().slice(0, BAN_REASON_MAX) : '';
+    // Re-banning an existing entry keeps the original date: the interesting
+    // question later is when the decision was taken, not when it was retyped.
+    const existing = bans.get(key);
+    bans.set(key, {
+      login: existing?.login ?? login,
+      reason: reason || existing?.reason || '',
+      since: existing?.since ?? new Date().toISOString(),
+    });
+    const saveError = saveBans();
+    // Best-effort: the ban itself is already in force whatever LiveKit says,
+    // so an unreachable room service must not make the call look like a
+    // failure — it is reported next to the ban, not instead of it.
+    const { errors } = await cutOff(login);
+    eventLog.log('admin.action', {
+      action: 'ban', login, reason, ip: req.ip,
+      ...(errors.length ? { ejectError: errors.join('; ') } : {}),
+      ...(saveError ? { saveError } : {}),
+    });
+    res.json({
+      ok: true, login, banned: true, bans: banRows(),
+      ...(errors.length ? { ejectError: errors.join('; ') } : {}),
+      ...(saveError ? { saveError } : {}),
+    });
   });
 
   // Marking a report handled is deliberately relay-side and not a checkbox in
