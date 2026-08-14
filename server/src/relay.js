@@ -649,6 +649,33 @@ export function createRelay({
     res.json(out);
   });
 
+  // --- Blocked logins ------------------------------------------------------
+  // An eject that only cuts the sockets is undone in two seconds: the plugin
+  // reconnects on its own and the tab reopens the link. So an eject also puts
+  // the login here for a while, and every door checks this map on the way in.
+  //
+  // Deliberately in memory only and deliberately short-lived. This is a lever
+  // for an evening — "stop shouting for a quarter of an hour" — not a ban list,
+  // and a punishment that survives a relay restart with nobody able to see why
+  // is worse than one that quietly lapses.
+  const blocked = new Map(); // login → expiry (ms epoch)
+  const BLOCK_DEFAULT_MINUTES = 15;
+  const BLOCK_MAX_MINUTES = 720;
+
+  function isBlocked(login) {
+    const until = blocked.get(login);
+    if (until === undefined) return false;
+    if (until <= Date.now()) { blocked.delete(login); return false; }
+    return true;
+  }
+
+  function blockedRows() {
+    const now = Date.now();
+    for (const [login, until] of blocked) if (until <= now) blocked.delete(login);
+    return [...blocked].map(([login, until]) => ({ login, secondsLeft: Math.round((until - now) / 1000) }))
+      .sort((a, b) => a.login.localeCompare(b.login));
+  }
+
   app.get('/token', async (req, res) => {
     if (!tokenLimiter.allow(req.ip)) {
       res.status(429).json({ error: 'too many requests' });
@@ -664,6 +691,15 @@ export function createRelay({
         // says expired" report can be matched to a moment.
         eventLog.log('voice.linkRejected', { reason: entry ? 'expired' : 'unknown', ip: req.ip });
         res.status(401).json({ error: 'invalid or expired nonce' });
+        return;
+      }
+      // Checked here rather than only at the socket: this is the door that
+      // hands out a publish-capable LiveKit token, so an ejected player who
+      // still has the link in their clipboard has to be turned away here or the
+      // eject means nothing.
+      if (isBlocked(entry.login)) {
+        eventLog.log('voice.linkRejected', { reason: 'blocked', login: entry.login, ip: req.ip });
+        res.status(403).json({ error: 'blocked' });
         return;
       }
       nonces.delete(t); // single-use
@@ -715,6 +751,13 @@ export function createRelay({
     const identity = String(req.query.identity || '').trim();
     if (!identity) {
       res.status(400).json({ error: 'missing identity query param' });
+      return;
+    }
+    // The debug path takes any name from the query string, so without this it
+    // would be the obvious way around an eject.
+    if (isBlocked(identity)) {
+      eventLog.log('voice.linkRejected', { reason: 'blocked', login: identity, ip: req.ip });
+      res.status(403).json({ error: 'blocked' });
       return;
     }
     // The room override is the sharpest edge in the whole file: it mints a
@@ -975,6 +1018,9 @@ export function createRelay({
         enabled: adminActions, testBots: enableTestBots, autoKick,
         bots: botClients.size, botMax: BOT_MAX, tcpSecret: !!tcpSecret,
       },
+      // Shown as a list with a countdown, not just a count: a block that nobody
+      // can see is a player mysteriously unable to join half an hour later.
+      blocked: blockedRows(),
       livekitOk: live.ok,
       livekitError: live.ok ? null : live.error,
       rooms,
@@ -1172,6 +1218,64 @@ export function createRelay({
     }
   });
 
+  // Ejects a named player, as opposed to /kick which only removes a LiveKit
+  // ghost. A player is three things at once — a game socket, a browser socket
+  // and a LiveKit participant — and cutting fewer than all three leaves them
+  // audible, so this cuts every one and refuses to report success on a
+  // half-done job.
+  //
+  // The pending nonce goes too: it is a link that mints a fresh token, and
+  // leaving it alive would let the player walk straight back in.
+  app.post('/admin/actions/eject', express.json(), async (req, res) => {
+    if (!requireActions(req, res)) return;
+    const login = validateLogin(req.body?.login);
+    if (!login) { res.status(400).json({ error: 'login required' }); return; }
+    const raw = req.body?.minutes;
+    // 0 is meaningful and different from "unspecified": eject without blocking,
+    // for the misconnected player you want back the moment they reload.
+    const minutes = raw === undefined || raw === null ? BLOCK_DEFAULT_MINUTES
+      : Math.min(BLOCK_MAX_MINUTES, Math.max(0, Math.round(Number(raw)) || 0));
+    if (minutes > 0) blocked.set(login, Date.now() + minutes * 60_000);
+
+    // Collected before the sockets go: closing them clears these maps.
+    const rooms = new Set();
+    const browserRoom = browserRooms.get(login);
+    if (browserRoom) rooms.add(browserRoom);
+    const pluginRoom = tcpSocketsByLogin.get(login)?.room;
+    if (pluginRoom) rooms.add(pluginRoom);
+    rooms.add(roomName); // the default room, where a manual-path join lands
+
+    for (const [t, entry] of nonces) if (entry.login === login) nonces.delete(t);
+
+    const ws = browserSockets.get(login);
+    if (ws) { try { ws.close(); } catch {} }
+    const conn = tcpSocketsByLogin.get(login);
+    if (conn) { try { conn.socket.destroy(); } catch {} }
+
+    // Reported per room rather than swallowed: "not in that room" and "LiveKit
+    // is unreachable" look the same from the page otherwise, and the second one
+    // means the player is still talking.
+    const errors = [];
+    for (const room of rooms) {
+      try { await roomService.removeParticipant(room, login); }
+      catch (err) { if (!/not found|does not exist/i.test(err.message)) errors.push(`${room}: ${err.message}`); }
+    }
+    eventLog.log(errors.length ? 'admin.actionFailed' : 'admin.action',
+      { action: 'eject', login, minutes, rooms: [...rooms].join(','), ip: req.ip,
+        ...(errors.length ? { error: errors.join('; ') } : {}) });
+    if (errors.length) { res.status(502).json({ error: errors.join('; '), blocked: minutes > 0 }); return; }
+    res.json({ ok: true, login, minutes });
+  });
+
+  app.post('/admin/actions/unblock', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    const login = validateLogin(req.body?.login);
+    if (!login) { res.status(400).json({ error: 'login required' }); return; }
+    blocked.delete(login);
+    eventLog.log('admin.action', { action: 'unblock', login, ip: req.ip });
+    res.json({ ok: true, login });
+  });
+
   app.post('/admin/actions/bots', express.json(), (req, res) => {
     if (!requireActions(req, res)) return;
     if (!enableTestBots) { res.status(404).json({ error: 'test bots disabled' }); return; }
@@ -1363,6 +1467,7 @@ export function createRelay({
         // room-change notifications to.
         if (msg.type === 'hello') {
           const login = validateLogin(msg.login);
+          if (login && isBlocked(login)) { ws.close(); return; }
           if (login) {
             if (wsLogin && browserSockets.get(wsLogin) === ws) browserSockets.delete(wsLogin);
             wsLogin = login;
@@ -1483,6 +1588,9 @@ export function createRelay({
         // login must not take that login's entry either.
         if (msg.type === 'nonce' && accepted) {
           const login = validateLogin(msg.login);
+          // The plugin reconnects by itself within seconds, so without this the
+          // socket half of an eject would undo itself before anyone noticed.
+          if (login && isBlocked(login)) { socket.destroy(); return; }
           if (login) {
             // Read before the delete below: when the login is unchanged, that
             // delete targets this very entry, and reading after it would make

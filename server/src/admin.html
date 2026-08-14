@@ -225,6 +225,13 @@
       en direct et sont tous tracés dans le journal.</p>
     <div id="actionsUI" class="empty">indisponible (ADMIN_ACTIONS n'est pas activé)</div>
   </section>
+  <section class="wide">
+    <h2>Joueurs bloqués</h2>
+    <p class="note">Un joueur expulsé est bloqué le temps choisi : ni le jeu, ni l'onglet, ni le lien
+      vocal ne le laissent revenir avant la fin. Les blocages vivent en mémoire — un redémarrage du
+      relais les efface tous.</p>
+    <div id="blockedUI"></div>
+  </section>
 </div>
 
 <script>
@@ -591,13 +598,51 @@ document.addEventListener('click', async (e) => {
   setTimeout(() => { btn.textContent = 'copier'; }, 2000);
 });
 
+// --- expulsion d'un joueur nommé ---------------------------------------------
+// /kick only removes a LiveKit ghost — an identity with nobody behind it. This
+// is the other case, the one that actually comes up: a real player, connected
+// on both halves, who has to stop being audible now.
+function ejectBtn(login) {
+  return '<button class="act danger" data-eject="' + esc(login) + '">expulser</button>';
+}
+
+function ejectFlow(login) {
+  // Asked rather than fixed at 15 min: "he is shouting" and "he is streaming
+  // the event" do not want the same duration, and the answer is obvious to the
+  // person clicking and to nobody else.
+  const raw = prompt('Expulser ' + login + ' — bloquer combien de minutes ?\n0 = expulser sans bloquer (il peut revenir tout de suite)', '15');
+  if (raw === null) return;
+  const minutes = Number(raw.trim());
+  if (!isFinite(minutes) || minutes < 0) { alert('Durée invalide.'); return; }
+  act('eject', { login: login, minutes: minutes });
+}
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-eject]');
+  if (btn) { ejectFlow(btn.dataset.eject); return; }
+  const un = e.target.closest('button[data-unblock]');
+  if (un) act('unblock', { login: un.dataset.unblock });
+});
+
+function renderBlocked(rows, canAct) {
+  const el = $('blockedUI');
+  if (!canAct) { el.className = 'empty'; el.textContent = "indisponible (ADMIN_ACTIONS n'est pas activé)"; return; }
+  el.className = '';
+  el.innerHTML = rows.length
+    ? rows.map((b) => '<div class="row"><span class="lbl">' + esc(b.login) + '</span>'
+        + '<span class="sub">encore ' + Math.max(1, Math.ceil(b.secondsLeft / 60)) + ' min</span>'
+        + '<button class="act" data-unblock="' + esc(b.login) + '">débloquer</button></div>').join('')
+    : '<div class="empty">personne n\'est bloqué</div>';
+}
+
 function renderRooms(rooms, canAct) {
   if (!rooms.length) { $('rooms').innerHTML = '<div class="empty">aucun salon actif</div>'; return; }
   $('rooms').innerHTML = '<div class="rooms">' + rooms.map((r) => {
     const players = r.players.map((p) =>
       '<span class="who ' + (p.paired ? '' : 'half') + '">' + esc(p.login)
       + (p.half === 'plugin' ? ' <span class="dim">(sans onglet)</span>'
-        : p.half === 'browser' ? ' <span class="dim">(sans jeu)</span>' : '') + '</span>'
+        : p.half === 'browser' ? ' <span class="dim">(sans jeu)</span>' : '')
+      + (canAct ? ' ' + ejectBtn(p.login) : '') + '</span>'
     ).join('') || '<span class="empty">personne côté relais</span>';
     const lk = r.livekit === null ? '<span class="dim">LiveKit ?</span>'
       : '<span class="dim">LiveKit : ' + r.livekit + '</span>';
@@ -715,17 +760,23 @@ async function poll() {
     (noTab.length ? '<div><b>En jeu, sans onglet voix :</b> ' + names(noTab) + '</div>' : '')
     + (noGame.length ? '<div><b>Onglet ouvert, pas en jeu :</b> ' + names(noGame) + '</div>' : '');
 
-  table($('plugins'), ['Login', 'Version', 'Salon', 'Position', 'Connecté'], data.plugins, (p) =>
+  // The eject column only exists when the relay would accept the click: a
+  // button that always answers 404 teaches people to ignore buttons.
+  const canAct = (data.actions || {}).enabled === true;
+  const ejectCol = canAct ? [''] : [];
+  const ejectCell = (login) => canAct ? '<td>' + ejectBtn(login) + '</td>' : '';
+
+  table($('plugins'), ['Login', 'Version', 'Salon', 'Position', 'Connecté'].concat(ejectCol), data.plugins, (p) =>
     '<tr><td class="login">' + esc(p.login) + '</td>'
     + '<td>' + (p.version ? esc(p.version) : '<span class="warn">?</span>') + '</td>'
     + '<td>' + esc(p.serverName || p.room || '—') + '</td>'
     + '<td class="' + ageClass(p.positionAgeSeconds) + '">' + fmtAge(p.positionAgeSeconds) + '</td>'
-    + '<td class="dim">' + fmtAge(p.connectedSeconds) + '</td></tr>'
+    + '<td class="dim">' + fmtAge(p.connectedSeconds) + '</td>' + ejectCell(p.login) + '</tr>'
   );
 
-  table($('browsers'), ['Login', 'Salon'], data.browsers, (b) =>
+  table($('browsers'), ['Login', 'Salon'].concat(ejectCol), data.browsers, (b) =>
     '<tr><td class="login">' + esc(b.login) + '</td>'
-    + '<td>' + esc(b.room || '—') + '</td></tr>'
+    + '<td>' + esc(b.room || '—') + '</td>' + ejectCell(b.login) + '</tr>'
   );
 
   // Someone reconnecting eight times in five minutes is the real problem of
@@ -737,9 +788,13 @@ async function poll() {
   );
 
   renderActions(data.actions || { enabled: false }, data.debugMode === true);
+  // Outside renderActions on purpose: that one is memoised on its payload, and
+  // a countdown that only refreshes when the actions block changes is a clock
+  // that stops.
+  renderBlocked(data.blocked || [], canAct);
   renderTeams(data);
   renderLinks(data);
-  renderRooms(data.rooms || [], (data.actions || {}).enabled === true);
+  renderRooms(data.rooms || [], canAct);
   renderSpark(data.history || []);
   $('lkBanner').hidden = data.livekitOk !== false;
   $('lkBanner').innerHTML = '<b>LiveKit injoignable</b> — les salons et les fantômes ne sont pas vérifiables. '
