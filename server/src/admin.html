@@ -104,6 +104,11 @@
   .tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
   .tag.priv { color: #ffb454; border-color: #6b4a12; }
   button.copy { font-size: 11px; padding: 1px 8px; }
+  .team { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .team:last-child { border-bottom: 0; }
+  .team .nm { min-width: 120px; font-weight: 600; }
+  .sw { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+  .team select { background: transparent; color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -130,6 +135,7 @@
   <button data-tab="reports" role="tab" aria-selected="false">Signalements <span class="badge" id="tabReports"></span></button>
   <button data-tab="log" role="tab" aria-selected="false">Journal</button>
   <button data-tab="bots" role="tab" aria-selected="false">Bots</button>
+  <button data-tab="teams" role="tab" aria-selected="false">Équipes</button>
   <button data-tab="links" role="tab" aria-selected="false">Liens</button>
   <button data-tab="actions" role="tab" aria-selected="false">Actions</button>
 </nav>
@@ -190,6 +196,16 @@
       cercle. Ça teste le relais, la diffusion des positions et le radar — pas la voix : un bot n'a
       pas d'onglet, donc il reste « sans onglet » et n'entre dans aucun salon LiveKit.</p>
     <div id="botsUI" class="empty">indisponible (ENABLE_TEST_BOTS n'est pas activé)</div>
+  </section>
+</div>
+
+<div class="panel" id="tab-teams" hidden>
+  <section class="wide">
+    <h2>Équipes</h2>
+    <p class="note">Chaque équipe a une couleur, reprise sur le radar de tous les joueurs. Avec le
+      vocal d'équipe actif, ses membres s'entendent partout sur la carte, en plus des voix de
+      proximité normales. Les équipes vivent en mémoire : un redémarrage du relais les efface.</p>
+    <div id="teamsUI" class="empty">indisponible (ADMIN_ACTIONS n'est pas activé)</div>
   </section>
 </div>
 
@@ -356,6 +372,23 @@ document.addEventListener('click', (e) => {
     act('autokick', { on: !actionState.autoKick });
   } else if (btn.dataset.act === 'bots') {
     act('bots', { count: Number(btn.dataset.count) });
+  } else if (btn.dataset.act === 'teamCreate') {
+    const name = prompt("Nom de l'équipe ?", '');
+    if (name === null) return;
+    act('teams', { op: 'create', name });
+  } else if (btn.dataset.act === 'teamRemove') {
+    act('teams', { op: 'remove', id: btn.dataset.id });
+  } else if (btn.dataset.act === 'teamVoice') {
+    const team = teamsState.teams.find((t) => t.id === btn.dataset.id);
+    act('teams', { op: 'voice', id: btn.dataset.id, on: !(team && team.voice) });
+  } else if (btn.dataset.act === 'teamAuto') {
+    // Destructive: it throws away the teams already on screen, which during an
+    // event is somebody's careful hand-sorting.
+    if (teamsState.teams.length && !confirm('Refaire toutes les équipes ? La répartition actuelle est perdue.')) return;
+    act('teams', { op: 'auto', count: Number(btn.dataset.count) });
+  } else if (btn.dataset.act === 'teamClear') {
+    if (!confirm('Supprimer toutes les équipes ?')) return;
+    act('teams', { op: 'clear' });
   }
 });
 
@@ -404,6 +437,77 @@ function renderActions(a, debug) {
 // --- salons ------------------------------------------------------------------
 // A flat player list hides the failure that actually ruins an evening: several
 // rooms of two or three, each convinced voice is broken.
+// --- équipes -----------------------------------------------------------------
+// Groups live in the relay's memory for one evening. This panel is the only way
+// to change them, and every change is pushed to the open browsers immediately,
+// so a colour or a voice toggle lands mid-race without anyone reloading.
+let teamsDrawn = null; // last state drawn, so a poll never rebuilds under a click
+let teamsState = { teams: [], members: {} };
+
+function renderTeams(data) {
+  const canAct = !!(data.actions && data.actions.enabled);
+  const tp = data.teams || { teams: [], members: {} };
+  teamsState = tp;
+  // Assignable players are whoever the relay currently sees, in a stable order:
+  // the list is rebuilt every 2 s and must not jump around under the cursor.
+  const logins = [];
+  (data.rooms || []).forEach((r) => (r.players || []).forEach((p) => logins.push(p.login)));
+  logins.sort();
+
+  const key = JSON.stringify([canAct, tp, logins]);
+  if (key === teamsDrawn) return;
+  teamsDrawn = key;
+
+  if (!canAct) {
+    $('teamsUI').className = 'empty';
+    $('teamsUI').textContent = "indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)";
+    return;
+  }
+  $('teamsUI').className = '';
+
+  // The colour comes from the relay's own palette, but it is going into a style
+  // attribute: check the shape rather than trust it.
+  const swatch = (c) => (/^#[0-9a-f]{6}$/i.test(String(c)) ? c : '#888888');
+  const options = (sel) => '<option value=""' + (sel ? '' : ' selected') + '>sans équipe</option>'
+    + tp.teams.map((t) => '<option value="' + esc(t.id) + '"' + (sel === t.id ? ' selected' : '')
+        + '>' + esc(t.name) + '</option>').join('');
+
+  const rows = tp.teams.length ? tp.teams.map((t) => {
+    const members = logins.filter((l) => tp.members[l] === t.id);
+    return '<div class="team"><span class="sw" style="background:' + swatch(t.color) + '"></span>'
+      + '<span class="nm">' + esc(t.name) + '</span>'
+      + '<button class="act ' + (t.voice ? 'on' : '') + '" data-act="teamVoice" data-id="' + esc(t.id) + '">'
+      + (t.voice ? 'vocal activé' : 'vocal coupé') + '</button>'
+      + '<button class="act danger" data-act="teamRemove" data-id="' + esc(t.id) + '">supprimer</button>'
+      + '<span class="sub">' + (members.length ? members.map(esc).join(', ') : 'personne') + '</span></div>';
+  }).join('') : '<div class="empty">aucune équipe — le radar et la voix se comportent normalement</div>';
+
+  const assign = logins.length
+    ? logins.map((l) => '<div class="team"><span class="nm">' + esc(l) + '</span>'
+        + '<select data-assign="' + esc(l) + '">' + options(tp.members[l] || '') + '</select></div>').join('')
+    : '<div class="empty">aucun joueur connecté</div>';
+
+  $('teamsUI').innerHTML =
+    '<div class="row"><span class="lbl">Répartition auto</span>'
+    + [2, 3, 4, 5, 6].map((n) =>
+        '<button class="act" data-act="teamAuto" data-count="' + n + '">' + n + ' équipes</button>').join('')
+    + '<span class="sub">refait les équipes à partir des joueurs plugin connectés</span></div>'
+    + '<div class="row"><span class="lbl">Manuel</span>'
+    + '<button class="act" data-act="teamCreate">+ équipe</button>'
+    + '<button class="act danger" data-act="teamClear">tout effacer</button></div>'
+    + rows
+    + '<div class="lbl" style="margin-top:14px">Joueurs</div>'
+    + assign;
+}
+
+// Delegated on the document, like the other panels: this list is rebuilt on
+// every state change and per-select listeners would pile up.
+document.addEventListener('change', (e) => {
+  const sel = e.target.closest('select[data-assign]');
+  if (!sel) return;
+  act('teams', { op: 'assign', login: sel.dataset.assign, id: sel.value });
+});
+
 // Built from location.origin, never from a hardcoded domain: the same page is
 // served on localhost during development and on the public host, and a link
 // you paste into Discord has to carry the right one.
@@ -603,6 +707,7 @@ async function poll() {
   );
 
   renderActions(data.actions || { enabled: false }, data.debugMode === true);
+  renderTeams(data);
   renderLinks(data);
   renderRooms(data.rooms || [], (data.actions || {}).enabled === true);
   renderSpark(data.history || []);

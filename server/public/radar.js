@@ -15,6 +15,10 @@ export function createRadar({
   getRotateRadar, getShowEmoji, getReduceMotion,
   offsetInEarFrame, headingForView, projectToRadar,
   avatarFor, flagImage, flagReady, emojiForPseudo,
+  // Team colour for a dot, or null when the player is in no team - which is
+  // every player until an organiser makes teams. Defaulted so a caller that
+  // does not know about teams (tests, older embeds) still works.
+  getTeamColor = () => null,
 }) {
   function cssVar(name, fallback) {
     try {
@@ -148,6 +152,7 @@ export function createRadar({
       const px = cx + proj.x_display;
       const py = cy + proj.y_display;
       const size = Math.min(MAX_EMOJI_PX, Math.max(MIN_EMOJI_PX, 20 * proj.scale));
+      const teamColor = getTeamColor(pseudo);
 
       if (pseudo === hoveredPseudo) {
         ctx.beginPath(); ctx.arc(px, py, size / 2 + 4, 0, Math.PI * 2);
@@ -184,9 +189,21 @@ export function createRadar({
           ctx.textBaseline = 'alphabetic';
         }
         ctx.globalAlpha = 1;
+        // Ring rather than a tint: the flag or emoji still has to be readable,
+        // and it is drawn at full opacity on purpose - which team someone is on
+        // should stay legible at the far edge of the radar, where the avatar
+        // itself has already faded out with the voice.
+        if (teamColor) {
+          ctx.beginPath(); ctx.arc(px, py, size / 2 + 2, 0, Math.PI * 2);
+          ctx.strokeStyle = teamColor; ctx.lineWidth = 2; ctx.stroke();
+        }
       } else {
-        ctx.fillStyle = `rgba(220,60,60,${0.25 + 0.75 * gain})`;
+        // Same fade as before, written with globalAlpha so the team colour can
+        // be dropped in as-is instead of parsing a hex into rgba() components.
+        ctx.globalAlpha = 0.25 + 0.75 * gain;
+        ctx.fillStyle = teamColor || 'rgb(220,60,60)';
         ctx.beginPath(); ctx.arc(px, py, size / 2, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
       }
 
       lastDrawnPeers.push({ pseudo, x: px, y: py, r: size / 2 + 8 });

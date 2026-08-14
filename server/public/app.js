@@ -635,8 +635,38 @@ const {
 const RENDER_INTERVAL_MS = 100; // ~10Hz, plenty for a status readout
 const optBody = document.getElementById('optBody');
 
+// --- Equipes ---------------------------------------------------------------
+// Pushed by the relay over the ingest WebSocket every time the organiser
+// changes something in /admin, and once on connect. Inert until a team exists:
+// an empty roster leaves every dot its usual colour and every voice on plain
+// distance, so nothing here changes an evening nobody organised.
+let teamList = [];    // [{ id, name, color, voice }]
+let teamMembers = {}; // login -> team id
+
+function teamOf(pseudo) {
+  const id = teamMembers[pseudo];
+  if (id == null) return null;
+  return teamList.find((t) => t.id === id) ?? null;
+}
+
+function teamColorFor(pseudo) {
+  const team = teamOf(pseudo);
+  return team ? team.color : null;
+}
+
+// A teammate stays audible across the whole map, as long as the organiser left
+// voice on for that team. Same room, same published track - only the distance
+// rules are skipped. That is why this needs no second LiveKit room: a browser
+// can only be in one at a time, and leaving the map room to talk to your team
+// would take you out of everyone else's earshot.
+function sameVoiceTeam(pseudo) {
+  const mine = teamOf(myIdentity);
+  return !!mine && mine.voice === true && teamMembers[pseudo] === mine.id;
+}
+
 const radar = createRadar({
   canvas, ctx, onzRoot,
+  getTeamColor: teamColorFor,
   getPeers: () => peers,
   getGains: () => gains,
   getMe: () => me,
@@ -703,7 +733,11 @@ function tickGains() {
   for (const [pseudo, pos] of peers) {
     const stale = Date.now() - pos.lastSeen > 3000;
     const dist = distance(me, pos);
-    const target = (!meReady || stale) ? 0 : gainForCurrentMode(dist);
+    // A teammate is heard at full volume wherever they are - including while
+    // their positions are stale or before we know our own, since team voice is
+    // deliberately not a function of distance.
+    const mate = sameVoiceTeam(pseudo);
+    const target = mate ? 1 : ((!meReady || stale) ? 0 : gainForCurrentMode(dist));
     const g = gains.get(pseudo) ?? { current: target, target };
     g.target = target;
     g.current += (g.target - g.current) * LERP_FACTOR; // drives the canvas dot opacity / debug table only
@@ -720,15 +754,17 @@ function tickGains() {
       const ear = offsetInEarFrame(pos);
       nodes.panner.pan.setTargetAtTime(panForDirection(ear.right, ear.front, PAN_STRENGTH), now, AUDIO_SMOOTHING_SEC);
       // Smoothed like the others: a cutoff jumping per frame rings the filter.
-      nodes.filter.frequency.setTargetAtTime(cutoffForCurrentMode(dist), now, AUDIO_SMOOTHING_SEC);
+      // Teammates keep the direction cue above, but not the distance muffling:
+      // a radio voice is not filtered by how far away the other car is.
+      nodes.filter.frequency.setTargetAtTime(mate ? 20000 : cutoffForCurrentMode(dist), now, AUDIO_SMOOTHING_SEC);
       driveDoppler(nodes, dist, now);
     }
 
     // Audit #31: subscribe/unsubscribe from this peer's audio based on distance.
     const pub = audioPublications.get(pseudo);
     if (pub) {
-      const inRange = meReady && !stale && dist <= MAX_DIST;
-      const wellOutOfRange = stale || !meReady || dist > MAX_DIST * UNSUBSCRIBE_MARGIN;
+      const inRange = mate || (meReady && !stale && dist <= MAX_DIST);
+      const wellOutOfRange = !mate && (stale || !meReady || dist > MAX_DIST * UNSUBSCRIBE_MARGIN);
       if (inRange && !subscribedPeers.has(pseudo)) {
         pub.setSubscribed(true);
         subscribedPeers.add(pseudo);
@@ -1478,6 +1514,10 @@ function startIngestWs(identity) {
     try {
       const msg = JSON.parse(e.data);
       if (msg.type === 'room') handleRoomPush(msg);
+      else if (msg.type === 'teams' && Array.isArray(msg.teams)) {
+        teamList = msg.teams;
+        teamMembers = msg.members && typeof msg.members === 'object' ? msg.members : {};
+      }
     } catch {}
   });
 

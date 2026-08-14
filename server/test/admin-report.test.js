@@ -451,3 +451,142 @@ describe('/admin and /report (own relay instance)', () => {
     });
   });
 });
+
+// Teams are the event-night grouping tool: a colour on everyone's radar and a
+// team channel that ignores distance. The relay half is small on purpose, so
+// what is worth testing is that it stays shut without ADMIN_ACTIONS, that it
+// refuses input it does not recognise, and that removing a team does not leave
+// its members pointing at an id that no longer exists.
+describe('/admin/actions/teams (own relay instance)', () => {
+  let relay;
+  let PORT;
+  let TCP_PORT;
+  const sockets = [];
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY, apiSecret: API_SECRET, liveKitPublicWsUrl: WS_URL, roomName: ROOM,
+      statePushIntervalMs: 3_600_000,
+      eventLog: nullEventLog,
+      adminUser: ADMIN_USER,
+      adminPassword: ADMIN_PASS,
+      adminActions: true,
+    });
+    await new Promise(r => relay.server.listen(0, r));
+    await new Promise(r => relay.tcpServer.listen(0, r));
+    PORT = relay.server.address().port;
+    TCP_PORT = relay.tcpServer.address().port;
+    for (const login of ['ann', 'bob', 'cyd', 'dee']) {
+      sockets.push(await openTcp(TCP_PORT, [nonce({ login, server: 'srv', serverName: 'Srv' })]));
+    }
+  });
+
+  after(async () => {
+    for (const s of sockets) s.destroy();
+    await new Promise(r => relay.server.close(r));
+    await new Promise(r => relay.tcpServer.close(r));
+  });
+
+  const teams = (body, headers = { authorization: basic(ADMIN_USER, ADMIN_PASS) }) =>
+    fetch(`http://localhost:${PORT}/admin/actions/teams`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  test('needs the admin password', async () => {
+    const res = await teams({ op: 'clear' }, {});
+    assert.strictEqual(res.status, 401);
+  });
+
+  test('an unknown op is refused rather than silently ignored', async () => {
+    assert.strictEqual((await teams({ op: 'nope' })).status, 400);
+    assert.strictEqual((await teams({ op: 'assign', login: 'no one!' })).status, 400);
+    assert.strictEqual((await teams({ op: 'auto', count: 99 })).status, 400);
+  });
+
+  test('auto splits the connected plugins round-robin, in a stable order', async () => {
+    const body = await (await teams({ op: 'auto', count: 2 })).json();
+    assert.strictEqual(body.teams.length, 2);
+    assert.deepStrictEqual(Object.keys(body.members).sort(), ['ann', 'bob', 'cyd', 'dee']);
+    const perTeam = body.teams.map(t => Object.values(body.members).filter(id => id === t.id).length);
+    assert.deepStrictEqual(perTeam, [2, 2], 'four players over two teams');
+    assert.ok(body.teams.every(t => /^#[0-9a-f]{6}$/i.test(t.color)), 'every team gets a colour');
+    assert.ok(body.teams.every(t => t.voice === true), 'team voice starts on');
+
+    // Re-running must land on the same shape, not reshuffle the room.
+    const again = await (await teams({ op: 'auto', count: 2 })).json();
+    const shape = (b) => Object.entries(b.members)
+      .map(([login, id]) => [login, b.teams.findIndex(t => t.id === id)]).sort();
+    assert.deepStrictEqual(shape(again), shape(body));
+  });
+
+  test('removing a team also unassigns its members', async () => {
+    const made = await (await teams({ op: 'auto', count: 2 })).json();
+    const victim = made.teams[0].id;
+    const left = await (await teams({ op: 'remove', id: victim })).json();
+    assert.strictEqual(left.teams.length, 1);
+    assert.ok(!Object.values(left.members).includes(victim), 'no member points at a deleted team');
+  });
+
+  test('assign moves a player, and an empty id takes them out', async () => {
+    const made = await (await teams({ op: 'auto', count: 2 })).json();
+    const target = made.teams[1].id;
+    let body = await (await teams({ op: 'assign', login: 'ann', id: target })).json();
+    assert.strictEqual(body.members.ann, target);
+    body = await (await teams({ op: 'assign', login: 'ann', id: '' })).json();
+    assert.strictEqual(body.members.ann, undefined);
+    assert.strictEqual((await teams({ op: 'assign', login: 'ann', id: 'nope' })).status, 400);
+  });
+
+  test('voice can be turned off for one team without touching the other', async () => {
+    const made = await (await teams({ op: 'auto', count: 2 })).json();
+    const body = await (await teams({ op: 'voice', id: made.teams[0].id, on: false })).json();
+    assert.strictEqual(body.teams[0].voice, false);
+    assert.strictEqual(body.teams[1].voice, true);
+  });
+
+  test('state.json exposes the teams, and clear empties them', async () => {
+    await teams({ op: 'auto', count: 3 });
+    const auth = { authorization: basic(ADMIN_USER, ADMIN_PASS) };
+    let body = await (await fetch(`http://localhost:${PORT}/admin/state.json`, { headers: auth })).json();
+    assert.strictEqual(body.teams.teams.length, 3);
+
+    await teams({ op: 'clear' });
+    body = await (await fetch(`http://localhost:${PORT}/admin/state.json`, { headers: auth })).json();
+    assert.deepStrictEqual(body.teams.teams, []);
+    assert.deepStrictEqual(body.teams.members, {});
+  });
+});
+
+// Without ADMIN_ACTIONS the route must not exist at all — same 404 as the other
+// levers, so a misconfigured relay cannot be regrouped by whoever has the page.
+describe('/admin/actions/teams — actions disabled (own relay instance)', () => {
+  let relay;
+  let PORT;
+
+  before(async () => {
+    relay = createRelay({
+      roomService: makeMockRoomService(),
+      apiKey: API_KEY, apiSecret: API_SECRET, liveKitPublicWsUrl: WS_URL, roomName: ROOM,
+      statePushIntervalMs: 3_600_000,
+      eventLog: nullEventLog,
+      adminUser: ADMIN_USER,
+      adminPassword: ADMIN_PASS,
+    });
+    await new Promise(r => relay.server.listen(0, r));
+    PORT = relay.server.address().port;
+  });
+
+  after(async () => { await new Promise(r => relay.server.close(r)); });
+
+  test('answers 404 even with the right password', async () => {
+    const res = await fetch(`http://localhost:${PORT}/admin/actions/teams`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: basic(ADMIN_USER, ADMIN_PASS) },
+      body: JSON.stringify({ op: 'clear' }),
+    });
+    assert.strictEqual(res.status, 404);
+  });
+});

@@ -200,6 +200,39 @@ export function createRelay({
     }
   }
   const positionFlushTimer = setInterval(flushPositions, positionBroadcastIntervalMs).unref();
+
+  // --- Equipes -------------------------------------------------------------
+  // Event-night grouping: the organiser makes teams in /admin, every browser
+  // colours its radar dots by team, and teammates on a team with voice on stay
+  // audible anywhere on the map instead of only within earshot.
+  //
+  // Kept in memory on purpose. Teams belong to one evening and are rebuilt with
+  // one click by the auto-split; persisting them would mean deciding when they
+  // expire. A relay restart clears them, which is the wanted behavior.
+  const TEAM_COLORS = ['#4aa8ff', '#4ade80', '#fbbf24', '#f87171', '#c084fc', '#22d3ee', '#fb923c', '#a3e635'];
+  const TEAM_MAX = 8;
+  const teams = new Map();       // id -> { id, name, color, voice }
+  const teamByLogin = new Map(); // login -> team id
+  let nextTeamId = 1;
+
+  function teamsPayload() {
+    return {
+      type: 'teams',
+      teams: Array.from(teams.values()),
+      members: Object.fromEntries(teamByLogin),
+    };
+  }
+
+  // Everyone receives the whole roster, not just their own team: the radar
+  // colours every dot it draws, so a browser needs the colour of players it is
+  // not grouped with. Nothing new leaks — these logins are already on the radar.
+  function broadcastTeams() {
+    const payload = JSON.stringify(teamsPayload());
+    for (const ws of browserSockets.values()) {
+      if (ws.readyState !== 1) continue;
+      try { ws.send(payload); } catch {}
+    }
+  }
   // Tracks which WebSocket belongs to which browser login so the relay can
   // push room-change notifications when the plugin sends a new nonce.
   const browserSockets = new Map(); // login → WebSocket
@@ -764,6 +797,7 @@ export function createRelay({
       // Lets the Liens tab hide the calibration bot link when the relay does
       // not serve it — a listed URL that 404s reads as a broken deploy.
       calibrationBot: enableCalibrationBot,
+      teams: teamsPayload(),
       // Drives which buttons the page draws at all: a control that cannot work
       // should not be on screen looking like it could.
       actions: { enabled: adminActions, testBots: enableTestBots, autoKick, bots: botClients.size, botMax: BOT_MAX },
@@ -952,6 +986,61 @@ export function createRelay({
     res.json({ ok: true, bots: now, max: BOT_MAX });
   });
 
+  app.post('/admin/actions/teams', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    const op = String(req.body?.op ?? '');
+    const fail = (msg) => { res.status(400).json({ error: msg }); return false; };
+
+    if (op === 'create') {
+      if (teams.size >= TEAM_MAX) return void fail('too many teams');
+      const id = String(nextTeamId++);
+      const name = String(req.body?.name ?? '').trim().slice(0, 32) || `Equipe ${id}`;
+      // Colour by position in the list, so two teams created back to back never
+      // land on the same one while there are unused colours left.
+      teams.set(id, { id, name, color: TEAM_COLORS[teams.size % TEAM_COLORS.length], voice: true });
+    } else if (op === 'remove') {
+      const id = String(req.body?.id ?? '');
+      if (!teams.delete(id)) return void fail('unknown team');
+      for (const [login, tid] of teamByLogin) if (tid === id) teamByLogin.delete(login);
+    } else if (op === 'assign') {
+      const login = validateLogin(req.body?.login);
+      if (!login) return void fail('bad login');
+      const raw = req.body?.id;
+      if (raw == null || raw === '') teamByLogin.delete(login);
+      else if (teams.has(String(raw))) teamByLogin.set(login, String(raw));
+      else return void fail('unknown team');
+    } else if (op === 'voice') {
+      const team = teams.get(String(req.body?.id ?? ''));
+      if (!team) return void fail('unknown team');
+      team.voice = req.body?.on === true;
+    } else if (op === 'auto') {
+      const count = Number(req.body?.count);
+      if (!isFinite(count) || count < 2 || count > TEAM_MAX) return void fail('count must be 2..' + TEAM_MAX);
+      teams.clear();
+      teamByLogin.clear();
+      const ids = [];
+      for (let i = 0; i < count; i++) {
+        const id = String(nextTeamId++);
+        ids.push(id);
+        teams.set(id, { id, name: `Equipe ${i + 1}`, color: TEAM_COLORS[i % TEAM_COLORS.length], voice: true });
+      }
+      // Splits whoever has a plugin connected right now. Sorted so the same set
+      // of players always produces the same split — a re-run after a misclick
+      // does not shuffle everyone into new teams.
+      const logins = Array.from(tcpSocketsByLogin.keys()).sort();
+      logins.forEach((login, i) => teamByLogin.set(login, ids[i % ids.length]));
+    } else if (op === 'clear') {
+      teams.clear();
+      teamByLogin.clear();
+    } else {
+      return void fail('unknown op');
+    }
+
+    eventLog.log('admin.action', { action: 'teams', op, ip: req.ip });
+    broadcastTeams();
+    res.json({ ok: true, ...teamsPayload() });
+  });
+
   const server = http.createServer(app);
 
   function broadcastPosition(msg, fallbackRoom) {
@@ -1051,6 +1140,9 @@ export function createRelay({
             browserSockets.set(login, ws);
             noteReconnect('browser', login);
             eventLog.log('browser.connect', { login, room: browserRooms.get(login) ?? null });
+            // Current teams straight away: a browser that joins mid-event would
+            // otherwise draw grey dots until the next admin change.
+            try { ws.send(JSON.stringify(teamsPayload())); } catch {}
           }
           return;
         }
