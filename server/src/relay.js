@@ -136,7 +136,22 @@ export function createRelay({
   // the ceiling exists to stop a script, not a tester. Overridable so tests can
   // exercise the endpoint without spending the whole allowance on setup.
   reportRateLimit = { windowMs: 60_000, max: 5 },
+  // The admin page is read-only by design. This flag is the only thing that
+  // adds buttons to it, and it is off by default: with it on, whoever holds
+  // the admin password can flip DEBUG_MODE and disconnect players. Worth it
+  // during an event you are running yourself, not worth it standing.
+  adminActions = false,
+  // Fake plugin connections, started from the admin page, to answer "does it
+  // hold at 30 players" without 30 humans. Also off by default — it injects
+  // positions under made-up logins, which is exactly what the TCP port is
+  // meant to be protected against.
+  enableTestBots = false,
+  // Where those bots connect back to. Only used when enableTestBots is on.
+  ingestTcpPort = 8081,
 }) {
+  // Mutable so the admin page can flip it mid-event; `debugMode` stays the
+  // boot value nobody mutates by accident.
+  let debugEnabled = debugMode;
   const encoder = new TextEncoder();
   // Positions are batched instead of sent one-by-one: calling
   // roomService.sendData() per incoming position would mean one HTTP call to
@@ -402,7 +417,7 @@ export function createRelay({
     // no-store: this answer flips when the operator flips the env var, and a
     // page cached from the debug era must not keep believing debug is allowed.
     res.set('Cache-Control', 'no-store');
-    res.send(`window.ONZ_DEBUG_ALLOWED=${debugMode ? 'true' : 'false'};\n`);
+    res.send(`window.ONZ_DEBUG_ALLOWED=${debugEnabled ? 'true' : 'false'};\n`);
   });
 
   app.get('/health', async (req, res) => {
@@ -477,7 +492,7 @@ export function createRelay({
     // they like. Real players never come through here — they arrive with a
     // nonce, handled above. 404 rather than 403 so it looks like an endpoint
     // that simply isn't there, matching the bot.html gate.
-    if (!enableCalibrationBot && !debugMode) {
+    if (!enableCalibrationBot && !debugEnabled) {
       res.status(404).json({ error: 'not found' });
       return;
     }
@@ -493,7 +508,7 @@ export function createRelay({
     // Anything unparseable falls back to the default room instead of erroring:
     // a debug-only field is not worth a failure mode.
     let room = roomName;
-    if (debugMode) {
+    if (debugEnabled) {
       const requested = validateServer(req.query.room);
       if (requested) room = requested;
     }
@@ -692,7 +707,10 @@ export function createRelay({
     res.json({
       now: new Date().toISOString(),
       uptimeSeconds: Math.round(process.uptime()),
-      debugMode,
+      debugMode: debugEnabled,
+      // Drives which buttons the page draws at all: a control that cannot work
+      // should not be on screen looking like it could.
+      actions: { enabled: adminActions, testBots: enableTestBots, autoKick, bots: botClients.size, botMax: BOT_MAX },
       livekitOk: live.ok,
       livekitError: live.ok ? null : live.error,
       rooms,
@@ -731,6 +749,151 @@ export function createRelay({
     res.download(file, 'onzvoip-events.log', (err) => {
       if (err && !res.headersSent) res.status(500).json({ error: 'log unavailable' });
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // Admin actions. Everything above this point is read-only — the page just
+  // displays. What follows deliberately breaks that invariant, which is why
+  // it is dead code unless ADMIN_ACTIONS=true was set at boot.
+  // ---------------------------------------------------------------------
+
+  const BOT_MAX = 40;
+  const BOT_SERVER = 'onzbots';
+  const BOT_SERVER_NAME = 'OnZ Test Bots';
+  const botClients = new Map(); // login → { socket, timer }
+  let autoKick = false;
+
+  function stopBot(login) {
+    const b = botClients.get(login);
+    if (!b) return;
+    botClients.delete(login);
+    clearInterval(b.timer);
+    try { b.socket.destroy(); } catch {}
+  }
+
+  function stopAllBots() {
+    for (const login of [...botClients.keys()]) stopBot(login);
+  }
+
+  // A bot is a plugin, not a browser: it speaks the same TCP protocol on the
+  // same port as the real game, so it exercises the actual ingest path rather
+  // than a shortcut past it. It has no voice — pairing it needs a real tab.
+  function startBot(login, index) {
+    const socket = net.createConnection({ host: '127.0.0.1', port: ingestTcpPort });
+    const entry = { socket, timer: null };
+    botClients.set(login, entry);
+    const send = (obj) => { try { socket.write(JSON.stringify(obj) + '\n'); } catch {} };
+    socket.setEncoding('utf8');
+    socket.on('connect', () => {
+      if (tcpSharedSecret) send({ type: 'auth', secret: tcpSharedSecret });
+      send({ type: 'nonce', nonce: `bot-${login}-${Date.now()}`, login,
+             server: BOT_SERVER, serverName: BOT_SERVER_NAME, version: 'bot' });
+      // Circle of 60 m, one bot per slice: they spread out instead of piling
+      // on the same point, so the radar and the distance maths get real work.
+      let angle = (index / BOT_MAX) * Math.PI * 2;
+      entry.timer = setInterval(() => {
+        angle += 0.05;
+        send({ type: 'position', pseudo: login,
+               x: Math.cos(angle) * 60, y: 0, z: Math.sin(angle) * 60,
+               fx: -Math.sin(angle), fz: Math.cos(angle) });
+      }, 200).unref();
+    });
+    socket.on('error', () => stopBot(login));
+    socket.on('close', () => { if (botClients.get(login) === entry) stopBot(login); });
+  }
+
+  function setBotCount(n) {
+    const target = Math.max(0, Math.min(BOT_MAX, Math.floor(n)));
+    const current = botClients.size;
+    if (target < current) {
+      for (const login of [...botClients.keys()].slice(target)) stopBot(login);
+    } else {
+      for (let i = current; i < target; i++) {
+        startBot(`bot${String(i + 1).padStart(2, '0')}`, i);
+      }
+    }
+    return botClients.size;
+  }
+
+  // Ghosts are identities LiveKit still holds for players the relay no longer
+  // knows. They cost a slot and they show up in everyone's radar. Removing one
+  // is safe (the client reconnects if it is actually alive), but only once it
+  // has been a ghost for two consecutive sweeps — a browser that reconnects
+  // between two polls would otherwise get kicked for existing.
+  const ghostStreak = new Map(); // `${room} ${identity}` → sweeps seen
+  async function sweepGhosts() {
+    if (!autoKick || !roomService) return;
+    const live = await livekitSnapshot();
+    if (!live.ok) return;
+    const seen = new Set();
+    for (const [room, identities] of live.byRoom) {
+      for (const identity of identities) {
+        if (browserSockets.has(identity)) continue;
+        const key = `${room} ${identity}`;
+        seen.add(key);
+        const n = (ghostStreak.get(key) ?? 0) + 1;
+        ghostStreak.set(key, n);
+        if (n < 2) continue;
+        ghostStreak.delete(key);
+        try {
+          await roomService.removeParticipant(room, identity);
+          eventLog.log('admin.autokick', { room, identity });
+        } catch (err) {
+          eventLog.log('admin.autokickFailed', { room, identity, error: err.message });
+        }
+      }
+    }
+    for (const key of [...ghostStreak.keys()]) if (!seen.has(key)) ghostStreak.delete(key);
+  }
+  const ghostSweepTimer = setInterval(() => { sweepGhosts().catch(() => {}); }, 20_000).unref();
+
+  function requireActions(req, res) {
+    if (!requireAdmin(req, res)) return false;
+    if (!adminActions) {
+      res.status(404).json({ error: 'not found' });
+      return false;
+    }
+    return true;
+  }
+
+  app.post('/admin/actions/debug', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    debugEnabled = req.body?.on === true;
+    eventLog.log('admin.action', { action: 'debug', on: debugEnabled, ip: req.ip });
+    res.json({ ok: true, debugMode: debugEnabled });
+  });
+
+  app.post('/admin/actions/autokick', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    autoKick = req.body?.on === true;
+    if (!autoKick) ghostStreak.clear();
+    eventLog.log('admin.action', { action: 'autokick', on: autoKick, ip: req.ip });
+    res.json({ ok: true, autoKick });
+  });
+
+  app.post('/admin/actions/kick', express.json(), async (req, res) => {
+    if (!requireActions(req, res)) return;
+    const room = String(req.body?.room ?? '').trim();
+    const identity = String(req.body?.identity ?? '').trim();
+    if (!room || !identity) { res.status(400).json({ error: 'room and identity required' }); return; }
+    try {
+      await roomService.removeParticipant(room, identity);
+      eventLog.log('admin.action', { action: 'kick', room, identity, ip: req.ip });
+      res.json({ ok: true });
+    } catch (err) {
+      eventLog.log('admin.actionFailed', { action: 'kick', room, identity, error: err.message });
+      res.status(502).json({ error: err.message });
+    }
+  });
+
+  app.post('/admin/actions/bots', express.json(), (req, res) => {
+    if (!requireActions(req, res)) return;
+    if (!enableTestBots) { res.status(404).json({ error: 'test bots disabled' }); return; }
+    const count = Number(req.body?.count);
+    if (!isFinite(count)) { res.status(400).json({ error: 'count required' }); return; }
+    const now = setBotCount(count);
+    eventLog.log('admin.action', { action: 'bots', count: now, ip: req.ip });
+    res.json({ ok: true, bots: now, max: BOT_MAX });
   });
 
   const server = http.createServer(app);
@@ -979,5 +1142,6 @@ export function createRelay({
     socket.on('error', (err) => console.error('TCP ingest: socket error:', err.message));
   });
 
-  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer, statePushTimer, historyTimer };
+  return { app, server, tcpServer, nonces, flushPositions, positionFlushTimer, statePushTimer,
+           historyTimer, ghostSweepTimer, stopAllBots };
 }

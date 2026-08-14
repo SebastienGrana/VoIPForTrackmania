@@ -72,6 +72,29 @@
   .tools a { color: var(--dim); font-size: 12px; text-decoration: none; border: 1px solid var(--line);
              border-radius: 4px; padding: 4px 8px; }
   .tools a:hover { color: var(--fg); }
+
+  /* Tabs: the page outgrew one screen. Counters and banners stay above them —
+     those are the reason the page is open at all and must never be a click away. */
+  nav { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+  nav button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--dim);
+               font: inherit; font-size: 12px; padding: 6px 12px; cursor: pointer;
+               text-transform: uppercase; letter-spacing: .05em; }
+  nav button:hover { color: var(--fg); }
+  nav button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--ok); }
+  nav .badge { color: var(--warn); font-weight: 700; }
+  .panel[hidden] { display: none; }
+  .panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }
+
+  button.act { background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+               border-radius: 4px; padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+  button.act:hover { border-color: var(--fg); }
+  button.act.on { border-color: var(--ok); color: var(--ok); }
+  button.act.danger:hover { border-color: var(--bad); color: var(--bad); }
+  button.act[disabled] { opacity: .4; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .row .lbl { min-width: 150px; }
+  .note { color: var(--dim); font-size: 12px; margin: 4px 0 12px; line-height: 1.5; }
+  .kick { font-size: 11px; padding: 1px 6px; margin-left: 4px; }
 </style>
 </head>
 <body>
@@ -92,16 +115,20 @@
 
 <div id="lkBanner" class="banner" hidden></div>
 
-<div class="grid">
+<nav id="tabs" role="tablist">
+  <button data-tab="live" role="tab" aria-selected="true">Monitoring</button>
+  <button data-tab="rooms" role="tab" aria-selected="false">Salons</button>
+  <button data-tab="reports" role="tab" aria-selected="false">Signalements <span class="badge" id="tabReports"></span></button>
+  <button data-tab="log" role="tab" aria-selected="false">Journal</button>
+  <button data-tab="bots" role="tab" aria-selected="false">Bots</button>
+  <button data-tab="actions" role="tab" aria-selected="false">Actions</button>
+</nav>
+
+<div class="panel" id="tab-live">
   <section class="wide">
     <h2>10 dernières minutes</h2>
     <div class="scroll"><svg id="spark" viewBox="0 0 600 90" preserveAspectRatio="none" role="img"></svg></div>
     <div class="sub" id="sparkLegend"></div>
-  </section>
-
-  <section class="wide">
-    <h2>Salons</h2>
-    <div id="rooms"></div>
   </section>
 
   <section>
@@ -118,12 +145,23 @@
     <h2>Reconnexions (10 min)</h2>
     <div class="scroll"><table id="reconnects"></table></div>
   </section>
+</div>
 
+<div class="panel" id="tab-rooms" hidden>
+  <section class="wide">
+    <h2>Salons</h2>
+    <div id="rooms"></div>
+  </section>
+</div>
+
+<div class="panel" id="tab-reports" hidden>
   <section class="wide">
     <h2>Problèmes signalés</h2>
     <div id="reports"></div>
   </section>
+</div>
 
+<div class="panel" id="tab-log" hidden>
   <section class="wide">
     <h2>Événements (plus récent en haut)</h2>
     <div class="tools">
@@ -135,9 +173,30 @@
   </section>
 </div>
 
+<div class="panel" id="tab-bots" hidden>
+  <section class="wide">
+    <h2>Bots de test</h2>
+    <p class="note">Chaque bot ouvre une vraie connexion plugin sur le port d'ingestion et tourne en
+      cercle. Ça teste le relais, la diffusion des positions et le radar — pas la voix : un bot n'a
+      pas d'onglet, donc il reste « sans onglet » et n'entre dans aucun salon LiveKit.</p>
+    <div id="botsUI" class="empty">indisponible (ENABLE_TEST_BOTS n'est pas activé)</div>
+  </section>
+</div>
+
+<div class="panel" id="tab-actions" hidden>
+  <section class="wide">
+    <h2>Actions</h2>
+    <p class="note">Cette page est en lecture seule par défaut. Ces boutons changent l'état du relais
+      en direct et sont tous tracés dans le journal.</p>
+    <div id="actionsUI" class="empty">indisponible (ADMIN_ACTIONS n'est pas activé)</div>
+  </section>
+</div>
+
 <script>
-// Everything below is read-only: this page has no action that changes relay
-// state, which is why a failed poll only needs to say so, never to retry hard.
+// The display half is read-only: a failed poll only needs to say so, never to
+// retry hard. The Actions and Bots tabs are the exception and they exist only
+// when the relay was booted with ADMIN_ACTIONS / ENABLE_TEST_BOTS — the page
+// draws no control it cannot actually fire.
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
@@ -196,19 +255,137 @@ function noteReports(reports) {
     beep();
   }
   lastReportTs = newest;
+  paintPending();
+}
+
+// The counter lives in two places on purpose: the tab title for when the page
+// is in a background window, the nav badge for when it is on screen but you
+// are looking at another section.
+function paintPending() {
   document.title = pendingReports ? '(' + pendingReports + ') ⚠ ' + BASE_TITLE : BASE_TITLE;
+  $('tabReports').textContent = pendingReports ? '(' + pendingReports + ')' : '';
 }
 
 // Reading the reports is the acknowledgement; no button, no state change.
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { pendingReports = 0; document.title = BASE_TITLE; }
+// Reading them means the Signalements tab is open and the window is focused —
+// clearing on focus alone would wipe the badge of a report nobody ever read.
+const ackReports = () => {
+  if (document.hidden || currentTab !== 'reports') return;
+  pendingReports = 0;
+  paintPending();
+};
+document.addEventListener('visibilitychange', ackReports);
+window.addEventListener('focus', ackReports);
+
+// --- onglets -----------------------------------------------------------------
+// Remembered across reloads: during an event this page gets refreshed a lot,
+// and landing back on Monitoring every time is exactly wrong when you were
+// watching the log.
+let currentTab = localStorage.getItem('onz.tab') || 'live';
+function selectTab(name) {
+  if (!$('tab-' + name)) name = 'live';
+  currentTab = name;
+  try { localStorage.setItem('onz.tab', name); } catch {}
+  for (const btn of document.querySelectorAll('#tabs button')) {
+    btn.setAttribute('aria-selected', String(btn.dataset.tab === name));
+  }
+  for (const panel of document.querySelectorAll('.panel')) {
+    panel.hidden = panel.id !== 'tab-' + name;
+  }
+  if (name === 'reports') { pendingReports = 0; paintPending(); }
+}
+$('tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-tab]');
+  if (btn) selectTab(btn.dataset.tab);
 });
-window.addEventListener('focus', () => { pendingReports = 0; document.title = BASE_TITLE; });
+selectTab(currentTab);
+
+// --- actions -----------------------------------------------------------------
+// Every button goes through here so a failure is visible instead of silent,
+// and so the next poll (200 ms later) is what redraws the state — the buttons
+// never guess at what the relay did.
+async function act(path, body) {
+  try {
+    const res = await fetch('/admin/actions/' + path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    setTimeout(poll, 200);
+  } catch (err) {
+    $('stale').textContent = '⚠ action refusée (' + err.message + ')';
+  }
+}
+
+let actionsDrawn = null; // last state drawn, so a redraw never lands mid-click
+let actionState = { enabled: false };
+let debugOn = false;
+
+// Delegated, attached once: both panels are rebuilt from innerHTML whenever
+// the relay state changes, and per-button listeners would pile up.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act]');
+  if (!btn) return;
+  if (btn.dataset.act === 'debug') {
+    const msg = debugOn
+      ? 'Couper le mode debug ? Les onglets déjà connectés gardent leur voix.'
+      : 'Activer le mode debug ? N'importe qui pourra rejoindre n'importe quel salon sans preuve.';
+    if (!confirm(msg)) return;
+    act('debug', { on: !debugOn });
+  } else if (btn.dataset.act === 'autokick') {
+    act('autokick', { on: !actionState.autoKick });
+  } else if (btn.dataset.act === 'bots') {
+    act('bots', { count: Number(btn.dataset.count) });
+  }
+});
+
+function renderActions(a, debug) {
+  actionState = a;
+  debugOn = debug;
+  const key = JSON.stringify(a) + debug;
+  if (key === actionsDrawn) return;
+  actionsDrawn = key;
+
+  if (!a.enabled) {
+    const off = 'indisponible (ADMIN_ACTIONS n'est pas activé au démarrage du relais)';
+    $('actionsUI').className = 'empty'; $('actionsUI').textContent = off;
+    $('botsUI').className = 'empty'; $('botsUI').textContent = off;
+    return;
+  }
+
+  $('actionsUI').className = '';
+  $('actionsUI').innerHTML =
+    '<div class="row"><span class="lbl">Mode debug</span>'
+    + '<button class="act danger ' + (debug ? 'on' : '') + '" data-act="debug">'
+    + (debug ? 'ACTIF — couper' : 'coupé — activer') + '</button>'
+    + '<span class="sub">jeton pour n'importe quel salon sans preuve : à couper en public</span></div>'
+    + '<div class="row"><span class="lbl">Expulsion auto des fantômes</span>'
+    + '<button class="act ' + (a.autoKick ? 'on' : '') + '" data-act="autokick">'
+    + (a.autoKick ? 'activée' : 'désactivée') + '</button>'
+    + '<span class="sub">retire de LiveKit les identités absentes du relais sur deux passages (40 s)</span></div>';
+
+  if (!a.testBots) {
+    $('botsUI').className = 'empty';
+    $('botsUI').textContent = 'indisponible (ENABLE_TEST_BOTS n'est pas activé au démarrage du relais)';
+    return;
+  }
+  $('botsUI').className = '';
+  const steps = [...new Set([0, 1, 5, 10, 20, a.botMax])].filter((n) => n <= a.botMax);
+  $('botsUI').innerHTML =
+    '<div class="row"><span class="lbl">Bots actifs</span><b>' + a.bots + '</b>'
+    + '<span class="sub">/ ' + a.botMax + ' max</span></div>'
+    + '<div class="row">' + steps.map((n) =>
+        '<button class="act ' + (n === a.bots ? 'on' : '') + '" data-act="bots" data-count="' + n + '">'
+        + (n === 0 ? 'tout arrêter' : n + ' bots') + '</button>').join('')
+    + '<button class="act" data-act="bots" data-count="' + Math.min(a.botMax, a.bots + 1) + '">+1</button>'
+    + '<button class="act" data-act="bots" data-count="' + Math.max(0, a.bots - 1) + '">−1</button></div>';
+}
 
 // --- salons ------------------------------------------------------------------
 // A flat player list hides the failure that actually ruins an evening: several
 // rooms of two or three, each convinced voice is broken.
-function renderRooms(rooms) {
+function renderRooms(rooms, canAct) {
   if (!rooms.length) { $('rooms').innerHTML = '<div class="empty">aucun salon actif</div>'; return; }
   $('rooms').innerHTML = '<div class="rooms">' + rooms.map((r) => {
     const players = r.players.map((p) =>
@@ -218,8 +395,13 @@ function renderRooms(rooms) {
     ).join('') || '<span class="empty">personne côté relais</span>';
     const lk = r.livekit === null ? '<span class="dim">LiveKit ?</span>'
       : '<span class="dim">LiveKit : ' + r.livekit + '</span>';
+    // A ghost is the one thing on this page you can act on one at a time:
+    // the button is right next to the name so the room is never in doubt.
     const ghosts = r.ghosts.length
-      ? '<div class="ghost">fantômes LiveKit : ' + r.ghosts.map(esc).join(', ') + '</div>' : '';
+      ? '<div class="ghost">fantômes LiveKit : ' + r.ghosts.map((g) =>
+          esc(g) + (canAct
+            ? '<button class="act danger kick" data-room="' + esc(r.room) + '" data-identity="' + esc(g) + '">expulser</button>'
+            : '')).join(' ') + '</div>' : '';
     const missing = r.missing.length
       ? '<div class="warn">onglet ouvert mais absent de LiveKit : ' + r.missing.map(esc).join(', ') + '</div>' : '';
     return '<div class="room"><h3>' + esc(r.serverName || r.room) + '</h3>'
@@ -227,6 +409,15 @@ function renderRooms(rooms) {
       + '<div>' + players + '</div>' + ghosts + missing + '</div>';
   }).join('') + '</div>';
 }
+
+// Delegated once, on the container: the room cards are rebuilt every 2 s and
+// per-button listeners would be re-attached (and leak) on every poll.
+$('rooms').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-identity]');
+  if (!btn) return;
+  if (!confirm('Expulser ' + btn.dataset.identity + ' du salon ' + btn.dataset.room + ' ?')) return;
+  act('kick', { room: btn.dataset.room, identity: btn.dataset.identity });
+});
 
 // --- historique --------------------------------------------------------------
 // Answers "it dropped — when?" without reading the log line by line.
@@ -331,7 +522,8 @@ async function poll() {
     + '<td class="' + (r.total >= 5 ? 'bad' : 'warn') + '">' + r.total + '</td></tr>'
   );
 
-  renderRooms(data.rooms || []);
+  renderActions(data.actions || { enabled: false }, data.debugMode === true);
+  renderRooms(data.rooms || [], (data.actions || {}).enabled === true);
   renderSpark(data.history || []);
   $('lkBanner').hidden = data.livekitOk !== false;
   $('lkBanner').innerHTML = '<b>LiveKit injoignable</b> — les salons et les fantômes ne sont pas vérifiables. '

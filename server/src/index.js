@@ -20,6 +20,8 @@ const {
   EVENT_LOG_FILE = '',
   ADMIN_USER = '',
   ADMIN_PASSWORD = '',
+  ADMIN_ACTIONS,
+  ENABLE_TEST_BOTS,
 } = process.env;
 
 if (!LIVEKIT_INTERNAL_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_PUBLIC_WS_URL) {
@@ -58,6 +60,11 @@ const { server, tcpServer } = createRelay({
   eventLog,
   adminUser: ADMIN_USER,
   adminPassword: ADMIN_PASSWORD,
+  // Both off unless asked for: they turn the admin page from a window into a
+  // set of levers, and the bots inject positions under invented logins.
+  adminActions: ADMIN_ACTIONS === 'true',
+  enableTestBots: ENABLE_TEST_BOTS === 'true',
+  ingestTcpPort: Number(INGEST_TCP_PORT),
   ...(TCP_MAX_CONNECTIONS && { tcpMaxConnections: Number(TCP_MAX_CONNECTIONS) }),
   ...(TCP_IDLE_TIMEOUT_MS && { tcpIdleTimeoutMs: Number(TCP_IDLE_TIMEOUT_MS) }),
   ...(POSITION_BROADCAST_INTERVAL_MS && { positionBroadcastIntervalMs: Number(POSITION_BROADCAST_INTERVAL_MS) }),
