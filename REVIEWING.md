@@ -18,9 +18,10 @@ player opens via a link the plugin generates; that page joins a
 [LiveKit](https://livekit.io) room and applies per-player gain and stereo pan in
 WebAudio based on the positions the relay broadcasts.
 
-The split matters for review: the in-game plugin is ~670 lines of AngelScript
-with **no audio, no file I/O, and no game-state writes**. It reads position and
-writes to one TCP socket.
+The split matters for review: the in-game plugin (folder `OnZVoIP/`, renamed
+from `openplanet-plugin/`) is ~990 lines of AngelScript with **no audio, no
+file I/O, and no game-state writes**. It reads position and writes to one TCP
+socket.
 
 ---
 
@@ -167,6 +168,47 @@ What the relay *does* enforce:
   Real players never touch it; they arrive with a nonce. It 404s rather than
   403s so it doesn't advertise its own existence.
 
+**`/admin` — access control and the actions it can take.** Basic auth over
+`ADMIN_USER`/`ADMIN_PASSWORD` (`requireAdmin`, `relay.js`), so it must sit
+behind HTTPS. Missing credentials means the routes 404 like an unknown path
+rather than 401 — a hard-to-guess URL isn't access control either, and a 404
+doesn't advertise the feature exists. Credentials are compared with
+`crypto.timingSafeEqual` over a fixed-width SHA-256 digest of each side (not
+the raw strings), so neither a timing attack nor the strings' own length
+leaks anything. Failed attempts are rate-limited to 10/min/IP
+(`adminAuthLimiter`) — only requests that actually sent (wrong) credentials
+count, so the page's own 2 s polling never locks the admin out.
+
+A second flag, `ADMIN_ACTIONS`, gates everything on `/admin` that *changes*
+the running session rather than just reading it — test bots, teams, and
+three player-facing controls added since the last review pass:
+
+- **Eject** (`POST /admin/actions/eject`) cuts a named login's game socket,
+  browser socket and LiveKit participant in one call (`cutOff()`), removes
+  their pending join nonces so a still-open tab can't walk back in, and
+  optionally blocks the login in memory for N minutes (0 minutes = cut
+  without blocking, for a misconnect). Reported per-room, not swallowed, so
+  "not in that room" and "LiveKit unreachable" don't look identical from the
+  page — the second one means the player is still talking.
+- **Ban list** (`POST /admin/actions/ban`, `BAN_FILE`) is the opposite shape:
+  no expiry, takes a login that has never connected, matched
+  case-insensitively (it's copied from Discord by hand), and persisted to
+  disk via a temp-file-then-rename so a half-written file is never what boots
+  next. It is folded into the same `isBlocked()` check an eject uses, not
+  checked separately — the four doors that turn a player away (one-time
+  link, debug identity path, browser socket, plugin socket) already ask that
+  question, and a ban covering only three of them would be a ban with a way
+  in. A corrupt `BAN_FILE` logs loudly and boots with an empty list rather
+  than refusing to start.
+- **Secret rotation** (`POST /admin/actions/secret`) lets `TCP_SHARED_SECRET`
+  be set, changed or cleared without a relay restart. The new value is
+  validated (8–128 printable, non-space characters — a secret containing
+  whitespace would be silently mangled by the plugin's settings field and by
+  the newline-delimited TCP protocol) but never echoed back and never
+  written to the event log, only whether one is now in force. Every
+  already-issued `/tcp-auth` token is invalidated in the same call, since it
+  was minted against the secret that just changed.
+
 **Privacy — who sees what.** Anyone holding a room's URL sees every player in
 that room: their Trackmania login and their live in-game position. Rooms are
 per-game-server, so this is scoped to people you're playing with, but there is
@@ -192,24 +234,28 @@ Being upfront about what that means for a reviewer:
   the TCP read loop) rather than restating what the line does. If a comment
   looks like it's over-explaining, it's usually marking a bug that was actually
   hit. Trim them freely if that's not the house style.
-- **The server side has 102 tests** across `audio-math.test.js` (26),
-  `relay.test.js` (49), and `room-name.test.js` (27), run with `npm test` in
-  `server/`. Coverage is measured, not assumed — `npm run coverage` prints it:
-
-  | File | Line | Branch |
-  |---|---|---|
-  | `src/relay.js` | 95.3 % | 80.8 % |
-  | `src/room-name.js` | 100 % | 95.5 % |
-  | `public/audio-math.js` | 100 % | 100 % |
+- **The server side has a growing test suite**, run with `npm test` in
+  `server/` (`node --test` across the files listed in `package.json`'s `test`
+  script). Beyond the original `audio-math.test.js`, `relay.test.js` and
+  `room-name.test.js`, the admin-panel work added since the last review pass
+  brought its own dedicated files — `admin-secret.test.js` (secret rotation),
+  `admin-events.test.js` (the events feed and its polling cursor),
+  `admin-eject.test.js` (`cutOff()` across game socket, browser socket and
+  LiveKit), `admin-ban.test.js` (the ban list and its `isBlocked()` merge with
+  eject-blocks), and `admin-report-handled.test.js`. `npm run coverage` prints
+  current line/branch percentages per file — this document intentionally
+  doesn't restate a snapshot of that number, since it drifts with every test
+  added and is one command away from being current.
 
   Every security-relevant path is exercised: nonce single-use and expiry, the
-  `/tcp-auth` token exchange *and* its 404-when-unconfigured behaviour, all four
-  rate limiters, the calibration-bot gate in its default-off state, login and
-  server-login validation (including path-traversal-shaped input), and both
-  ingest transports (TCP and the `/ingest` WebSocket) with malformed input and
-  flood cases. What the remaining ~5 % is: periodic GC timer callbacks and
-  `catch` arms for LiveKit RPC failures. These were written against real bugs
-  found in review, not retrofitted for the number.
+  `/tcp-auth` token exchange *and* its 404-when-unconfigured behaviour, all
+  rate limiters (including `adminAuthLimiter`), the calibration-bot gate in
+  its default-off state, login and server-login validation (including
+  path-traversal-shaped input), both ingest transports (TCP and the
+  `/ingest` WebSocket) with malformed input and flood cases, and the
+  admin-panel actions above — eject, ban/unban, and secret rotation
+  (including that a rotated secret invalidates existing tokens). These were
+  written against real bugs found in review, not retrofitted for a number.
 - **Known limitations are documented rather than hidden** — see §5, which
   leads with what this design *cannot* protect against rather than burying it.
 
@@ -220,17 +266,18 @@ about — please flag it.
 
 ## 7. Where to look
 
-Plugin (AngelScript, ~670 lines total — OpenPlanet compiles all `.as` in the
-folder as one module, hence no includes):
+Plugin (AngelScript, ~990 lines total, folder `OnZVoIP/` — renamed from
+`openplanet-plugin/` — OpenPlanet compiles all `.as` in the folder as one
+module, hence no includes):
 
 | File | Lines | Contents |
 |---|---|---|
-| `Main.as` | 224 | State, main loop, connect/auth/reconnect, relay reply parsing |
-| `Interface.as` | 174 | ImGui window, menu entry, NanoVG status pill |
-| `GameState.as` | 107 | Reading player position / server info from the game, `#if TMNEXT` branch for TM2020 |
-| `Network.as` | 75 | Socket connect, `/tcp-auth` exchange, nonce generation |
-| `Strings.as` | 59 | JSON escaping, Trackmania `$`-code stripping |
-| `Settings.as` | 32 | The seven user-facing settings |
+| `Main.as` | 334 | State, main loop, connect/auth/reconnect, relay reply parsing |
+| `Interface.as` | 327 | ImGui window, menu entry, NanoVG status pill |
+| `GameState.as` | 148 | Reading player position / server info from the game, `#if TMNEXT` branch for TM2020 |
+| `Strings.as` | 74 | JSON escaping, Trackmania `$`-code stripping |
+| `Network.as` | 71 | Socket connect, `/tcp-auth` exchange, nonce generation |
+| `Settings.as` | 34 | The seven user-facing settings |
 
 Server (Node.js, MIT, in the same repo under `server/`) — `relay.js` holds all
 the logic and is where the security-relevant code lives; `index.js` is only env
